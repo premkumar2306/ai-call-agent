@@ -23,7 +23,7 @@ async function hashId(id: string, salt: string): Promise<string> {
 }
 
 // POST /auth/token
-// Body: { customer_id, sector }  — sector must be a known key in sectors table
+// Body: { customer_id, sector | businessType } — value must be a known key in sectors table
 authRouter.post('/token', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const devId = c.env.NODE_ENV !== 'production'
@@ -31,7 +31,13 @@ authRouter.post('/token', async (c) => {
     : undefined;
 
   const customerId: string = devId ?? body?.customer_id;
-  const sector: string = body?.sector ?? 'auto_shop';
+  const requestedBusinessType = typeof body?.businessType === 'string'
+    ? body.businessType.trim()
+    : '';
+  const requestedSector = typeof body?.sector === 'string'
+    ? body.sector.trim()
+    : '';
+  const sector = requestedBusinessType || requestedSector || 'auto_shop';
 
   if (!customerId) {
     return c.json({ success: false, error: 'customer_id required' }, 400);
@@ -53,7 +59,7 @@ authRouter.post('/token', async (c) => {
     .setProtectedHeader({ alg: 'HS256' })
     .sign(secret);
 
-  return c.json({ success: true, data: { token, expires_in: ttl, sector, account } });
+  return c.json({ success: true, data: { token, expires_in: ttl, sector, businessType: sector, account } });
 });
 
 export { authRouter };

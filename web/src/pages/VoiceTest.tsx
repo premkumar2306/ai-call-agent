@@ -65,6 +65,20 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
     fetch(`${base}/sectors`).then(r => r.json()).then(json => { if (json.success) setSectors(json.data); }).catch(() => {});
   }, [base]);
 
+  useEffect(() => {
+    if (!defaultSector) return;
+    setSector(prev => prev || defaultSector);
+  }, [defaultSector]);
+
+  useEffect(() => {
+    if (!sectors.length) return;
+    setSector(prev => {
+      if (prev && sectors.some(s => s.key === prev)) return prev;
+      if (defaultSector && sectors.some(s => s.key === defaultSector)) return defaultSector;
+      return sectors[0].key;
+    });
+  }, [sectors, defaultSector]);
+
   useEffect(() => { if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight; }, [history]);
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); } }, [toast]);
 
@@ -75,7 +89,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
       const res = await fetch(`${base}/auth/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_id: customerId, sector }),
+        body: JSON.stringify({ customer_id: customerId, sector, businessType: sector }),
       });
       const json = await res.json();
       if (!json.success) { notify(`Auth failed: ${json.error}`, false); return; }
