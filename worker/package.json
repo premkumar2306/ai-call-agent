@@ -1,0 +1,27 @@
+{
+  "name": "avery-worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "wrangler d1 migrations apply avery-platform",
+    "db:migrate:local": "wrangler d1 migrations apply avery-platform --local",
+    "db:seed": "wrangler d1 execute avery-platform --file=./drizzle/seed.sql",
+    "db:seed:local": "wrangler d1 execute avery-platform --local --file=./drizzle/seed.sql",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.7.0",
+    "jose": "^5.10.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250401.0",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.8.0",
+    "wrangler": "^4.0.0"
+  }
+}

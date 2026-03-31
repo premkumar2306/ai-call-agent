@@ -1,0 +1,24 @@
+name = "avery-platform"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "avery-platform"
+database_id = "c821ca43-764a-48b0-b10c-55a8e9cc05f8"
+migrations_dir = "drizzle"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "a860c9ff800347938a7ea459b70af14d"
+
+[[kv_namespaces]]
+binding = "CART"
+id = "47f0f8faec8646dd8f537e8adfc1678f"
+
+[vars]
+NODE_ENV = "production"
+TOKEN_TTL_SECONDS = "900"
+TWILIO_DEFAULT_SECTOR = "auto_shop"
+TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
