@@ -2,6 +2,7 @@ import type { SessionPayload, Env, SectorMeta } from '../types';
 import { getProducts, getProductById, searchProducts } from './catalog.service';
 import { placeOrder, getOrders, getOrder, cancelOrder } from './order.service';
 import { scoreProducts } from './recommendations.service';
+import { isAmbiguousServiceIntent } from './voice-guard.service';
 
 const CART_TTL = 3600; // 1 hour
 
@@ -113,11 +114,24 @@ export async function executeTool(
       // ── Discovery ────────────────────────────────────────────────
       case 'search_services':
       case 'search_products': {
+        const query = (args.query as string | undefined)?.trim() ?? '';
+        if (isAmbiguousServiceIntent(query)) {
+          return {
+            success: true,
+            data: { products: [], matchType: 'ambiguous_intent', query },
+            spoken_response: "I can help with a specific service, but I need to know what kind of work your car needs.",
+          };
+        }
+
         const all = await getProducts(env, businessType, args.category as string | undefined);
-        const results = args.query ? searchProducts(all, args.query as string) : all;
+        const results = query ? searchProducts(all, query) : all;
         const top5 = results.slice(0, 5);
         if (top5.length === 0) {
-          return { success: true, data: { products: [] }, spoken_response: "I couldn't find anything matching that. Could you describe what you're looking for?" };
+          return {
+            success: true,
+            data: { products: [], matchType: 'no_match', query },
+            spoken_response: "I couldn't match that to a listed service.",
+          };
         }
         // Include IDs in data so Claude can use them immediately for check_availability / book_appointment
         const topResult = top5[0];
@@ -126,7 +140,15 @@ export async function executeTool(
         const spoken = top5.length === 1
           ? `I found ${topResult.name} for ${price}${duration}. Want me to check availability?`
           : `Top match: ${topResult.name} for ${price}. I also have ${top5.slice(1, 3).map(p => p.name).join(' and ')}. Which interests you?`;
-        return { success: true, data: { products: top5.map(p => ({ id: p.id, name: p.name, priceCents: p.priceCents, durationMinutes: p.durationMinutes, category: p.category })) }, spoken_response: spoken };
+        return {
+          success: true,
+          data: {
+            products: top5.map(p => ({ id: p.id, name: p.name, priceCents: p.priceCents, durationMinutes: p.durationMinutes, category: p.category })),
+            matchType: 'match',
+            query,
+          },
+          spoken_response: spoken,
+        };
       }
 
       case 'get_service_detail':

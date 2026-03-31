@@ -20,5 +20,5 @@ id = "47f0f8faec8646dd8f537e8adfc1678f"
 [vars]
 NODE_ENV = "production"
 TOKEN_TTL_SECONDS = "900"
-TWILIO_DEFAULT_SECTOR = "auto_shop"
+TWILIO_DEFAULT_BUSINESS_TYPE = "dental"
 TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"

@@ -9,6 +9,10 @@ import { scoreProducts, getSectorGreeting } from '../services/recommendations.se
 import { executeTool, getToolDefinitions } from '../services/tool-router.service';
 import { emailTranscript } from '../services/email.service';
 import { saveTranscript, getTranscripts } from '../services/transcript.service';
+import {
+  getUnclearServiceEscalationResponse,
+  shouldEscalateUnclearService,
+} from '../services/voice-guard.service';
 
 const averyRouter = new Hono<HonoEnv>();
 
@@ -102,6 +106,19 @@ averyRouter.post('/voice-turn', withAverySecret, withSession, async (c) => {
   const sectorMeta = await getSector(c.env, businessType);
   const credit = (account.store_credit_cents / 100).toFixed(2);
   const bizName = sectorMeta?.name ?? businessType;
+
+  if (shouldEscalateUnclearService(rawHistory, utterance)) {
+    const spokenResponse = getUnclearServiceEscalationResponse(bizName);
+    const updatedHistory = [
+      ...rawHistory,
+      { role: 'user' as const, content: utterance },
+      { role: 'assistant' as const, content: spokenResponse },
+    ];
+    saveTranscript(c.env, { customerIdHashed: sub, businessType, turns: updatedHistory })
+      .catch(err => console.error('transcript save error', err.message));
+    return c.json({ success: true, data: { spoken_response: spokenResponse, history: updatedHistory, tool_calls: [] } });
+  }
+
   const systemPrompt = `You are Avery, the ${bizName} voice assistant on a live call.
 Customer: ${account.tier} tier | $${credit} store credit
 Previous bookings: ${recentOrders.length > 0 ? recentOrders.join(', ') : 'none'}
@@ -109,15 +126,17 @@ Previous bookings: ${recentOrders.length > 0 ? recentOrders.join(', ') : 'none'}
 RULES — follow exactly every single turn:
 1. VOICE ONLY: max 2 sentences, no lists, no markdown, numbers spoken naturally.
 2. NEVER guess prices, service names, or times — always call a tool first.
-3. INTENT → ACTION: When the customer mentions any service or need, call search_services immediately. Do NOT ask a clarifying question first.
-4. BOOKING FLOW (one action per step, never skip, never repeat):
+3. If the customer gives a specific service need, call search_services immediately.
+4. If the customer is vague or unsure, ask one short service-clarifying question once. If they stay vague after that, stop asking and say: "I'm not sure which service fits best. Please call ${bizName} directly and we'll help you choose the right appointment."
+5. If search_services returns matchType=ambiguous_intent, ask one short clarification once. If it returns matchType=no_match after a clarification attempt, escalate instead of rephrasing the same question.
+6. BOOKING FLOW (one action per step, never skip, never repeat):
    Step A — customer mentions need → call search_services → say the top match name and price only.
    Step B — customer confirms interest → call check_availability(service_id=<id from search>) → offer 2-3 slots naturally ("I have Tuesday at 10 or Wednesday at 2 — which works?").
    Step C — customer picks a slot → call book_appointment(product_id, scheduled_at, payment_method=CREDIT_CARD) right away. Do NOT ask "shall I book?" — just book.
-5. AFTER BOOKING: call get_upsells once, offer it briefly. Then wrap up.
-6. NO LOOPS: If the customer already answered a question, never ask it again. Check history.
-7. If asked about hours → get_business_hours. If asked about past bookings → list_bookings.
-8. CANCEL FLOW: Customer says "cancel" → call cancel_booking(product_name=<what they mentioned>). COMPLETE status = confirmed appointment, NOT service delivered — it IS cancellable. Never tell the customer a booking can't be cancelled without calling cancel_booking first.`;
+7. AFTER BOOKING: call get_upsells once, offer it briefly. Then wrap up.
+8. NO LOOPS: If the customer already answered a question, never ask it again. Rephrasing the same service question counts as repeating it.
+9. If asked about hours → get_business_hours. If asked about past bookings → list_bookings.
+10. CANCEL FLOW: Customer says "cancel" → call cancel_booking(product_name=<what they mentioned>). COMPLETE status = confirmed appointment, NOT service delivered — it IS cancellable. Never tell the customer a booking can't be cancelled without calling cancel_booking first.`;
 
   const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta).map(t => ({
     name: t.name,
