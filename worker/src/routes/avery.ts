@@ -25,8 +25,8 @@ averyRouter.get('/tools', withAverySecret, withSession, (c) => {
   return c.json({ success: true, data: { tools: getToolDefinitions(c.get('session').businessType) } });
 });
 
-// GET /avery/context
-averyRouter.get('/context', withAverySecret, withSession, async (c) => {
+// GET /avery/context — JWT only (browser calls this)
+averyRouter.get('/context', withSession, async (c) => {
   const { businessType, account, sub } = c.get('session');
 
   const [ordersResult, productsResult] = await Promise.allSettled([
@@ -78,8 +78,8 @@ averyRouter.post('/tool-call', withAverySecret, withSession, async (c) => {
   return c.json({ success: true, data: result });
 });
 
-// POST /avery/voice-turn
-averyRouter.post('/voice-turn', withAverySecret, withSession, async (c) => {
+// POST /avery/voice-turn — JWT only (browser calls this)
+averyRouter.post('/voice-turn', withSession, async (c) => {
   const session = c.get('session');
   const { businessType, account, sub } = session;
   const body = await c.req.json().catch(() => ({}));
@@ -201,16 +201,16 @@ RULES — follow exactly every single turn:
   return c.json({ success: true, data: { spoken_response: spokenResponse, history: updatedHistory, tool_calls: toolCallLog } });
 });
 
-// GET /avery/transcripts
-averyRouter.get('/transcripts', withAverySecret, withSession, async (c) => {
+// GET /avery/transcripts — JWT only
+averyRouter.get('/transcripts', withSession, async (c) => {
   const { sub, businessType } = c.get('session');
   const limit = parseInt(c.req.query('limit') ?? '10', 10);
   const rows = await getTranscripts(c.env, sub, businessType, limit);
   return c.json({ success: true, data: { transcripts: rows } });
 });
 
-// POST /avery/email-transcript
-averyRouter.post('/email-transcript', withAverySecret, withSession, async (c) => {
+// POST /avery/email-transcript — JWT only
+averyRouter.post('/email-transcript', withSession, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const { email, history } = body;
   if (!email || !Array.isArray(history)) {

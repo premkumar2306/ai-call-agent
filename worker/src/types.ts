@@ -80,6 +80,7 @@ export interface Env {
   TOKEN_SECRET: string;
   CUSTOMER_HASH_SALT: string;
   AVERY_SECRET: string;
+  ADMIN_SECRET: string;
   ANTHROPIC_API_KEY: string;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;

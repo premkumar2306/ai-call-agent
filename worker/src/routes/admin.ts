@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
+import { withAdminKey } from '../middleware';
 import { getSectors, getSector, upsertSector } from '../services/sector.service';
 import { getDb } from '../db/client';
 import { vendors as vendorsTable, products as productsTable } from '../db/schema';
@@ -49,7 +50,7 @@ adminRouter.get('/sectors', async (c) => {
 });
 
 // POST /admin/sectors — create or update a sector (no deploy needed)
-adminRouter.post('/sectors', async (c) => {
+adminRouter.post('/sectors', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.key || !body?.name || !body?.hours) {
     return c.json({ success: false, error: 'key, name, and hours are required' }, 400);
@@ -84,7 +85,7 @@ adminRouter.get('/config/:sector', async (c) => {
   return c.json({ success: true, data: await getConfig(c.env, sector) });
 });
 
-adminRouter.put('/config/:sector', async (c) => {
+adminRouter.put('/config/:sector', withAdminKey, async (c) => {
   const { sector } = c.req.param();
   const meta = await getSector(c.env, sector);
   if (!meta) return c.json({ success: false, error: 'Unknown sector' }, 404);
@@ -98,7 +99,7 @@ adminRouter.put('/config/:sector', async (c) => {
 // ── Vendor + Product bulk import (used by /add-vertical skill) ─────────────
 
 // POST /admin/vendors  — upsert one or many vendors
-adminRouter.post('/vendors', async (c) => {
+adminRouter.post('/vendors', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
   const rows: any[] = Array.isArray(body) ? body : body ? [body] : [];
   if (!rows.length) return c.json({ success: false, error: 'Provide a vendor object or array' }, 400);
@@ -120,7 +121,7 @@ adminRouter.post('/vendors', async (c) => {
 });
 
 // POST /admin/products  — upsert one or many products
-adminRouter.post('/products', async (c) => {
+adminRouter.post('/products', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
   const rows: any[] = Array.isArray(body) ? body : body ? [body] : [];
   if (!rows.length) return c.json({ success: false, error: 'Provide a product object or array' }, 400);

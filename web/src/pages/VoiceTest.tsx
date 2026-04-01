@@ -27,7 +27,7 @@ function speak(text: string, onEnd?: () => void) {
   window.speechSynthesis.speak(utt);
 }
 
-const AVERY_SECRET = import.meta.env.VITE_AVERY_SECRET ?? 'dev-avery-secret';
+// No shared secret sent from browser — JWT Bearer token is the only auth
 
 // Sectors are loaded from the worker at runtime — no hardcoding needed
 type SectorOption = { key: string; name: string };
@@ -104,7 +104,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
       setTranscripts([]);
 
       const ctx = await fetch(`${base}/avery/context`, {
-        headers: { 'Authorization': `Bearer ${json.data.token}`, 'X-Avery-Secret': AVERY_SECRET },
+        headers: { 'Authorization': `Bearer ${json.data.token}`, 'Content-Type': 'application/json' },
       });
       const ctxJson = await ctx.json();
       if (ctxJson.success) setHistory([{ role: 'assistant', content: ctxJson.data.greeting }]);
@@ -126,7 +126,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
     try {
       const res = await fetch(`${base}/avery/voice-turn`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'X-Avery-Secret': AVERY_SECRET },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ utterance: text, history }),
       });
       const json = await res.json();
@@ -196,7 +196,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
   const loadTranscripts = async () => {
     if (!token) return;
     const res = await fetch(`${base}/avery/transcripts`, {
-      headers: { 'Authorization': `Bearer ${token}`, 'X-Avery-Secret': AVERY_SECRET },
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
     const json = await res.json();
     if (json.success) { setTranscripts(json.data.transcripts); setDebugTab('transcripts'); }
@@ -207,7 +207,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
     if (!emailTo || !token || !history.length) { notify('Enter email and have a conversation first', false); return; }
     const res = await fetch(`${base}/avery/email-transcript`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'X-Avery-Secret': AVERY_SECRET },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ email: emailTo, history }),
     });
     const json = await res.json();

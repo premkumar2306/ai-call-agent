@@ -64,10 +64,19 @@ export async function withTwilioSession(c: Context<HonoEnv>, next: Next) {
   });
 }
 
-// Service-to-service auth header
+// Service-to-service auth — keep off the browser
 export async function withAverySecret(c: Context<HonoEnv>, next: Next) {
   if (c.req.header('x-avery-secret') !== c.env.AVERY_SECRET) {
     return c.json({ success: false, error: 'Invalid Avery secret' }, 401);
+  }
+  await next();
+}
+
+// Operator admin auth — protects all mutating /admin/* routes
+export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
+  const key = c.req.header('x-admin-key');
+  if (!key || key !== c.env.ADMIN_SECRET) {
+    return c.json({ success: false, error: 'Admin key required' }, 401);
   }
   await next();
 }

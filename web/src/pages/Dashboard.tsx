@@ -38,6 +38,8 @@ const inputStyle: React.CSSProperties = {
   color: '#fff', padding: '10px 14px', fontSize: 14, outline: 'none', boxSizing: 'border-box',
 };
 
+const ADMIN_KEY = import.meta.env.VITE_ADMIN_KEY ?? '';
+
 export default function Dashboard({ sector, base }: Props) {
   const [cfg, setCfg] = useState<SectorConfig>({
     storeName: '', greeting: '', agentName: 'Avery',
@@ -65,7 +67,7 @@ export default function Dashboard({ sector, base }: Props) {
     try {
       const res = await fetch(`${base}/admin/config/${sector}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
         body: JSON.stringify(cfg),
       });
       if (res.ok) showToast('Saved!');
