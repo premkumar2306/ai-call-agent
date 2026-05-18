@@ -1,8 +1,11 @@
+import { eq, and, ne, isNotNull } from 'drizzle-orm';
 import type { SessionPayload, Env, SectorMeta } from '../types';
 import { getProducts, getProductById, searchProducts } from './catalog.service';
 import { placeOrder, getOrders, getOrder, cancelOrder } from './order.service';
 import { scoreProducts } from './recommendations.service';
 import { isAmbiguousServiceIntent } from './voice-guard.service';
+import { getDb } from '../db/client';
+import { orders as ordersTable } from '../db/schema';
 
 const CART_TTL = 3600; // 1 hour
 
@@ -17,8 +20,6 @@ async function setCart(env: Env, key: string, cart: { productId: string; quantit
 }
 
 // ── Availability helpers ───────────────────────────────────────────────────
-// Generates realistic open slots from today+1 through today+7.
-// In production, replace with a real availability/calendar API call.
 
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 
@@ -37,24 +38,44 @@ function parseHoursRange(range: string): { openH: number; closeH: number } | nul
   return { openH, closeH };
 }
 
-function getAvailableSlots(meta: SectorMeta | null | undefined, durationMinutes = 60): Array<{ date: string; time: string; datetime: string; label: string }> {
-  const slots: Array<{ date: string; time: string; datetime: string; label: string }> = [];
+/** Query D1 for all confirmed SERVICE_BOOKING datetimes in the next 14 days for this business. */
+async function getBookedDatetimes(env: Env, businessType: string): Promise<Set<string>> {
+  const db = getDb(env.DB);
+  const booked = await db
+    .select({ scheduledAt: ordersTable.scheduledAt })
+    .from(ordersTable)
+    .where(
+      and(
+        eq(ordersTable.businessType, businessType),
+        ne(ordersTable.status, 'CANCELLED'),
+        isNotNull(ordersTable.scheduledAt),
+      )
+    );
+  // Normalise to "YYYY-MM-DDTHH:MM" for slot collision matching
+  return new Set(booked.map(r => r.scheduledAt!.slice(0, 16)));
+}
+
+async function getAvailableSlots(
+  env: Env,
+  businessType: string,
+  meta: SectorMeta | null | undefined,
+  durationMinutes = 60,
+): Promise<Array<{ date: string; time: string; datetime: string; label: string }>> {
+  const rawSlots: Array<{ date: string; time: string; datetime: string; label: string }> = [];
   const now = new Date();
-  // Step in whole hours; a 30-min appt still books on the hour
   const stepH = Math.max(1, Math.ceil(durationMinutes / 60));
   const durationH = durationMinutes / 60;
 
-  for (let dayOffset = 1; dayOffset <= 14 && slots.length < 12; dayOffset++) {
+  for (let dayOffset = 1; dayOffset <= 14 && rawSlots.length < 20; dayOffset++) {
     const d = new Date(now);
     d.setDate(d.getDate() + dayOffset);
     const dayKey = DAY_NAMES[d.getDay()];
     const hoursStr = meta?.hours[dayKey];
-    if (!hoursStr) continue; // closed this day
+    if (!hoursStr) continue;
 
     const parsed = parseHoursRange(hoursStr);
     if (!parsed) continue;
 
-    // Only offer slots where appointment fits before closing
     for (let h = parsed.openH; h + durationH <= parsed.closeH; h += stepH) {
       const ampm = h >= 12 ? 'PM' : 'AM';
       const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
@@ -62,7 +83,7 @@ function getAvailableSlots(meta: SectorMeta | null | undefined, durationMinutes 
       const dateStr = d.toISOString().slice(0, 10);
       const hPad = String(h).padStart(2, '0');
       const dateLabel = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
-      slots.push({
+      rawSlots.push({
         date: dateStr,
         time: timeLabel,
         datetime: `${dateStr}T${hPad}:00:00`,
@@ -70,7 +91,10 @@ function getAvailableSlots(meta: SectorMeta | null | undefined, durationMinutes 
       });
     }
   }
-  return slots;
+
+  // Filter out slots already booked in D1
+  const booked = await getBookedDatetimes(env, businessType);
+  return rawSlots.filter(s => !booked.has(s.datetime.slice(0, 16))).slice(0, 12);
 }
 
 function formatHours(meta: SectorMeta | null | undefined): string {
@@ -173,7 +197,7 @@ export async function executeTool(
           if (p?.durationMinutes) duration = p.durationMinutes;
           if (p?.name) serviceName = p.name;
         }
-        const slots = getAvailableSlots(sectorMeta, duration);
+        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration);
         if (slots.length === 0) {
           return { success: true, data: { slots: [] }, spoken_response: "We don't have any openings in the next 2 weeks. Please call us directly." };
         }

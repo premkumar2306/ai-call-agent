@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
 import { getSectors, getSector, upsertSector } from '../services/sector.service';
 import { getDb } from '../db/client';
-import { vendors as vendorsTable, products as productsTable } from '../db/schema';
+import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
 
@@ -44,7 +44,7 @@ async function putConfig(env: HonoEnv['Bindings'], sector: string, cfg: SectorCo
 // ── Sector CRUD ────────────────────────────────────────────────────────────
 
 // GET /admin/sectors — list all sectors from DB
-adminRouter.get('/sectors', async (c) => {
+adminRouter.get('/sectors', withAdminKey, async (c) => {
   const sectors = await getSectors(c.env);
   return c.json({ success: true, data: Object.entries(sectors).map(([key, meta]) => ({ key, ...meta })) });
 });
@@ -70,15 +70,16 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
 });
 
 // GET /admin/sectors/:key — get one sector
-adminRouter.get('/sectors/:key', async (c) => {
-  const meta = await getSector(c.env, c.req.param('key'));
+adminRouter.get('/sectors/:key', withAdminKey, async (c) => {
+  const key = c.req.param('key') ?? '';
+  const meta = await getSector(c.env, key);
   if (!meta) return c.json({ success: false, error: 'Sector not found' }, 404);
   return c.json({ success: true, data: meta });
 });
 
 // ── UI Config ──────────────────────────────────────────────────────────────
 
-adminRouter.get('/config/:sector', async (c) => {
+adminRouter.get('/config/:sector', withAdminKey, async (c) => {
   const { sector } = c.req.param();
   const meta = await getSector(c.env, sector);
   if (!meta) return c.json({ success: false, error: 'Unknown sector' }, 404);
@@ -156,10 +157,31 @@ adminRouter.post('/products', withAdminKey, async (c) => {
 });
 
 // GET /admin/products/:businessType — list products for a sector
-adminRouter.get('/products/:businessType', async (c) => {
+adminRouter.get('/products/:businessType', withAdminKey, async (c) => {
   const db = getDb(c.env.DB);
+  const businessType = c.req.param('businessType') ?? '';
   const rows = await db.select().from(productsTable)
-    .where(eq(productsTable.businessType, c.req.param('businessType')));
+    .where(eq(productsTable.businessType, businessType));
+  return c.json({ success: true, data: rows });
+});
+
+// GET /admin/transcripts/:businessType — list recent transcripts for a sector
+// Optional query param: ?channel=wa (filter by callSid starting with 'wa:')
+adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
+  const channel = c.req.query('channel');
+  const db = getDb(c.env.DB);
+
+  let rows = await db
+    .select()
+    .from(transcriptsTable)
+    .where(eq(transcriptsTable.businessType, businessType))
+    .orderBy(desc(transcriptsTable.createdAt))
+    .limit(50);
+
+  if (channel === 'wa') {
+    rows = rows.filter(r => r.callSid?.startsWith('wa:'));
+  }
   return c.json({ success: true, data: rows });
 });
 

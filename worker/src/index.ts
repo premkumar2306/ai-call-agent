@@ -9,14 +9,25 @@ import { ordersRouter } from './routes/orders';
 import { averyRouter } from './routes/avery';
 import { twilioRouter } from './routes/twilio';
 import { adminRouter } from './routes/admin';
+import { whatsappRouter } from './routes/whatsapp';
 
 const app = new Hono<HonoEnv>();
 
-// ── CORS (allow Pages origin in production) ────────────────────────────────
+// ── CORS ───────────────────────────────────────────────────────────────────
+// Allow the production Pages domain, any Cloudflare Pages preview deploy
+// (*.avery-admin.pages.dev), and local dev.
 app.use('*', cors({
-  origin: ['https://avery-admin.pages.dev', 'http://localhost:5173'],
+  origin: (origin) => {
+    if (!origin) return null;
+    if (
+      origin === 'https://avery-admin.pages.dev' ||
+      origin.endsWith('.avery-admin.pages.dev') ||
+      /^http:\/\/localhost:\d+$/.test(origin)
+    ) return origin;
+    return null;
+  },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-Avery-Secret', 'X-Dev-Customer-Id'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Avery-Secret', 'X-Dev-Customer-Id', 'X-Admin-Key'],
 }));
 
 // ── Routes ─────────────────────────────────────────────────────────────────
@@ -24,13 +35,13 @@ app.route('/auth',    authRouter);
 app.route('/catalog', catalogRouter);
 app.route('/orders',  ordersRouter);
 app.route('/avery',   averyRouter);
-app.route('/twilio',  twilioRouter);
-app.route('/admin',   adminRouter);
+app.route('/twilio',    twilioRouter);
+app.route('/admin',    adminRouter);
+app.route('/whatsapp', whatsappRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────
 app.get('/health', async (c) => {
-  const sectors = await getSectors(c.env);
-  return c.json({ status: 'ok', sectors: Object.keys(sectors), anthropic: !!c.env.ANTHROPIC_API_KEY, email: !!c.env.RESEND_API_KEY });
+  return c.json({ status: 'ok' });
 });
 
 // ── Sectors list (public) ───────────────────────────────────────────────────

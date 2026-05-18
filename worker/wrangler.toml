@@ -22,3 +22,11 @@ NODE_ENV = "production"
 TOKEN_TTL_SECONDS = "900"
 TWILIO_DEFAULT_BUSINESS_TYPE = "dental"
 TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
+WA_DEFAULT_BUSINESS_TYPE = "dental"
+# WA_PHONE_NUMBER_MAP = '{"PHONE_NUMBER_ID_1":"dental","PHONE_NUMBER_ID_2":"auto_shop"}'
+
+# Secrets — run: wrangler secret put <NAME>
+# WA_APP_SECRET         (Meta app secret → X-Hub-Signature-256)
+# WA_VERIFY_TOKEN       (arbitrary string you pick, enter in Meta webhook config)
+# WA_PHONE_NUMBER_ID    (found in Meta for Developers → WhatsApp → Phone Numbers)
+# WA_ACCESS_TOKEN       (permanent system user token with whatsapp_business_messaging scope)

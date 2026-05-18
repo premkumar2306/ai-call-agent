@@ -63,16 +63,8 @@ export async function placeOrder(
     updatedAt: now,
   });
 
-  // Simulate vendor acceptance / auto-confirm
-  const newStatus = product.fulfillmentType === 'SERVICE_BOOKING' ? 'COMPLETE' : 'FULFILLING';
-  const trackingNumber = product.fulfillmentType === 'VENDOR_SHIP'
-    ? `TRK-${Math.random().toString(36).slice(2, 10).toUpperCase()}`
-    : null;
-
-  await db.update(ordersTable)
-    .set({ status: newStatus, trackingNumber, updatedAt: new Date() })
-    .where(eq(ordersTable.id, id));
-
+  // Order stays PENDING — real fulfillment (vendor webhook / admin confirmation) will advance status.
+  // SERVICE_BOOKING appointments are confirmed via the admin dashboard or a webhook callback.
   const rows = await db.select().from(ordersTable).where(eq(ordersTable.id, id));
   return mapRow(rows[0]);
 }

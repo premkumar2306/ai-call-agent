@@ -74,6 +74,14 @@ export const orders = sqliteTable('orders', {
   index('idx_orders_customer_business_type').on(t.customerIdHashed, t.businessType),
 ]);
 
+export const customers = sqliteTable('customers', {
+  idHashed:         text('id_hashed').primaryKey(),
+  tier:             text('tier').notNull().default('BASIC'),
+  storeCreditCents: integer('store_credit_cents').notNull().default(0),
+  createdAt:        integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt:        integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+});
+
 export const transcripts = sqliteTable('transcripts', {
   id:               text('id').primaryKey(),
   callSid:          text('call_sid'),

@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import Dashboard from './pages/Dashboard';
 import VoiceTest from './pages/VoiceTest';
+import WhatsApp from './pages/WhatsApp';
 
-const TABS = ['Customize', 'Voice Test', 'Overview'] as const;
+const TABS = ['Customize', 'Voice Test', 'WhatsApp', 'Overview'] as const;
 type Tab = typeof TABS[number];
 
 const BASE = import.meta.env.VITE_API_URL ?? '';
@@ -69,6 +70,7 @@ export default function App() {
 
         {tab === 'Customize' && <Dashboard sector={sector} base={BASE} />}
         {tab === 'Voice Test' && <VoiceTest sector={sector} base={BASE} />}
+        {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} />}
         {tab === 'Overview' && <Overview />}
       </main>
     </div>

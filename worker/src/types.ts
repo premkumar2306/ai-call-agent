@@ -82,6 +82,7 @@ export interface Env {
   AVERY_SECRET: string;
   ADMIN_SECRET: string;
   ANTHROPIC_API_KEY: string;
+  DEEPGRAM_API_KEY?: string;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   TWILIO_AUTH_TOKEN?: string;
@@ -93,4 +94,11 @@ export interface Env {
   /** @deprecated Use TWILIO_DEFAULT_BUSINESS_TYPE */
   TWILIO_DEFAULT_SECTOR?: string;
   TWILIO_DEFAULT_CUSTOMER_HASH?: string; // hashed ID for the anonymous caller
+  // WhatsApp Cloud API (all secrets — set via `wrangler secret put`)
+  WA_APP_SECRET?: string;            // Meta app secret for X-Hub-Signature-256 verification
+  WA_VERIFY_TOKEN?: string;          // Arbitrary token used in Meta webhook registration
+  WA_PHONE_NUMBER_ID?: string;       // Default Meta phone number ID
+  WA_ACCESS_TOKEN?: string;          // Permanent system-user access token
+  WA_DEFAULT_BUSINESS_TYPE?: string; // Sector for this WhatsApp number (default: 'dental')
+  WA_PHONE_NUMBER_MAP?: string;      // Optional JSON: {"<id>":"dental","<id2>":"auto_shop"}
 }

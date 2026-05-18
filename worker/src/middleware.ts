@@ -80,3 +80,38 @@ export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
   }
   await next();
 }
+
+// ── Rate limiting (KV fixed-window counter) ────────────────────────────────
+//
+// ipRateLimit     — identify by CF-Connecting-IP; use before auth is established
+// sessionRateLimit— identify by JWT sub; apply after withSession
+
+export function ipRateLimit(scope: string, max: number, windowSeconds: number) {
+  return async function (c: Context<HonoEnv>, next: Next) {
+    const ip = c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? 'unknown';
+    const kvKey = `rl:${scope}:${ip}`;
+    const raw = await c.env.CACHE.get(kvKey);
+    const count = raw ? parseInt(raw, 10) : 0;
+    if (count >= max) {
+      return c.json({ success: false, error: 'Too many requests. Please wait before retrying.' }, 429);
+    }
+    // Best-effort increment — KV doesn't support atomic ops, sufficient for cost protection
+    await c.env.CACHE.put(kvKey, String(count + 1), { expirationTtl: windowSeconds });
+    await next();
+  };
+}
+
+export function sessionRateLimit(scope: string, max: number, windowSeconds: number) {
+  return async function (c: Context<HonoEnv>, next: Next) {
+    const session = c.get('session');
+    if (!session) { await next(); return; }
+    const kvKey = `rl:${scope}:${session.sub}`;
+    const raw = await c.env.CACHE.get(kvKey);
+    const count = raw ? parseInt(raw, 10) : 0;
+    if (count >= max) {
+      return c.json({ success: false, error: 'Too many requests. Please wait before retrying.' }, 429);
+    }
+    await c.env.CACHE.put(kvKey, String(count + 1), { expirationTtl: windowSeconds });
+    await next();
+  };
+}

@@ -6,25 +6,27 @@ interface DebugEntry { turn: number; utterance: string; tool_calls: ToolCall[]; 
 
 interface Props { sector: string; base: string }
 
-// ── Speech helpers ────────────────────────────────────────────────────────────
+// ── Speech helpers — Deepgram STT + Cartesia TTS ─────────────────────────────
 
-const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+const CA_KEY = import.meta.env.VITE_CARTESIA_API_KEY ?? '';
+const CA_VOICE = import.meta.env.VITE_CARTESIA_VOICE_ID ?? '791d5162-d5eb-40f0-8189-f19db44611d8';
 
-function speak(text: string, onEnd?: () => void) {
-  if (!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = 'en-US';
-  utt.rate = 1.05;
-  // Prefer a female voice if available
-  const voices = window.speechSynthesis.getVoices();
-  const preferred = voices.find(v => /samantha|zira|google us english|joanna/i.test(v.name))
-    ?? voices.find(v => v.lang === 'en-US' && v.name.toLowerCase().includes('female'))
-    ?? voices.find(v => v.lang === 'en-US')
-    ?? null;
-  if (preferred) utt.voice = preferred;
-  if (onEnd) utt.onend = onEnd;
-  window.speechSynthesis.speak(utt);
+async function speak(text: string, onEnd?: () => void) {
+  const res = await fetch('https://api.cartesia.ai/tts/bytes', {
+    method: 'POST',
+    headers: { 'Cartesia-Version': '2025-04-16', 'X-API-Key': CA_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model_id: 'sonic-3',
+      transcript: text,
+      voice: { mode: 'id', id: CA_VOICE },
+      output_format: { container: 'wav', encoding: 'pcm_f32le', sample_rate: 44100 },
+    }),
+  });
+  if (!res.ok) { console.error('Cartesia TTS error', res.status); onEnd?.(); return; }
+  const url = URL.createObjectURL(await res.blob());
+  const audio = new Audio(url);
+  audio.onended = () => { URL.revokeObjectURL(url); onEnd?.(); };
+  audio.play();
 }
 
 // No shared secret sent from browser — JWT Bearer token is the only auth
@@ -40,7 +42,15 @@ const s = {
   tag:   { background: '#1a1a2e', color: '#a78bff', padding: '2px 8px', borderRadius: 99, fontSize: 11, border: '1px solid #6c47ff33' } as React.CSSProperties,
 };
 
+
 export default function VoiceTest({ sector: defaultSector, base }: Props) {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    const h = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
+  }, []);
+
   const [sector, setSector] = useState(defaultSector);
   const [customerId, setCustomerId] = useState('customer-001');
   const [token, setToken] = useState<string | null>(null);
@@ -59,7 +69,8 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
   const [speaking, setSpeaking] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const srRef = useRef<any>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     fetch(`${base}/sectors`).then(r => r.json()).then(json => { if (json.success) setSectors(json.data); }).catch(() => {});
@@ -95,7 +106,6 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
       if (!json.success) { notify(`Auth failed: ${json.error}`, false); return; }
 
       stopListening();
-      window.speechSynthesis?.cancel();
       setSpeaking(false);
       setToken(json.data.token);
       setSession({ tier: json.data.account.tier, credit: json.data.account.store_credit_cents });
@@ -157,37 +167,57 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [utterance, token, loading, history, voiceMode, debugLog.length, base]);
 
-  const startListening = useCallback(() => {
-    if (!SR || !token || loading) return;
-    const sr = new SR();
-    srRef.current = sr;
-    sr.lang = 'en-US';
-    sr.interimResults = false;
-    sr.maxAlternatives = 1;
-    sr.onstart = () => setListening(true);
-    sr.onend = () => setListening(false);
-    sr.onerror = (e: any) => { setListening(false); if (e.error !== 'no-speech') notify(`Mic: ${e.error}`, false); };
-    sr.onresult = (e: any) => {
-      const transcript = e.results[0][0].transcript;
-      setListening(false);
-      sendTurn(transcript);
-    };
-    sr.start();
-  }, [token, loading, sendTurn]);
+  const startListening = useCallback(async () => {
+    if (!token || loading) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(
+        t => MediaRecorder.isTypeSupported(t)
+      ) ?? '';
+      chunksRef.current = [];
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setListening(false);
+        const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
+        if (blob.size < 1000) return; // too short, ignore
+        try {
+          const res = await fetch(`${base}/avery/transcribe`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType || 'audio/webm' },
+            body: blob,
+          });
+          const json = await res.json();
+          if (!json.success) { notify(`Transcription failed: ${json.error}`, false); return; }
+          const transcript = json.data.transcript;
+          if (transcript) sendTurn(transcript);
+        } catch (e: any) {
+          notify(`Transcription error: ${e.message}`, false);
+        }
+      };
+
+      recorder.start();
+      setListening(true);
+    } catch (e: any) {
+      notify(`Mic: ${e.message}`, false);
+    }
+  }, [token, loading, sendTurn, base]);
 
   const stopListening = useCallback(() => {
-    srRef.current?.stop();
-    setListening(false);
+    recorderRef.current?.stop();
+    recorderRef.current = null;
   }, []);
 
   const toggleVoice = () => {
     if (voiceMode) {
       stopListening();
-      window.speechSynthesis?.cancel();
       setSpeaking(false);
       setVoiceMode(false);
     } else {
-      if (!SR) { notify('Speech recognition not supported in this browser', false); return; }
       setVoiceMode(true);
       startListening();
     }
@@ -238,14 +268,8 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
           </div>
           <div>
             <label style={s.label}>Business</label>
-            <select
-              style={{ ...s.input, cursor: 'pointer' }}
-              value={sector}
-              onChange={e => setSector(e.target.value)}
-            >
-              {sectors.map(s => (
-                <option key={s.key} value={s.key}>{s.name}</option>
-              ))}
+            <select style={{ ...s.input, cursor: 'pointer' }} value={sector} onChange={e => setSector(e.target.value)}>
+              {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
             </select>
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end' }}>
