@@ -28,3 +28,8 @@ npm-debug.log*
 # Editor
 .vscode/
 .idea/
+
+# Python
+__pycache__/
+*.pyc
+domain_results.csv
