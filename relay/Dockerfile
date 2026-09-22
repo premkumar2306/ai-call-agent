@@ -5,8 +5,8 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --production
 
-COPY index.js ./
+COPY relay.js ./
 
 EXPOSE 8080
 
-CMD ["node", "index.js"]
+CMD ["node", "relay.js"]

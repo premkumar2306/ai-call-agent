@@ -42,9 +42,12 @@ export async function withTwilioSession(c: Context<HonoEnv>, next: Next) {
     }
   }
 
-  // No token — use default caller session if configured
+  // No token — ?businessType= query param overrides the env var default
   // Support both new TWILIO_DEFAULT_BUSINESS_TYPE and legacy TWILIO_DEFAULT_SECTOR
-  const businessType = c.env.TWILIO_DEFAULT_BUSINESS_TYPE ?? c.env.TWILIO_DEFAULT_SECTOR;
+  const businessType =
+    c.req.query('businessType') ??
+    c.env.TWILIO_DEFAULT_BUSINESS_TYPE ??
+    c.env.TWILIO_DEFAULT_SECTOR;
   const sub          = c.env.TWILIO_DEFAULT_CUSTOMER_HASH;
   if (businessType && sub) {
     const now = Math.floor(Date.now() / 1000);
@@ -65,9 +68,9 @@ export async function withTwilioSession(c: Context<HonoEnv>, next: Next) {
 }
 
 // Service-to-service auth — keep off the browser
-export async function withAverySecret(c: Context<HonoEnv>, next: Next) {
-  if (c.req.header('x-avery-secret') !== c.env.AVERY_SECRET) {
-    return c.json({ success: false, error: 'Invalid Avery secret' }, 401);
+export async function withMogiSecret(c: Context<HonoEnv>, next: Next) {
+  if (c.req.header('x-mogi-secret') !== c.env.MOGI_SECRET) {
+    return c.json({ success: false, error: 'Invalid Mogi secret' }, 401);
   }
   await next();
 }

@@ -6,7 +6,7 @@ import type { HonoEnv } from './middleware';
 import { authRouter } from './routes/auth';
 import { catalogRouter } from './routes/catalog';
 import { ordersRouter } from './routes/orders';
-import { averyRouter } from './routes/avery';
+import { mogiRouter } from './routes/mogi';
 import { twilioRouter } from './routes/twilio';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
@@ -14,27 +14,25 @@ import { whatsappRouter } from './routes/whatsapp';
 const app = new Hono<HonoEnv>();
 
 // ── CORS ───────────────────────────────────────────────────────────────────
-// Allow the production Pages domain, any Cloudflare Pages preview deploy
-// (*.avery-admin.pages.dev), and local dev.
 app.use('*', cors({
   origin: (origin) => {
     if (!origin) return null;
     if (
-      origin === 'https://avery-admin.pages.dev' ||
-      origin.endsWith('.avery-admin.pages.dev') ||
+      origin === 'https://mogi-admin.pages.dev' ||
+      origin.endsWith('.mogi-admin.pages.dev') ||
       /^http:\/\/localhost:\d+$/.test(origin)
     ) return origin;
     return null;
   },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-Avery-Secret', 'X-Dev-Customer-Id', 'X-Admin-Key'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Mogi-Secret', 'X-Dev-Customer-Id', 'X-Admin-Key'],
 }));
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.route('/auth',    authRouter);
 app.route('/catalog', catalogRouter);
 app.route('/orders',  ordersRouter);
-app.route('/avery',   averyRouter);
+app.route('/mogi',    mogiRouter);
 app.route('/twilio',    twilioRouter);
 app.route('/admin',    adminRouter);
 app.route('/whatsapp', whatsappRouter);

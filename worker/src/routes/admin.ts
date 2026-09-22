@@ -21,7 +21,7 @@ function defaultConfig(name: string, sector: string): SectorConfig {
   return {
     storeName: name,
     greeting: `Welcome to ${name}! How can I help you today?`,
-    agentName: 'Avery',
+    agentName: 'Mogi',
     primaryColor: '#6c47ff',
     supportEmail: '',
     maxRecommendations: 3,

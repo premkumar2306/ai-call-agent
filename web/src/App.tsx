@@ -31,7 +31,7 @@ export default function App() {
     <div className="min-h-screen" style={{ background: '#0a0a0f', color: '#e0e0e0', fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
       {/* Header */}
       <header style={{ background: '#12121a', borderBottom: '1px solid #222', padding: '16px 32px', display: 'flex', alignItems: 'center', gap: 16 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: '#fff', margin: 0 }}>Avery</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: '#fff', margin: 0 }}>Mogi</h1>
         <span style={{ background: '#6c47ff22', color: '#a78bff', padding: '2px 10px', borderRadius: 99, fontSize: 12, border: '1px solid #6c47ff44' }}>
           Client Dashboard
         </span>

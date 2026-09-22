@@ -42,7 +42,7 @@ const ADMIN_KEY = import.meta.env.VITE_ADMIN_KEY ?? '';
 
 export default function Dashboard({ sector, base }: Props) {
   const [cfg, setCfg] = useState<SectorConfig>({
-    storeName: '', greeting: '', agentName: 'Avery',
+    storeName: '', greeting: '', agentName: 'Mogi',
     primaryColor: '#6c47ff', supportEmail: '', maxRecommendations: 3,
   });
   const [saving, setSaving] = useState(false);
@@ -94,7 +94,7 @@ export default function Dashboard({ sector, base }: Props) {
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Agent Name</label>
-            <input style={inputStyle} value={cfg.agentName} onChange={set('agentName')} placeholder="Avery" />
+            <input style={inputStyle} value={cfg.agentName} onChange={set('agentName')} placeholder="Mogi" />
           </div>
         </div>
 

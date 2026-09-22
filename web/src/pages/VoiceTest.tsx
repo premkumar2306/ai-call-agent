@@ -113,7 +113,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
       setDebugLog([]);
       setTranscripts([]);
 
-      const ctx = await fetch(`${base}/avery/context`, {
+      const ctx = await fetch(`${base}/mogi/context`, {
         headers: { 'Authorization': `Bearer ${json.data.token}`, 'Content-Type': 'application/json' },
       });
       const ctxJson = await ctx.json();
@@ -134,7 +134,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
     setHistory(prev => [...prev, { role: 'user', content: text }]);
 
     try {
-      const res = await fetch(`${base}/avery/voice-turn`, {
+      const res = await fetch(`${base}/mogi/voice-turn`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ utterance: text, history }),
@@ -186,7 +186,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
         const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
         if (blob.size < 1000) return; // too short, ignore
         try {
-          const res = await fetch(`${base}/avery/transcribe`, {
+          const res = await fetch(`${base}/mogi/transcribe`, {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}`, 'Content-Type': mimeType || 'audio/webm' },
             body: blob,
@@ -225,7 +225,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
 
   const loadTranscripts = async () => {
     if (!token) return;
-    const res = await fetch(`${base}/avery/transcripts`, {
+    const res = await fetch(`${base}/mogi/transcripts`, {
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
     const json = await res.json();
@@ -235,7 +235,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
 
   const sendEmail = async () => {
     if (!emailTo || !token || !history.length) { notify('Enter email and have a conversation first', false); return; }
-    const res = await fetch(`${base}/avery/email-transcript`, {
+    const res = await fetch(`${base}/mogi/email-transcript`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ email: emailTo, history }),
@@ -299,13 +299,13 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
               borderBottomRightRadius: msg.role === 'user' ? 3 : 12,
               borderBottomLeftRadius: msg.role === 'user' ? 12 : 3,
             }}>
-              {msg.role === 'assistant' && <div style={{ fontSize: 10, color: '#666', marginBottom: 3 }}>AVERY</div>}
+              {msg.role === 'assistant' && <div style={{ fontSize: 10, color: '#666', marginBottom: 3 }}>MOGI</div>}
               {msg.content}
             </div>
           ))}
           {loading && (
             <div style={{ alignSelf: 'flex-start', color: '#555', fontSize: 13, fontStyle: 'italic' }}>
-              Avery is thinking…
+              Mogi is thinking…
             </div>
           )}
         </div>
@@ -331,7 +331,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
             {!hasSession && <span style={{ color: '#444' }}>Start a session to use voice</span>}
             {hasSession && !voiceMode && <span style={{ color: '#666' }}>Click mic to enable voice mode</span>}
             {hasSession && voiceMode && listening && <span style={{ color: '#ef4444', fontWeight: 600 }}>Listening… speak now</span>}
-            {hasSession && voiceMode && speaking && <span style={{ color: '#a78bff', fontWeight: 600 }}>Avery is speaking…</span>}
+            {hasSession && voiceMode && speaking && <span style={{ color: '#a78bff', fontWeight: 600 }}>Mogi is speaking…</span>}
             {hasSession && voiceMode && !listening && !speaking && !loading && <span style={{ color: '#4ade80' }}>Voice mode active — tap mic to speak</span>}
             {hasSession && voiceMode && loading && <span style={{ color: '#facc15' }}>Processing…</span>}
           </div>

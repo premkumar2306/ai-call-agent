@@ -1,6 +1,6 @@
 # Add New Vertical
 
-Add a new business to the Avery voice platform using **API calls only** — no CLI, no code changes, works from mobile.
+Add a new business to the Mogi voice platform using **API calls only** — no CLI, no code changes, works from mobile.
 
 The user may provide:
 - A business name + city (e.g. "Riverwoods Smiles, Dentist in Riverwoods Illinois")
@@ -40,7 +40,7 @@ Search strategy:
 ## Step 3 — Save sector
 
 ```bash
-curl -s -X POST https://avery-platform.premkumar-2ba.workers.dev/admin/sectors \
+curl -s -X POST https://mogi-platform.premkumar-2ba.workers.dev/admin/sectors \
   -H "Content-Type: application/json" \
   -d '{
     "key": "<key>",
@@ -63,7 +63,7 @@ Expect `{ "success": true }`.
 ## Step 4 — Save vendor(s)
 
 ```bash
-curl -s -X POST https://avery-platform.premkumar-2ba.workers.dev/admin/vendors \
+curl -s -X POST https://mogi-platform.premkumar-2ba.workers.dev/admin/vendors \
   -H "Content-Type: application/json" \
   -d '[
     { "id": "v-<key>-main", "name": "<Business Name>", "business_type": "<key>", "contact_email": "info@example.com" }
@@ -77,7 +77,7 @@ curl -s -X POST https://avery-platform.premkumar-2ba.workers.dev/admin/vendors \
 Post the full product list in one call:
 
 ```bash
-curl -s -X POST https://avery-platform.premkumar-2ba.workers.dev/admin/products \
+curl -s -X POST https://mogi-platform.premkumar-2ba.workers.dev/admin/products \
   -H "Content-Type: application/json" \
   -d '[
     {
@@ -118,14 +118,14 @@ curl -s -X POST https://avery-platform.premkumar-2ba.workers.dev/admin/products 
 ## Step 6 — Verify
 
 ```bash
-curl -s https://avery-platform.premkumar-2ba.workers.dev/sectors
+curl -s https://mogi-platform.premkumar-2ba.workers.dev/sectors
 ```
 
 The new business appears in the dropdown immediately — no deploy needed.
 
 Also verify products:
 ```bash
-curl -s https://avery-platform.premkumar-2ba.workers.dev/admin/products/<key>
+curl -s https://mogi-platform.premkumar-2ba.workers.dev/admin/products/<key>
 ```
 
 ---
@@ -140,7 +140,7 @@ Address: <address> | <phone>
 Hours: <summary>
 
 Products: <N> services seeded
-Live at: https://avery-platform.premkumar-2ba.workers.dev/sectors
+Live at: https://mogi-platform.premkumar-2ba.workers.dev/sectors
 
 Test flows:
   "What do you offer?"   → search_services

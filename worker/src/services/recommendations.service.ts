@@ -52,5 +52,5 @@ export function getSectorGreeting(sector: string, storeCreditCents: number, _tie
   };
 
   const tagline = taglines[sector] ?? "How can I assist you today?";
-  return `Hi! I'm Avery, your ${bizName} assistant.${credit} ${tagline}`;
+  return `Hi! I'm Mogi, your ${bizName} assistant.${credit} ${tagline}`;
 }

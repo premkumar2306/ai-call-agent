@@ -12,6 +12,13 @@ import {
   getUnclearServiceEscalationResponse,
   shouldEscalateUnclearService,
 } from '../services/voice-guard.service';
+import {
+  classifyCall,
+  getCrisisResponse,
+  getFollowUpQuestion,
+  buildClassificationContext,
+  type CallClassification,
+} from '../services/call-classifier.service';
 import type { Env } from '../types';
 
 const twilioRouter = new Hono<HonoEnv>();
@@ -28,6 +35,17 @@ async function loadHistory(env: Env, callSid: string): Promise<Turn[]> {
 
 async function saveHistory(env: Env, callSid: string, history: Turn[]): Promise<void> {
   await env.CART.put(`call:${callSid}`, JSON.stringify(history), { expirationTtl: 3600 });
+}
+
+// ── Health-nav classification cache (CART KV, 1-hour TTL) ────────────────────
+
+async function loadClassification(env: Env, callSid: string): Promise<CallClassification | null> {
+  const raw = await env.CART.get(`clf:${callSid}`);
+  return raw ? JSON.parse(raw) : null;
+}
+
+async function saveClassification(env: Env, callSid: string, clf: CallClassification): Promise<void> {
+  await env.CART.put(`clf:${callSid}`, JSON.stringify(clf), { expirationTtl: 3600 });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -89,7 +107,7 @@ twilioRouter.post('/inbound', async (c, next) => {
   const token     = c.req.query('token');
   const turnUrl   = token ? `/twilio/turn?token=${encodeURIComponent(token)}` : '/twilio/turn';
 
-  const greeting = `Welcome to ${storeName}. I'm Avery, your voice assistant. How can I help you today?`;
+  const greeting = `Welcome to ${storeName}. I'm Mogi, your voice assistant. How can I help you today?`;
 
   // Seed KV with the greeting so turn 1 has context
   if (callSid) {
@@ -127,15 +145,17 @@ twilioRouter.post('/turn', async (c, next) => {
     // ── Load full call history ──────────────────────────────────────────────
     const history = await loadHistory(c.env, callSid);
 
-    // ── Build context ───────────────────────────────────────────────────────
-    const [ordersResult, productsResult] = await Promise.allSettled([
-      getOrders(c.env, sub, businessType),
-      getProducts(c.env, businessType),
-    ]);
+    // ── Build context ─────────────────────────────────────────────────────────
+    const [ordersResult, productsResult] = businessType === 'health_nav'
+      ? [{ status: 'fulfilled' as const, value: [] }, { status: 'fulfilled' as const, value: [] }]
+      : await Promise.allSettled([
+          getOrders(c.env, sub, businessType),
+          getProducts(c.env, businessType),
+        ]);
     const recentOrders = ordersResult.status === 'fulfilled'
-      ? ordersResult.value.slice(0, 3).map(o => `${o.productName} (${o.status})`) : [];
+      ? ordersResult.value.slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
     const recs = productsResult.status === 'fulfilled'
-      ? scoreProducts(productsResult.value, account.store_credit_cents).slice(0, 3).map(r => r.name) : [];
+      ? scoreProducts(productsResult.value as any[], account.store_credit_cents).slice(0, 3).map((r: any) => r.name) : [];
 
     const sectorMeta = await getSector(c.env, businessType);
     const bizName = sectorMeta?.name ?? businessType;
@@ -153,8 +173,15 @@ twilioRouter.post('/turn', async (c, next) => {
       return c.text(twiml(spokenResponse, turnUrl), 200, { 'Content-Type': 'text/xml' });
     }
 
-    const systemPrompt =
-`You are Avery, a warm and friendly scheduling assistant for ${bizName}, on a live phone call. You sound like a real, helpful person — not a robot.
+    const systemPrompt = businessType === 'health_nav'
+      ? `You are Mogi, a health plan member services specialist for ${bizName}, on a live phone call. You are empathetic, knowledgeable about insurance, and speak like a real person — warm and clear, never robotic.
+
+VOICE RULES:
+1. Max 2 sentences per turn. Natural speech, no lists, no markdown.
+2. Never guess coverage, claim outcomes, or auth decisions — call search_services first.
+3. For urgent clinical or emergency concerns: skip pleasantries, act immediately.
+4. To discuss specific coverage details, first confirm the member's date of birth or member ID.`
+      : `You are Mogi, a warm and friendly scheduling assistant for ${bizName}, on a live phone call. You sound like a real, helpful person — not a robot.
 Customer: ${account.tier} tier | $${(account.store_credit_cents / 100).toFixed(2)} store credit
 Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}
 
@@ -239,6 +266,39 @@ RULES — follow exactly every single turn:
     return c.text(twiml("I'm having technical difficulties. Please try again.", turnUrl), 200,
       { 'Content-Type': 'text/xml' });
   }
+});
+
+// ── POST /twilio/status ───────────────────────────────────────────────────────
+// Twilio fires this when a call ends. We classify the full transcript here so
+// per-turn latency is never affected by the classifier.
+
+twilioRouter.post('/status', async (c) => {
+  const body       = await c.req.parseBody();
+  const callSid    = body.CallSid as string | undefined;
+  const callStatus = body.CallStatus as string | undefined;
+
+  if (!callSid || callStatus !== 'completed') return c.text('ok', 200);
+
+  // Run classification fire-and-forget so we return 200 to Twilio immediately
+  (async () => {
+    try {
+      const history = await loadHistory(c.env, callSid);
+      if (!history.length) return;
+
+      const combinedTranscript = history
+        .map(t => `${t.role === 'user' ? 'MEMBER' : 'AGENT'}: ${t.content}`)
+        .join('\n');
+
+      const clf = await classifyCall(combinedTranscript, c.env.ANTHROPIC_API_KEY);
+      await c.env.CART.put(`clf:completed:${callSid}`, JSON.stringify(clf), { expirationTtl: 86400 });
+
+      console.log(`[${callSid.slice(-8)}] end-of-call clf: ${clf.primary_category}.${clf.primary_intent} (${clf.confidence.toFixed(2)}) flags=${clf.compliance_flags.join(',') || 'none'}`);
+    } catch (e: any) {
+      console.error(`[status] clf error ${callSid?.slice(-8)}:`, e.message);
+    }
+  })();
+
+  return c.text('ok', 200);
 });
 
 export { twilioRouter };

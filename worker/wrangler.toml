@@ -1,11 +1,11 @@
-name = "avery-platform"
+name = "mogi-platform"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "avery-platform"
+database_name = "mogi-platform"
 database_id = "c821ca43-764a-48b0-b10c-55a8e9cc05f8"
 migrations_dir = "drizzle"
 

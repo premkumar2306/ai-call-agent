@@ -79,7 +79,7 @@ export interface Env {
   CART: KVNamespace;
   TOKEN_SECRET: string;
   CUSTOMER_HASH_SALT: string;
-  AVERY_SECRET: string;
+  MOGI_SECRET: string;
   ADMIN_SECRET: string;
   ANTHROPIC_API_KEY: string;
   DEEPGRAM_API_KEY?: string;

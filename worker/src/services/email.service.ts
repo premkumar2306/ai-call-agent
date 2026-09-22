@@ -10,7 +10,7 @@ export interface TranscriptEntry {
 
 function formatTranscript(history: TranscriptEntry[], storeName: string): string {
   const lines = history.map(h =>
-    `${h.role === 'user' ? 'You' : 'Avery'}: ${h.content}`
+    `${h.role === 'user' ? 'You' : 'Mogi'}: ${h.content}`
   );
   return `Your ${storeName} Voice Session Transcript\n${'─'.repeat(50)}\n\n${lines.join('\n\n')}\n\n${'─'.repeat(50)}\nThank you for choosing ${storeName}!`;
 }
@@ -19,7 +19,7 @@ function formatHtml(history: TranscriptEntry[], storeName: string): string {
   const rows = history.map(h => {
     const isUser = h.role === 'user';
     const color = isUser ? '#1a1a2e' : '#6c47ff';
-    const label = isUser ? 'You' : 'Avery';
+    const label = isUser ? 'You' : 'Mogi';
     return `<tr>
       <td style="padding:8px 0">
         <span style="font-weight:700;color:${color}">${label}:</span>
@@ -48,7 +48,7 @@ export async function emailTranscript(
   storeName?: string,
 ): Promise<void> {
   const name = storeName ?? businessType;
-  const from = fromEmail ?? `Avery <avery@avery.ai>`;
+  const from = fromEmail ?? `Mogi <mogi@mogi.ai>`;
 
   if (!apiKey || apiKey === 'CHANGE_ME') {
     console.log(`\n[EMAIL] Would send transcript to ${to}:\n${formatTranscript(history, name)}\n`);

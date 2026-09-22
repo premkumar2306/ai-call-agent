@@ -9,7 +9,7 @@
  *    After expiry, use approved Message Templates (not implemented here — escalate
  *    to a human agent or ask the user to message again).
  *
- * 3. AI / AUTOMATION DISCLOSURE: If a user asks "am I talking to a bot/AI?", Avery
+ * 3. AI / AUTOMATION DISCLOSURE: If a user asks "am I talking to a bot/AI?", Mogi
  *    MUST answer honestly. The system prompt includes an explicit rule for this.
  *    Do NOT claim to be human.
  *
@@ -18,7 +18,7 @@
  *    opt-out keywords before the agentic loop.
  *
  * 5. NO PROHIBITED CONTENT: Do not send spam, misleading info, or illegal offers.
- *    The Avery system prompt already prevents hallucinated prices/services.
+ *    The Mogi system prompt already prevents hallucinated prices/services.
  *
  * 6. DATA MINIMISATION: Phone numbers are HMAC-hashed before any DB storage.
  *    Raw numbers never appear in D1, KV, or logs.
@@ -344,7 +344,7 @@ whatsappRouter.post('/webhook', async (c) => {
 
     // 18. Build system prompt
     const systemPrompt =
-`You are Avery, a warm and friendly scheduling assistant for ${bizName}, on WhatsApp.
+`You are Mogi, a warm and friendly scheduling assistant for ${bizName}, on WhatsApp.
 
 Customer: ${account.tier} tier | $${credit} store credit
 Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}
@@ -352,7 +352,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}
 CHANNEL: WhatsApp text chat. You may write 2–4 sentences. Use *bold* for service names and prices.
 Do NOT use markdown headers or long bullet lists. Be warm, concise, and helpful.
 PRICES: Always use $ (dollars). Never ₹ or other symbols.
-HONESTY: If asked whether you are a bot or AI, always say yes — you are Avery, an AI assistant.
+HONESTY: If asked whether you are a bot or AI, always say yes — you are Mogi, an AI assistant.
 
 RULES:
 1. NEVER guess prices, times, or service names — always call a tool first.

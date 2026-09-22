@@ -6,16 +6,27 @@ node_modules/
 # Build outputs
 dist/
 build/
+coverage/
 *.tsbuildinfo
+.cache/
 
 # Wrangler
 .wrangler/
 .dev.vars
+.dev.vars.*
 
 # Environment
 .env
 .env.local
 .env.*.local
+
+# Relay test artifacts
+relay/test/received-*.ul
+*.ul
+
+# Local agent/worktree state
+.claude/settings.local.json
+.claude/worktrees/
 
 # OS
 .DS_Store
