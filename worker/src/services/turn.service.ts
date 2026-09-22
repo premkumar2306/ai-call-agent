@@ -41,11 +41,15 @@ export async function runTurn(
   utterance: string,
 ): Promise<TurnResult> {
   const { businessType, account, sub } = session;
+  const tag = callSid.slice(-8);
+  const t0 = Date.now();
+  const lap = (label: string) => console.log(`[${tag}] ⏱ ${label}: ${Date.now() - t0}ms`);
 
-  console.log(`[${callSid.slice(-8)}] ${businessType}: "${utterance.slice(0, 80)}"`);
+  console.log(`[${tag}] ${businessType}: "${utterance.slice(0, 80)}"`);
 
   // ── Load full call history ──────────────────────────────────────────────
   const history = await loadHistory(env, callSid);
+  lap('loadHistory');
 
   // ── Build context ─────────────────────────────────────────────────────────
   const [ordersResult, productsResult] = businessType === 'health_nav'
@@ -54,12 +58,14 @@ export async function runTurn(
         getOrders(env, sub, businessType),
         getProducts(env, businessType),
       ]);
+  lap('orders+products');
   const recentOrders = ordersResult.status === 'fulfilled'
     ? ordersResult.value.slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
   const recs = productsResult.status === 'fulfilled'
     ? scoreProducts(productsResult.value as any[], account.store_credit_cents).slice(0, 3).map((r: any) => r.name) : [];
 
   const sectorMeta = await getSector(env, businessType);
+  lap('getSector');
   const bizName = sectorMeta?.name ?? businessType;
 
   if (shouldEscalateUnclearService(history, utterance)) {
@@ -129,14 +135,16 @@ RULES — follow exactly every single turn:
       tools,
       messages,
     });
+    lap(`anthropic#${i} (${response.stop_reason})`);
 
     if (response.stop_reason === 'tool_use') {
       const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
       const toolResults = await Promise.all(toolBlocks.map(async (tb) => {
-        console.log(`[${callSid.slice(-8)}] tool: ${tb.name}`);
+        console.log(`[${tag}] tool: ${tb.name}`);
         const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, env, sectorMeta);
         return { type: 'tool_result' as const, tool_use_id: tb.id, content: JSON.stringify(result.data ?? { message: result.spoken_response }) };
       }));
+      lap(`tools#${i} (${toolBlocks.map(t => t.name).join(',')})`);
       messages.push({ role: 'assistant', content: response.content });
       messages.push({ role: 'user', content: toolResults });
       continue;
@@ -146,6 +154,7 @@ RULES — follow exactly every single turn:
     spokenResponse = textBlock?.text?.trim() ?? "Sorry, I had trouble with that.";
     break;
   }
+  lap('runTurn total');
 
   if (!spokenResponse) spokenResponse = "I'm having trouble right now. Please try again.";
 
