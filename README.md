@@ -29,7 +29,6 @@ Cloudflare Worker. There's no separate media-relay service to deploy or keep run
 |--------|-----------|
 | `worker/` | Cloudflare Worker — API, AI logic, Twilio webhooks, call-audio Durable Object |
 | `web/` | Cloudflare Pages — React admin dashboard |
-| `relay/` | Legacy Node.js media relay (Fly.io). No longer deployed — the Worker's `CallRelay` Durable Object replaced it. Kept only as an offline local-dev fallback (e.g. macOS `say` TTS with no API keys) and for its synthetic call-test harness (`relay/test/simulate-call.js`). |
 | `.claude/commands/` | `/add-vertical` skill for Claude Code |
 
 ---
@@ -144,22 +143,16 @@ curl -X POST http://localhost:8787/twilio/turn \
 
 The response is TwiML XML containing what Mogi would say.
 
-### Full audio pipeline (STT → LLM → TTS), against a deployed Worker
+### Full audio pipeline (STT → LLM → TTS)
 
-`/twilio/inbound` now returns `<Connect><Stream>` TwiML (no spoken greeting on its own) —
-the actual audio round-trip happens over the `/twilio/stream` WebSocket. Use the relay's
-synthetic call simulator to exercise that path without a real phone call:
-
-```bash
-cd relay
-RELAY_URL="wss://<your-worker>.workers.dev/twilio/stream?businessType=dental" \
-  node test/simulate-call.js                # streams silence — tests connection + greeting
-RELAY_URL="wss://<your-worker>.workers.dev/twilio/stream?businessType=dental" \
-  node test/simulate-call.js path/to/speech.wav   # full STT → LLM → TTS round-trip
-```
-
-Received TTS audio is saved to `relay/test/received-<timestamp>.ul` (play with
-`ffplay -f mulaw -ar 8000 -ac 1 <file>`).
+`/twilio/inbound` returns `<Connect><Stream>` TwiML (no spoken greeting on its own) — the
+actual audio round-trip happens over the `/twilio/stream` WebSocket, upgraded into the
+`CallRelay` Durable Object. To exercise that path without a real phone call, write a small
+script that speaks Twilio's Media Streams protocol directly: connect to
+`wss://<your-worker>.workers.dev/twilio/stream?businessType=dental`, send a JSON
+`{"event":"start","start":{"callSid":"...","streamSid":"..."}}` message, then stream 20ms
+µ-law 8kHz `{"event":"media","media":{"payload":"<base64>"}}` frames — audio (TTS) comes
+back the same way. Otherwise, just place a real call.
 
 ---
 

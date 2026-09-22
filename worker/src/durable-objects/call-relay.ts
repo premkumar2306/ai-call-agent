@@ -59,12 +59,14 @@ export class CallRelay extends DurableObject<Env> {
     this.busy = false;
   }
 
-  private speak(text: string, signal?: AbortSignal): Promise<void> {
+  private async speak(text: string, signal?: AbortSignal): Promise<void> {
     console.log(`[tts] "${text}"`);
-    return cartesiaSpeak(
+    const t0 = Date.now();
+    await cartesiaSpeak(
       { apiKey: this.env.CARTESIA_API_KEY!, voiceId: this.env.CARTESIA_VOICE_ID, modelId: this.env.CARTESIA_MODEL_ID },
       text, this.streamSid, this.twWs!, signal,
     );
+    console.log(`[tts] ⏱ "${text.slice(0, 20)}": ${Date.now() - t0}ms`);
   }
 
   private async handleTranscript(text: string) {
@@ -81,15 +83,23 @@ export class CallRelay extends DurableObject<Env> {
     const { signal } = ac;
 
     try {
-      let done = false;
-      let fi = 0;
       const replyPromise = runTurn(this.env, this.session, this.callSid, text)
         .then(r => r.spokenResponse)
-        .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); return null; })
-        .finally(() => { done = true; });
+        .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); return null; });
 
-      while (!done && !signal.aborted) {
-        await this.speak(FILLERS[fi++ % FILLERS.length], signal);
+      // Most turns finish in ~1s. Give the turn a brief head start before
+      // considering a filler, and play at most one — otherwise a fast turn
+      // still gets several filler phrases stacked in front of the real answer.
+      const FILLER_GRACE_MS = 900;
+      let timer: ReturnType<typeof setTimeout>;
+      const turnFinishedFirst = await Promise.race([
+        replyPromise.then(() => true),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), FILLER_GRACE_MS); }),
+      ]);
+      clearTimeout(timer!);
+
+      if (!turnFinishedFirst && !signal.aborted) {
+        await this.speak(FILLERS[Math.floor(Math.random() * FILLERS.length)], signal);
       }
 
       const reply = await replyPromise;
