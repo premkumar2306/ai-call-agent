@@ -10,17 +10,26 @@ AI-powered voice assistant for multi-vertical businesses (auto shop, clinic, rea
 
 ```
 Caller → Twilio → Cloudflare Worker (Hono API)
-                        ├── Anthropic Claude (voice AI)
+                        ├── /twilio/inbound  → <Connect><Stream> TwiML
+                        ├── /twilio/stream   → CallRelay Durable Object (1 per call)
+                        │                        ├── Deepgram (STT)
+                        │                        ├── Cartesia (TTS)
+                        │                        └── runTurn() ─┐
+                        ├── Anthropic Claude (voice AI) ────────┘
                         ├── D1 Database (products, orders, transcripts)
                         └── KV Store (catalog cache, call history)
 
 Browser → Cloudflare Pages (React admin UI)
 ```
 
+Everything — call audio streaming, STT/TTS, and the LLM agent loop — runs inside the
+Cloudflare Worker. There's no separate media-relay service to deploy or keep running.
+
 | Folder | What it is |
 |--------|-----------|
-| `worker/` | Cloudflare Worker — API, AI logic, Twilio webhooks |
+| `worker/` | Cloudflare Worker — API, AI logic, Twilio webhooks, call-audio Durable Object |
 | `web/` | Cloudflare Pages — React admin dashboard |
+| `relay/` | Legacy Node.js media relay (Fly.io). No longer deployed — the Worker's `CallRelay` Durable Object replaced it. Kept only as an offline local-dev fallback (e.g. macOS `say` TTS with no API keys) and for its synthetic call-test harness (`relay/test/simulate-call.js`). |
 | `.claude/commands/` | `/add-vertical` skill for Claude Code |
 
 ---
@@ -32,7 +41,13 @@ Browser → Cloudflare Pages (React admin UI)
 3. Say what you need — e.g. *"What are your hours on Saturday?"* or *"I need an oil change"*
 4. Avery searches services, checks availability, and can book an appointment
 
-The call goes: Twilio → `/twilio/inbound` (greeting) → `/twilio/turn` (each spoken exchange).
+The call goes: Twilio → `/twilio/inbound` (returns a `<Stream>` TwiML) → `/twilio/stream`
+(WebSocket, upgrades into a per-call `CallRelay` Durable Object) → Deepgram STT → the LLM
+agent loop (`runTurn()`) → Cartesia TTS streamed back to the caller, with barge-in support
+(interrupting the assistant mid-sentence starts a new turn immediately).
+
+`/twilio/turn` (plain HTTP, TwiML in/out) still exists as a thin wrapper around the same
+`runTurn()` logic — useful for `curl`-based testing without a real phone call (see below).
 
 ---
 
@@ -74,6 +89,9 @@ wrangler secret put TOKEN_SECRET           # any 32+ char random string
 wrangler secret put CUSTOMER_HASH_SALT     # any random string
 wrangler secret put AVERY_SECRET           # any random string
 wrangler secret put TWILIO_AUTH_TOKEN      # from Twilio console
+wrangler secret put DEEPGRAM_API_KEY       # speech-to-text for live calls
+wrangler secret put CARTESIA_API_KEY       # text-to-speech for live calls
+wrangler secret put CARTESIA_VOICE_ID      # optional — has a built-in default
 ```
 
 ### 4. Run the database migrations locally
@@ -116,19 +134,32 @@ npm run dev
 
 ## Testing Voice Turns Locally
 
-Simulate a Twilio webhook call without an actual phone:
+### Text-only turns (no audio, fastest)
 
 ```bash
-# Start inbound call
-curl -X POST http://localhost:8787/twilio/inbound \
-  -d "CallSid=test-call-001"
-
-# Send a spoken turn
+# Send a spoken turn straight to the LLM agent loop
 curl -X POST http://localhost:8787/twilio/turn \
   -d "CallSid=test-call-001&SpeechResult=What+are+your+Saturday+hours"
 ```
 
-The response is TwiML XML containing what Avery would say.
+The response is TwiML XML containing what Mogi would say.
+
+### Full audio pipeline (STT → LLM → TTS), against a deployed Worker
+
+`/twilio/inbound` now returns `<Connect><Stream>` TwiML (no spoken greeting on its own) —
+the actual audio round-trip happens over the `/twilio/stream` WebSocket. Use the relay's
+synthetic call simulator to exercise that path without a real phone call:
+
+```bash
+cd relay
+RELAY_URL="wss://<your-worker>.workers.dev/twilio/stream?businessType=dental" \
+  node test/simulate-call.js                # streams silence — tests connection + greeting
+RELAY_URL="wss://<your-worker>.workers.dev/twilio/stream?businessType=dental" \
+  node test/simulate-call.js path/to/speech.wav   # full STT → LLM → TTS round-trip
+```
+
+Received TTS audio is saved to `relay/test/received-<timestamp>.ul` (play with
+`ffplay -f mulaw -ar 8000 -ac 1 <file>`).
 
 ---
 

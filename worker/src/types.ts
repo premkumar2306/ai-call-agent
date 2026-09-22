@@ -83,6 +83,10 @@ export interface Env {
   ADMIN_SECRET: string;
   ANTHROPIC_API_KEY: string;
   DEEPGRAM_API_KEY?: string;
+  CARTESIA_API_KEY?: string;
+  CARTESIA_VOICE_ID?: string;
+  CARTESIA_MODEL_ID?: string;
+  RELAY_DO: DurableObjectNamespace;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   TWILIO_AUTH_TOKEN?: string;
