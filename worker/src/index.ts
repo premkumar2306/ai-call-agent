@@ -11,6 +11,8 @@ import { twilioRouter } from './routes/twilio';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 
+export { CallRelay } from './durable-objects/call-relay';
+
 const app = new Hono<HonoEnv>();
 
 // ── CORS ───────────────────────────────────────────────────────────────────
@@ -18,8 +20,8 @@ app.use('*', cors({
   origin: (origin) => {
     if (!origin) return null;
     if (
-      origin === 'https://mogi-admin.pages.dev' ||
-      origin.endsWith('.mogi-admin.pages.dev') ||
+      origin === 'https://avery-admin.pages.dev' ||
+      origin.endsWith('.avery-admin.pages.dev') ||
       /^http:\/\/localhost:\d+$/.test(origin)
     ) return origin;
     return null;
