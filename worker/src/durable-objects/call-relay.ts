@@ -152,7 +152,10 @@ export class CallRelay extends DurableObject<Env> {
 
       const sectorMeta = businessType ? await getSector(this.env, businessType).catch(() => null) : null;
       const storeName = sectorMeta?.name ?? businessType ?? 'us';
-      const greeting = `Welcome to ${storeName}. I'm Mogi, your voice assistant. How can I help you today?`;
+      const capabilityHint = businessType === 'health_nav'
+        ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
+        : "I can tell you about our services and hours, or book you an appointment — what can I help with?";
+      const greeting = `Welcome to ${storeName}. I'm Mogi, your voice assistant. ${capabilityHint}`;
 
       this.busy = true;
       this.speak(greeting)
