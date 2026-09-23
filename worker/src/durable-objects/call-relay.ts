@@ -59,12 +59,12 @@ export class CallRelay extends DurableObject<Env> {
     this.busy = false;
   }
 
-  private async speak(text: string, signal?: AbortSignal): Promise<void> {
+  private async speak(text: string, signal?: AbortSignal, sendMark: boolean = true): Promise<void> {
     console.log(`[tts] "${text}"`);
     const t0 = Date.now();
     await cartesiaSpeak(
       { apiKey: this.env.CARTESIA_API_KEY!, voiceId: this.env.CARTESIA_VOICE_ID, modelId: this.env.CARTESIA_MODEL_ID },
-      text, this.streamSid, this.twWs!, signal,
+      text, this.streamSid, this.twWs!, signal, sendMark,
     );
     console.log(`[tts] ⏱ "${text.slice(0, 20)}": ${Date.now() - t0}ms`);
   }
@@ -81,33 +81,54 @@ export class CallRelay extends DurableObject<Env> {
     const ac = new AbortController();
     this.currentAbort = ac;
     const { signal } = ac;
+    const tag = this.callSid.slice(-8);
+    const t0 = Date.now();
+
+    // Chunks stream in from runTurn() as sentences become ready; chain them
+    // so TTS calls run strictly one-after-another (no overlapping audio) and
+    // so barge-in (via `signal`) stops the sequence cleanly instead of
+    // continuing to speak already-queued chunks.
+    let chunkChain: Promise<void> = Promise.resolve();
+    let firstChunkLogged = false;
+
+    // Fallback only: if the model hasn't produced its first spoken chunk
+    // within this window (e.g. a slow tool call before any text), say
+    // something so the caller isn't met with dead air. With streaming,
+    // real turns should usually beat this comfortably, so it should rarely
+    // fire — kept as a safety net rather than the primary latency fix it
+    // used to be.
+    const FILLER_GRACE_MS = 1500;
+    const fillerTimer = setTimeout(() => {
+      if (!firstChunkLogged && !signal.aborted) {
+        onChunk(FILLERS[Math.floor(Math.random() * FILLERS.length)]);
+      }
+    }, FILLER_GRACE_MS);
+
+    const onChunk = (chunk: string): Promise<void> => {
+      chunkChain = chunkChain.then(async () => {
+        if (signal.aborted) return;
+        clearTimeout(fillerTimer);
+        if (!firstChunkLogged) {
+          firstChunkLogged = true;
+          console.log(`[${tag}] ⏱ first-chunk-spoken: ${Date.now() - t0}ms`);
+        }
+        await this.speak(chunk, signal, false);
+      });
+      return chunkChain;
+    };
 
     try {
-      const replyPromise = runTurn(this.env, this.session, this.callSid, text)
-        .then(r => r.spokenResponse)
-        .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); return null; });
+      await runTurn(this.env, this.session, this.callSid, text, onChunk)
+        .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); });
 
-      // Most turns finish in ~1s. Give the turn a brief head start before
-      // considering a filler, and play at most one — otherwise a fast turn
-      // still gets several filler phrases stacked in front of the real answer.
-      const FILLER_GRACE_MS = 900;
-      let timer: ReturnType<typeof setTimeout>;
-      const turnFinishedFirst = await Promise.race([
-        replyPromise.then(() => true),
-        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), FILLER_GRACE_MS); }),
-      ]);
-      clearTimeout(timer!);
-
-      if (!turnFinishedFirst && !signal.aborted) {
-        await this.speak(FILLERS[Math.floor(Math.random() * FILLERS.length)], signal);
+      await chunkChain;
+      if (!signal.aborted && this.twWs && this.twWs.readyState === WebSocket.OPEN) {
+        this.twWs.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name: 'done' } }));
       }
-
-      const reply = await replyPromise;
-      if (reply && !signal.aborted) await this.speak(reply, signal);
-
     } catch (e: any) {
       if (e.name !== 'AbortError') console.error('[turn]', e.message);
     } finally {
+      clearTimeout(fillerTimer);
       if (this.currentAbort === ac) { this.currentAbort = undefined; this.busy = false; }
     }
   }

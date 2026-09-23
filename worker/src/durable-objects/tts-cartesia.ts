@@ -17,6 +17,7 @@ export async function cartesiaSpeak(
   streamSid: string,
   twWs: WebSocket,
   signal?: AbortSignal,
+  sendMark: boolean = true,
 ): Promise<void> {
   if (signal?.aborted) return;
 
@@ -53,7 +54,7 @@ export async function cartesiaSpeak(
     reader.releaseLock();
   }
 
-  if (!signal?.aborted && twWs.readyState === WebSocket.OPEN) {
+  if (sendMark && !signal?.aborted && twWs.readyState === WebSocket.OPEN) {
     twWs.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'done' } }));
   }
 }
