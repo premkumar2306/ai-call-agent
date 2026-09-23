@@ -87,10 +87,11 @@ export class CallRelay extends DurableObject<Env> {
         .then(r => r.spokenResponse)
         .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); return null; });
 
-      // Most turns finish in ~1s. Give the turn a brief head start before
-      // considering a filler, and play at most one — otherwise a fast turn
-      // still gets several filler phrases stacked in front of the real answer.
-      const FILLER_GRACE_MS = 900;
+      // Most turns finish in ~1s, but real calls can run longer (network/STT
+      // jitter, tool calls). Give the turn a long head start before considering
+      // a filler at all, and play at most one — fillers should be rare, only
+      // for genuinely slow turns, not a routine part of every exchange.
+      const FILLER_GRACE_MS = 2500;
       let timer: ReturnType<typeof setTimeout>;
       const turnFinishedFirst = await Promise.race([
         replyPromise.then(() => true),
@@ -131,7 +132,10 @@ export class CallRelay extends DurableObject<Env> {
 
       const sectorMeta = businessType ? await getSector(this.env, businessType).catch(() => null) : null;
       const storeName = sectorMeta?.name ?? businessType ?? 'us';
-      const greeting = `Welcome to ${storeName}. I'm Mogi, your voice assistant. How can I help you today?`;
+      const capabilityHint = businessType === 'health_nav'
+        ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
+        : "I can tell you about our services and hours, or book you an appointment — what can I help with?";
+      const greeting = `Welcome to ${storeName}. I'm Mogi, your voice assistant. ${capabilityHint}`;
 
       this.busy = true;
       this.speak(greeting)
