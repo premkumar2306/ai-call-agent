@@ -34,11 +34,43 @@ export interface TurnResult {
   history: Turn[];
 }
 
+// Called with each sentence-sized chunk of the model's text as soon as it's
+// ready (before the full turn — including any tool round-trips — completes),
+// so the caller (CallRelay) can start TTS well before the whole answer exists.
+// Awaited so chunk delivery order is preserved 1:1 with speech order.
+export type OnChunk = (chunk: string) => void | Promise<void>;
+
+// Pops the next complete sentence off the front of `buffer` (ending in
+// . ! or ? followed by whitespace or end-of-string). Returns null if the
+// buffer doesn't yet contain a full sentence.
+function popSentence(buffer: string): { chunk: string; rest: string } | null {
+  const m = buffer.match(/[.!?]+(\s+|$)/);
+  if (!m || m.index === undefined) return null;
+  const end = m.index + m[0].length;
+  const chunk = buffer.slice(0, end).trim();
+  const rest = buffer.slice(end);
+  if (!chunk) return rest === buffer ? null : { chunk: '', rest };
+  return { chunk, rest };
+}
+
+function extractCompleteSentences(buffer: string): { chunks: string[]; rest: string } {
+  const chunks: string[] = [];
+  let rest = buffer;
+  while (true) {
+    const popped = popSentence(rest);
+    if (!popped) break;
+    if (popped.chunk) chunks.push(popped.chunk);
+    rest = popped.rest;
+  }
+  return { chunks, rest };
+}
+
 export async function runTurn(
   env: Env,
   session: SessionPayload,
   callSid: string,
   utterance: string,
+  onChunk?: OnChunk,
 ): Promise<TurnResult> {
   const { businessType, account, sub } = session;
   const tag = callSid.slice(-8);
@@ -70,6 +102,7 @@ export async function runTurn(
 
   if (shouldEscalateUnclearService(history, utterance)) {
     const spokenResponse = getUnclearServiceEscalationResponse(bizName);
+    if (onChunk) await onChunk(spokenResponse);
     const updatedHistory: Turn[] = [
       ...history,
       { role: 'user', content: utterance },
@@ -128,14 +161,39 @@ RULES — follow exactly every single turn:
   const anthropic = getAnthropic(env.ANTHROPIC_API_KEY);
 
   for (let i = 0; i < 5; i++) {
-    const response = await anthropic.messages.create({
+    const stream = anthropic.messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 400,
       system: systemPrompt,
       tools,
       messages,
     });
+
+    let buffer = '';
+    let firstTokenLapped = false;
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
+        buffer += event.delta.text;
+        const { chunks, rest } = extractCompleteSentences(buffer);
+        buffer = rest;
+        for (const chunk of chunks) {
+          spokenResponse = spokenResponse ? `${spokenResponse} ${chunk}` : chunk;
+          if (onChunk) await onChunk(chunk);
+        }
+      }
+    }
+
+    const response = await stream.finalMessage();
     lap(`anthropic#${i} (${response.stop_reason})`);
+
+    // Flush any trailing text that didn't end on sentence punctuation
+    // (e.g. the model's chatter right before a tool_use block).
+    const trailing = buffer.trim();
+    if (trailing) {
+      spokenResponse = spokenResponse ? `${spokenResponse} ${trailing}` : trailing;
+      if (onChunk) await onChunk(trailing);
+    }
 
     if (response.stop_reason === 'tool_use') {
       const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
@@ -150,13 +208,14 @@ RULES — follow exactly every single turn:
       continue;
     }
 
-    const textBlock = response.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
-    spokenResponse = textBlock?.text?.trim() ?? "Sorry, I had trouble with that.";
     break;
   }
   lap('runTurn total');
 
-  if (!spokenResponse) spokenResponse = "I'm having trouble right now. Please try again.";
+  if (!spokenResponse) {
+    spokenResponse = "I'm having trouble right now. Please try again.";
+    if (onChunk) await onChunk(spokenResponse);
+  }
 
   // ── Persist updated history ───────────────────────────────────────────────
   const updatedHistory: Turn[] = [
