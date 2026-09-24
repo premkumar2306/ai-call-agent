@@ -41,7 +41,11 @@ export class CallRelay extends DurableObject<Env> {
     this.twWs = server;
 
     // STT is async (needs an await to open the Deepgram WS); use a no-op until ready
-    createDeepgramSTT(this.env.DEEPGRAM_API_KEY ?? '', (text) => { this.handleTranscript(text); })
+    createDeepgramSTT(
+      this.env.DEEPGRAM_API_KEY ?? '',
+      (text) => { this.handleTranscript(text); },
+      /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
+    )
       .then(s => { this.stt = s; })
       .catch((e) => {
         console.error('[stt startup]', e?.message || e);
