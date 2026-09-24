@@ -92,6 +92,10 @@ export interface Env {
   TWILIO_AUTH_TOKEN?: string;
   TWILIO_WEBHOOK_URL?: string;
   NODE_ENV?: string;
+  // Set to '1'/'true' to enable verbose Deepgram STT logging (Results /
+  // UtteranceEnd messages + which signal triggered finalize()). Off by
+  // default to avoid flooding wrangler tail.
+  DG_DEBUG?: string;
   TOKEN_TTL_SECONDS?: string;
   // Twilio inbound call defaults — used when no ?token= in webhook URL
   TWILIO_DEFAULT_BUSINESS_TYPE?: string; // e.g. "auto_shop"
