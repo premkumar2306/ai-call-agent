@@ -1,0 +1,11 @@
+-- Speeds up getBookedDatetimes() (tool-router.service.ts), which filters
+-- orders by business_type and a scheduled_at range for check_availability.
+-- The only existing index on orders leads with customer_id_hashed, which is
+-- the wrong leading column for this query — without this index it's a full
+-- table scan. See issue #7.
+--
+-- NOT applied to production by this PR — run via:
+--   npx wrangler d1 migrations apply mogi-platform --remote
+-- after review, per the caution in issue #7 (no deploy credentials in the
+-- authoring sandbox).
+CREATE INDEX IF NOT EXISTS idx_orders_business_type_scheduled ON orders(business_type, scheduled_at);

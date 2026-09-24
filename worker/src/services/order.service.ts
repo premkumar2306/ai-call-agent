@@ -44,7 +44,7 @@ export async function placeOrder(
   const id = crypto.randomUUID();
   const now = new Date();
 
-  await db.insert(ordersTable).values({
+  const row = {
     id,
     customerIdHashed,
     businessType: sector,
@@ -54,6 +54,7 @@ export async function placeOrder(
     status: 'PENDING',
     priceCents: product.priceCents,
     paymentMethod,
+    trackingNumber: null,
     scheduledAt: scheduledAt ?? null,
     shippingLine1: shippingAddress?.line1,
     shippingCity: shippingAddress?.city,
@@ -61,12 +62,17 @@ export async function placeOrder(
     shippingZip: shippingAddress?.zip,
     createdAt: now,
     updatedAt: now,
-  });
+  };
+
+  await db.insert(ordersTable).values(row);
 
   // Order stays PENDING — real fulfillment (vendor webhook / admin confirmation) will advance status.
   // SERVICE_BOOKING appointments are confirmed via the admin dashboard or a webhook callback.
-  const rows = await db.select().from(ordersTable).where(eq(ordersTable.id, id));
-  return mapRow(rows[0]);
+  // No read-back: every field of `Order` is already known from `row` above,
+  // an insert of a fresh row can't have been concurrently modified, and the
+  // read-back was a full extra D1 round trip on the hot booking path for no
+  // new information.
+  return mapRow(row as typeof ordersTable.$inferSelect);
 }
 
 export async function getOrders(env: Env, customerIdHashed: string, sector: Sector): Promise<Order[]> {

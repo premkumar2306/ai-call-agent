@@ -72,6 +72,12 @@ export const orders = sqliteTable('orders', {
                       .$defaultFn(() => new Date()),
 }, (t) => [
   index('idx_orders_customer_business_type').on(t.customerIdHashed, t.businessType),
+  // Supports getBookedDatetimes() in tool-router.service.ts — a
+  // businessType + [now, now+14d] scheduledAt range scan for
+  // check_availability. Without this the query was a full-table scan (the
+  // only prior index leads with customerIdHashed, wrong column for this
+  // lookup). See issue #7.
+  index('idx_orders_business_type_scheduled').on(t.businessType, t.scheduledAt),
 ]);
 
 export const customers = sqliteTable('customers', {

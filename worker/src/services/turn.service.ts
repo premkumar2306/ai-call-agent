@@ -6,6 +6,7 @@ import { getOrders } from './order.service';
 import { scoreProducts } from './recommendations.service';
 import { executeTool, getToolDefinitions } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
+import type { CallCache } from './call-context';
 import {
   getUnclearServiceEscalationResponse,
   shouldEscalateUnclearService,
@@ -71,6 +72,7 @@ export async function runTurn(
   callSid: string,
   utterance: string,
   onChunk?: OnChunk,
+  cache?: CallCache,
 ): Promise<TurnResult> {
   const { businessType, account, sub } = session;
   const tag = callSid.slice(-8);
@@ -79,25 +81,46 @@ export async function runTurn(
 
   console.log(`[${tag}] ${businessType}: "${utterance.slice(0, 80)}"`);
 
-  // ── Load full call history ──────────────────────────────────────────────
-  const history = await loadHistory(env, callSid);
+  // ── Load call history ───────────────────────────────────────────────────
+  // When a call-lifetime `cache` is supplied (the CallRelay Durable Object),
+  // history lives in memory for the whole call and this is a plain array
+  // read. Callers without one (e.g. the stateless /twilio/turn TwiML route,
+  // which gets one HTTP request per turn with no persistent memory) fall
+  // back to the KV-backed load, same as before.
+  const history = cache ? cache.history : await loadHistory(env, callSid);
   lap('loadHistory');
 
-  // ── Build context ─────────────────────────────────────────────────────────
-  const [ordersResult, productsResult] = businessType === 'health_nav'
-    ? [{ status: 'fulfilled' as const, value: [] }, { status: 'fulfilled' as const, value: [] }]
-    : await Promise.allSettled([
-        getOrders(env, sub, businessType),
-        getProducts(env, businessType),
-      ]);
-  lap('orders+products');
+  // ── Build context — orders, products, sector metadata ───────────────────
+  // Independent of each other and of history, so whatever isn't already
+  // cached for this call gets fetched in one wave instead of three
+  // sequential ones. health_nav has no orders/products concept.
+  const needOrders = businessType !== 'health_nav' && !(cache?.ordersLoaded);
+  const needProducts = businessType !== 'health_nav' && !cache?.productsAll;
+  const needSector = !cache?.sectorMeta;
+
+  const [ordersResult, productsResult, sectorResult] = await Promise.allSettled([
+    needOrders ? getOrders(env, sub, businessType) : Promise.resolve(cache?.orders ?? []),
+    needProducts ? getProducts(env, businessType) : Promise.resolve(cache?.productsAll ?? []),
+    needSector ? getSector(env, businessType) : Promise.resolve(cache?.sectorMeta ?? null),
+  ]);
+  lap(`orders+products+sector (cached: ${[
+    !needOrders && 'orders', !needProducts && 'products', !needSector && 'sector',
+  ].filter(Boolean).join(',') || 'none'})`);
+
+  if (cache) {
+    if (needOrders && ordersResult.status === 'fulfilled') { cache.orders = ordersResult.value as any; cache.ordersLoaded = true; }
+    if (needProducts && productsResult.status === 'fulfilled') cache.productsAll = productsResult.value as any;
+    if (needSector && sectorResult.status === 'fulfilled') cache.sectorMeta = sectorResult.value as any;
+  }
+
   const recentOrders = ordersResult.status === 'fulfilled'
-    ? ordersResult.value.slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
+    ? (ordersResult.value as any[]).slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
   const recs = productsResult.status === 'fulfilled'
     ? scoreProducts(productsResult.value as any[], account.store_credit_cents).slice(0, 3).map((r: any) => r.name) : [];
 
-  const sectorMeta = await getSector(env, businessType);
-  lap('getSector');
+  const sectorMeta = sectorResult.status === 'fulfilled' && sectorResult.value
+    ? (sectorResult.value as any)
+    : (cache?.sectorMeta ?? null);
   const bizName = sectorMeta?.name ?? businessType;
 
   if (shouldEscalateUnclearService(history, utterance)) {
@@ -108,13 +131,24 @@ export async function runTurn(
       { role: 'user', content: utterance },
       { role: 'assistant', content: spokenResponse },
     ];
-    await saveHistory(env, callSid, updatedHistory);
+    if (cache) cache.history = updatedHistory;
+    // Fire-and-forget: the answer is already spoken, this is durability-only.
+    saveHistory(env, callSid, updatedHistory).catch(err => console.error('saveHistory error', err.message));
     saveTranscript(env, { callSid, customerIdHashed: sub, businessType, turns: updatedHistory })
       .catch(err => console.error('transcript error', err.message));
     return { spokenResponse, history: updatedHistory };
   }
 
-  const systemPrompt = businessType === 'health_nav'
+  // System prompt is split so the prompt-cacheable, per-turn-invariant rules
+  // (which also don't change across calls to the same business) sit in a
+  // separate block from the volatile per-customer facts (tier, store
+  // credit, recent bookings) that do change turn to turn. A cache_control
+  // breakpoint on the stable block lets Anthropic reuse it turn-to-turn
+  // (and call-to-call) instead of reprocessing it every time. Check
+  // `usage.cache_read_input_tokens` in the logs below to confirm this is
+  // actually landing — if it's always 0 the prompt may be under Haiku's
+  // minimum cacheable length and this isn't buying anything.
+  const stableRules = businessType === 'health_nav'
     ? `You are Mogi, a health plan member services specialist for ${bizName}, on a live phone call. You are empathetic, knowledgeable about insurance, and speak like a real person — warm and clear, never robotic.
 
 VOICE RULES:
@@ -123,8 +157,6 @@ VOICE RULES:
 3. For urgent clinical or emergency concerns: skip pleasantries, act immediately.
 4. To discuss specific coverage details, first confirm the member's date of birth or member ID.`
     : `You are Mogi, a warm and friendly scheduling assistant for ${bizName}, on a live phone call. You sound like a real, helpful person — not a robot.
-Customer: ${account.tier} tier | $${(account.store_credit_cents / 100).toFixed(2)} store credit
-Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}
 
 TONE: Conversational and natural. Short, warm sentences. Never stiff or formal.
 PRICES: Always use $ (dollars), never ₹ or other symbols. Say prices naturally ("it's $175").
@@ -142,7 +174,18 @@ RULES — follow exactly every single turn:
 7. AFTER BOOKING: call get_upsells once, offer it casually. Then wrap up warmly.
 8. NO LOOPS: Never repeat a question the customer already answered.
 9. Hours → get_business_hours. Past bookings → list_bookings.
-10. CANCEL: "cancel" → call cancel_booking(product_name=<what they mentioned>). COMPLETE = confirmed appointment, not delivered — it IS cancellable. Never say it can't be cancelled without calling cancel_booking first.`;
+10. CANCEL: "cancel" → call cancel_booking(product_name=<what they mentioned>). COMPLETE = confirmed appointment, not delivered — it IS cancellable. Never say it can't be cancelled without calling cancel_booking first.
+11. A tool result's JSON may include a "_spoken_hint" field — a ready-made sentence for that result. Prefer lightly paraphrasing it over composing from scratch, unless the conversation needs something different.`;
+
+  const volatileFacts = businessType === 'health_nav'
+    ? ''
+    : `Customer: ${account.tier} tier | $${(account.store_credit_cents / 100).toFixed(2)} store credit
+Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
+
+  const systemPrompt: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: stableRules, cache_control: { type: 'ephemeral' } },
+    ...(volatileFacts ? [{ type: 'text' as const, text: volatileFacts }] : []),
+  ];
 
   // ── Assemble messages: full history + new utterance ─────────────────────
   const messages: Anthropic.MessageParam[] = [
@@ -150,11 +193,20 @@ RULES — follow exactly every single turn:
     { role: 'user', content: utterance },
   ];
 
-  const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta).map(t => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.parameters as Anthropic.Tool['input_schema'],
-  }));
+  // Tool defs are byte-identical for every turn of a call (same business,
+  // same sectorMeta) — cache them on the call instead of rebuilding ~11
+  // template-literal objects every turn, and mark the last one as a cache
+  // breakpoint so Anthropic can reuse the `tools` prefix across turns too.
+  let tools = cache?.toolDefs;
+  if (!tools) {
+    tools = getToolDefinitions(businessType, sectorMeta).map(t => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool['input_schema'],
+    }));
+    if (tools.length) tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: 'ephemeral' } };
+    if (cache) cache.toolDefs = tools;
+  }
 
   // ── Agentic loop ─────────────────────────────────────────────────────────
   let spokenResponse = '';
@@ -186,6 +238,10 @@ RULES — follow exactly every single turn:
 
     const response = await stream.finalMessage();
     lap(`anthropic#${i} (${response.stop_reason})`);
+    const usage = response.usage as any;
+    if (usage) {
+      lap(`anthropic#${i} usage (in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0})`);
+    }
 
     // Flush any trailing text that didn't end on sentence punctuation
     // (e.g. the model's chatter right before a tool_use block).
@@ -199,11 +255,40 @@ RULES — follow exactly every single turn:
       const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
       const toolResults = await Promise.all(toolBlocks.map(async (tb) => {
         console.log(`[${tag}] tool: ${tb.name}`);
-        const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, env, sectorMeta);
-        return { type: 'tool_result' as const, tool_use_id: tb.id, content: JSON.stringify(result.data ?? { message: result.spoken_response }) };
+        const toolT0 = Date.now();
+        const result = await executeTool(
+          tb.name,
+          tb.input as Record<string, unknown>,
+          session,
+          env,
+          sectorMeta,
+          cache,
+          (label) => console.log(`[${tag}] ⏱ tool:${tb.name}:${label}: ${Date.now() - toolT0}ms`),
+        );
+        lap(`tool:${tb.name} total`);
+        // §3a — feed the tool's own hand-written voice-shaped response back
+        // to the model as a phrasing hint (see stableRules rule 11) instead
+        // of discarding it. Doesn't save a round trip, but gives call #2 a
+        // ready-made sentence to paraphrase rather than compose from
+        // scratch, which should make it shorter and faster.
+        const payload = (result.data ?? { message: result.spoken_response }) as Record<string, unknown>;
+        const toolResult: Anthropic.ToolResultBlockParam = {
+          type: 'tool_result',
+          tool_use_id: tb.id,
+          content: JSON.stringify({ ...payload, _spoken_hint: result.spoken_response }),
+        };
+        return toolResult;
       }));
       lap(`tools#${i} (${toolBlocks.map(t => t.name).join(',')})`);
       messages.push({ role: 'assistant', content: response.content });
+      // Cache breakpoint after the tool results: this turn's messages array
+      // (history + utterance + assistant tool_use + tool_result) is the
+      // exact prefix call #2 sees, so marking it lets call #2 reuse
+      // everything call #1 already processed instead of reprocessing it.
+      if (toolResults.length) toolResults[toolResults.length - 1] = {
+        ...toolResults[toolResults.length - 1],
+        cache_control: { type: 'ephemeral' },
+      };
       messages.push({ role: 'user', content: toolResults });
       continue;
     }
@@ -223,7 +308,12 @@ RULES — follow exactly every single turn:
     { role: 'user', content: utterance },
     { role: 'assistant', content: spokenResponse },
   ];
-  await saveHistory(env, callSid, updatedHistory);
+  if (cache) cache.history = updatedHistory;
+  // Fire-and-forget: the answer is already spoken by the time this runs
+  // (onChunk delivery happens above), so awaiting it only delays the DO for
+  // no benefit to the caller. KV write-behind is durability-only — the
+  // in-memory `cache.history` above is what subsequent turns actually read.
+  saveHistory(env, callSid, updatedHistory).catch(err => console.error('saveHistory error', err.message));
 
   // Fire-and-forget transcript
   saveTranscript(env, { callSid, customerIdHashed: sub, businessType, turns: updatedHistory })

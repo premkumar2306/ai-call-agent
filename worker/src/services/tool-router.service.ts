@@ -1,4 +1,4 @@
-import { eq, and, ne, isNotNull } from 'drizzle-orm';
+import { eq, and, ne, gte, lte } from 'drizzle-orm';
 import type { SessionPayload, Env, SectorMeta } from '../types';
 import { getProducts, getProductById, searchProducts } from './catalog.service';
 import { placeOrder, getOrders, getOrder, cancelOrder } from './order.service';
@@ -6,6 +6,10 @@ import { scoreProducts } from './recommendations.service';
 import { isAmbiguousServiceIntent } from './voice-guard.service';
 import { getDb } from '../db/client';
 import { orders as ordersTable } from '../db/schema';
+import type { CallCache } from './call-context';
+
+/** Optional per-tool-call timing hook: fn(label) logs elapsed ms since the tool started. */
+type ToolLap = (label: string) => void;
 
 const CART_TTL = 3600; // 1 hour
 
@@ -38,9 +42,20 @@ function parseHoursRange(range: string): { openH: number; closeH: number } | nul
   return { openH, closeH };
 }
 
-/** Query D1 for all confirmed SERVICE_BOOKING datetimes in the next 14 days for this business. */
-async function getBookedDatetimes(env: Env, businessType: string): Promise<Set<string>> {
+/**
+ * Query D1 for confirmed SERVICE_BOOKING datetimes for this business, bounded
+ * to the next 14 days (the only window getAvailableSlots ever offers) rather
+ * than every booking in the table's lifetime. Relies on
+ * idx_orders_business_type_scheduled (businessType, scheduledAt) — without it
+ * this is a full table scan filtered post-hoc, which is exactly the O(all
+ * bookings ever) cost this was meant to fix. `scheduled_at` is stored as an
+ * ISO string, so lexical and chronological ordering agree and gte/lte work
+ * directly on it.
+ */
+export async function getBookedDatetimes(env: Env, businessType: string): Promise<Set<string>> {
   const db = getDb(env.DB);
+  const now = new Date().toISOString();
+  const horizon = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
   const booked = await db
     .select({ scheduledAt: ordersTable.scheduledAt })
     .from(ordersTable)
@@ -48,7 +63,8 @@ async function getBookedDatetimes(env: Env, businessType: string): Promise<Set<s
       and(
         eq(ordersTable.businessType, businessType),
         ne(ordersTable.status, 'CANCELLED'),
-        isNotNull(ordersTable.scheduledAt),
+        gte(ordersTable.scheduledAt, now),
+        lte(ordersTable.scheduledAt, horizon),
       )
     );
   // Normalise to "YYYY-MM-DDTHH:MM" for slot collision matching
@@ -60,6 +76,7 @@ async function getAvailableSlots(
   businessType: string,
   meta: SectorMeta | null | undefined,
   durationMinutes = 60,
+  bookedDatetimes?: Set<string>,
 ): Promise<Array<{ date: string; time: string; datetime: string; label: string }>> {
   const rawSlots: Array<{ date: string; time: string; datetime: string; label: string }> = [];
   const now = new Date();
@@ -92,8 +109,11 @@ async function getAvailableSlots(
     }
   }
 
-  // Filter out slots already booked in D1
-  const booked = await getBookedDatetimes(env, businessType);
+  // Filter out slots already booked. If the caller already has a fresh
+  // booked-slot set for this call (CallRelay prefetches one at call start
+  // and keeps it in sync — see CallCache), reuse it instead of a D1 round
+  // trip; otherwise fetch fresh (stateless callers, or no cache yet).
+  const booked = bookedDatetimes ?? await getBookedDatetimes(env, businessType);
   return rawSlots.filter(s => !booked.has(s.datetime.slice(0, 16))).slice(0, 12);
 }
 
@@ -118,7 +138,9 @@ export async function executeTool(
   args: Record<string, unknown>,
   token: SessionPayload,
   env: Env,
-  sectorMeta?: SectorMeta | null
+  sectorMeta?: SectorMeta | null,
+  cache?: CallCache,
+  lap?: ToolLap,
 ): Promise<ToolResult> {
   const { businessType, account } = token;
 
@@ -147,7 +169,18 @@ export async function executeTool(
           };
         }
 
-        const all = await getProducts(env, businessType, args.category as string | undefined);
+        const category = args.category as string | undefined;
+        // Reuse the call's cached full product list when there's no category
+        // filter — avoids a KV round trip on every search_services call in a
+        // multi-turn call (e.g. after a clarifying question).
+        let all: Awaited<ReturnType<typeof getProducts>>;
+        if (!category && cache?.productsAll) {
+          all = cache.productsAll;
+        } else {
+          all = await getProducts(env, businessType, category);
+          if (!category && cache) cache.productsAll = all;
+        }
+        lap?.('getProducts');
         const results = query ? searchProducts(all, query) : all;
         const top5 = results.slice(0, 5);
         if (top5.length === 0) {
@@ -194,10 +227,16 @@ export async function executeTool(
         let serviceName = '';
         if (serviceId) {
           const p = await getProductById(env, serviceId);
+          lap?.('getProductById');
           if (p?.durationMinutes) duration = p.durationMinutes;
           if (p?.name) serviceName = p.name;
         }
-        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration);
+        // getAvailableSlots' internal D1 lookup (getBookedDatetimes) is
+        // skipped entirely when the call already has a prefetched, kept-in-
+        // sync booked-slot set (CallRelay prefetches one at call start —
+        // see CallCache) — this tool becomes pure CPU in that case.
+        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined);
+        lap?.('getAvailableSlots');
         if (slots.length === 0) {
           return { success: true, data: { slots: [] }, spoken_response: "We don't have any openings in the next 2 weeks. Please call us directly." };
         }
@@ -240,7 +279,8 @@ export async function executeTool(
       }
 
       case 'get_recommendations': {
-        const all = await getProducts(env, businessType);
+        const all = cache?.productsAll ?? await getProducts(env, businessType);
+        if (cache && !cache.productsAll) cache.productsAll = all;
         const scored = scoreProducts(all, account.store_credit_cents).slice(0, (args.limit as number) || 3);
         if (scored.length === 0) {
           return { success: true, data: { recommendations: [] }, spoken_response: "No recommendations right now. What are you looking for?" };
@@ -279,10 +319,27 @@ export async function executeTool(
           args.shipping_address as any,
           args.scheduled_at as string | undefined
         );
-        // Clear from cart
+        lap?.('placeOrder');
+        // Clear from cart. The customer already heard the booking confirmed
+        // by the time this write happens — cart bookkeeping doesn't need to
+        // block the response, so fire it and move on.
         const key = cartKey(token);
         const cart = await getCart(env, key);
-        await setCart(env, key, cart.filter(i => i.productId !== args.product_id));
+        setCart(env, key, cart.filter(i => i.productId !== args.product_id))
+          .catch(err => console.error('cart clear error', err.message));
+
+        // This call's cached order list / booked-slot set are now stale.
+        // Invalidate the list wholesale (cheap — next getOrders() refetches)
+        // and patch the booked-slot set in place rather than dropping it
+        // entirely, since check_availability right after a booking is a
+        // common next turn and shouldn't pay a fresh D1 round trip for it.
+        if (cache) {
+          cache.orders = null;
+          cache.ordersLoaded = false;
+          if (order.scheduledAt && cache.bookedDatetimes) {
+            cache.bookedDatetimes.add(order.scheduledAt.slice(0, 16));
+          }
+        }
 
         const scheduledPart = order.scheduledAt
           ? ` Your appointment is confirmed for ${new Date(order.scheduledAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`
@@ -308,7 +365,8 @@ export async function executeTool(
 
       case 'list_bookings':
       case 'list_orders': {
-        const orders = await getOrders(env, token.sub, businessType);
+        let orders = cache?.ordersLoaded ? cache.orders! : await getOrders(env, token.sub, businessType);
+        if (cache && !cache.ordersLoaded) { cache.orders = orders; cache.ordersLoaded = true; }
         if (orders.length === 0) {
           return { success: true, data: { orders: [] }, spoken_response: "You don't have any bookings yet." };
         }
@@ -321,7 +379,8 @@ export async function executeTool(
         let orderId = args.order_id as string | undefined;
         // If no order_id, find the most recent matching booking by product name
         if (!orderId && args.product_name) {
-          const recent = await getOrders(env, token.sub, businessType);
+          const recent = cache?.ordersLoaded ? cache.orders! : await getOrders(env, token.sub, businessType);
+          if (cache && !cache.ordersLoaded) { cache.orders = recent; cache.ordersLoaded = true; }
           const query = (args.product_name as string).toLowerCase();
           const match = recent.find(o =>
             ['PENDING', 'ACCEPTED', 'COMPLETE'].includes(o.status) &&
@@ -334,6 +393,16 @@ export async function executeTool(
         }
         if (!orderId) return { success: false, spoken_response: "I need to know which booking to cancel. Let me pull up your recent bookings first." };
         const order = await cancelOrder(env, orderId, token.sub);
+        lap?.('cancelOrder');
+        // Stale cached order list / booked-slot entry — same reasoning as
+        // book_appointment above.
+        if (cache) {
+          cache.orders = null;
+          cache.ordersLoaded = false;
+          if (order.scheduledAt && cache.bookedDatetimes) {
+            cache.bookedDatetimes.delete(order.scheduledAt.slice(0, 16));
+          }
+        }
         return { success: true, data: order, spoken_response: `Done — your ${order.productName} appointment has been cancelled.` };
       }
 
