@@ -3,6 +3,8 @@ import type { Env, SessionPayload } from '../types';
 import { buildDefaultTwilioSession } from '../middleware';
 import { runTurn } from '../services/turn.service';
 import { getSector } from '../services/sector.service';
+import { getBookedDatetimes } from '../services/tool-router.service';
+import { createCallCache, type CallCache } from '../services/call-context';
 import { createDeepgramSTT, type Stt } from './stt-deepgram';
 import { cartesiaSpeak } from './tts-cartesia';
 
@@ -25,6 +27,10 @@ export class CallRelay extends DurableObject<Env> {
   private streamSid = '';
   private busy = false;
   private currentAbort?: AbortController;
+  // Call-lifetime cache: sector metadata, product list, tool defs, history,
+  // orders and booked-slot set all live here instead of round-tripping to
+  // KV/D1 on every turn. See issue #7 / worker/src/services/call-context.ts.
+  private cache: CallCache = createCallCache();
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -118,7 +124,7 @@ export class CallRelay extends DurableObject<Env> {
     };
 
     try {
-      await runTurn(this.env, this.session, this.callSid, text, onChunk)
+      await runTurn(this.env, this.session, this.callSid, text, onChunk, this.cache)
         .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); });
 
       await chunkChain;
@@ -151,6 +157,11 @@ export class CallRelay extends DurableObject<Env> {
       this.session = buildDefaultTwilioSession(this.env, businessType) ?? undefined;
 
       const sectorMeta = businessType ? await getSector(this.env, businessType).catch(() => null) : null;
+      // Seed the call cache with what greeting already fetched, so runTurn's
+      // very first invocation doesn't re-fetch it (it was previously calling
+      // getSector() again itself on turn 1 despite this same lookup having
+      // just happened here).
+      this.cache.sectorMeta = sectorMeta;
       const storeName = sectorMeta?.name ?? businessType ?? 'us';
       const capabilityHint = businessType === 'health_nav'
         ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
@@ -161,6 +172,16 @@ export class CallRelay extends DurableObject<Env> {
       this.speak(greeting)
         .catch(e => console.error('[greeting]', e?.message || e))
         .finally(() => { this.busy = false; });
+
+      // Prefetch the booked-slot set in parallel with the greeting/caller's
+      // first utterance, so the first check_availability call in the call
+      // (frequently the very first tool call) doesn't pay a D1 round trip.
+      // Not applicable to health_nav (no service-booking model).
+      if (businessType && businessType !== 'health_nav') {
+        getBookedDatetimes(this.env, businessType)
+          .then(s => { this.cache.bookedDatetimes = s; })
+          .catch(e => console.error('[bookedDatetimes prefetch]', e?.message || e));
+      }
 
     } else if (msg.event === 'media') {
       // Always forward — even while busy — so STT can detect barge-in
