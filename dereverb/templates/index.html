@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{ app_name }} — {{ tagline }}</title>
+<meta name="description" content="{{ tagline }}. Upload a reverberant recording and get a clean, echo-free version in one click." />
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'monospace']
+        },
+        colors: {
+          ink: '#070b14',
+          panel: '#0e1626',
+          edge: '#1d2a40',
+          accent: '#22d3ee',
+          accent2: '#818cf8'
+        }
+      }
+    }
+  };
+</script>
+<style>
+  body { background:
+      radial-gradient(60rem 40rem at 12% -10%, rgba(34,211,238,.14), transparent 60%),
+      radial-gradient(50rem 36rem at 92% 0%, rgba(129,140,248,.16), transparent 60%),
+      #070b14; }
+  /* Safety net: the three UI states and the file input are toggled with
+     Tailwind's `hidden` utility. If the CDN is blocked, slow, or fails to
+     execute, that class would have no styles and every state would render at
+     once. Declaring it inline keeps the state machine correct regardless. */
+  .hidden { display: none !important; }
+  .panel { background: linear-gradient(180deg, rgba(23,34,54,.92), rgba(12,19,32,.92)); }
+  .hairline { box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
+  /* Dropzone drag state, toggled from JS */
+  .dz-active { border-color: #22d3ee !important; background: rgba(34,211,238,.07) !important; }
+  @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+  .shimmer::after {
+    content: ''; position: absolute; inset: 0; width: 33%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
+    animation: shimmer 1.3s infinite;
+  }
+  audio { width: 100%; }
+  audio::-webkit-media-controls-panel { background-color: #0e1626; }
+  .tnum { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body class="h-full font-sans text-slate-200 antialiased">
+
+<!-- ───────────────────────── Header ───────────────────────── -->
+<header class="border-b border-edge/70">
+  <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+    <div class="flex items-center gap-3">
+      <div class="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-accent to-accent2 text-ink">
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M3 12h2l2-6 3 14 3-11 2 5h6" />
+        </svg>
+      </div>
+      <div>
+        <p class="text-base font-extrabold tracking-tight text-white">{{ app_name }}</p>
+        <p class="text-xs text-slate-400">{{ tagline }}</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      {% if engine_ready %}
+      <span class="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+        Engine online
+      </span>
+      {% else %}
+      <span class="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300" title="Install dependencies: pip install -r requirements.txt">
+        <span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span>
+        Engine unavailable
+      </span>
+      {% endif %}
+      <span class="hidden rounded-full border border-edge bg-panel px-3 py-1.5 font-mono text-xs text-slate-400 sm:inline">{{ engine_name }}</span>
+    </div>
+  </div>
+</header>
+
+<main class="mx-auto max-w-7xl px-4 py-10 sm:px-6">
+
+  <!-- ───────────────────────── Hero ───────────────────────── -->
+  <section id="hero" class="mb-10 text-center">
+    <h1 class="mx-auto max-w-3xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl">
+      Strip the room out of your audio.
+      <span class="bg-gradient-to-r from-accent to-accent2 bg-clip-text text-transparent">One click.</span>
+    </h1>
+    <p class="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-slate-400">
+      Drop in a reverberant recording and our AI removes echo and room tone — no sliders,
+      no plugins, no DAW. Every job is benchmarked live against the legacy desktop tools.
+    </p>
+  </section>
+
+  <!-- ───────────────────────── STATE 1: Upload ───────────────────────── -->
+  <section id="state-upload" class="mx-auto max-w-3xl">
+    <div id="dropzone"
+         class="panel hairline cursor-pointer rounded-3xl border-2 border-dashed border-edge p-10 text-center transition-colors hover:border-accent/60 sm:p-14"
+         role="button" tabindex="0" aria-label="Drag and drop an audio file, or click to browse">
+      <div class="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-2xl border border-edge bg-ink/60">
+        <svg viewBox="0 0 24 24" class="h-7 w-7 text-accent" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 16V4m0 0L8 8m4-4 4 4" />
+          <path d="M4 15v2a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-2" />
+        </svg>
+      </div>
+      <p class="text-xl font-bold text-white">Drag &amp; drop your audio file</p>
+      <p class="mt-2 text-sm text-slate-400">
+        or <span class="font-semibold text-accent underline decoration-accent/40">browse your device</span>
+      </p>
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-2 text-xs text-slate-500">
+        <span class="rounded-full border border-edge bg-ink/60 px-3 py-1 font-mono">{{ accepted_extensions | join(' · ') }}</span>
+        <span class="rounded-full border border-edge bg-ink/60 px-3 py-1">max {{ max_upload_mb }} MB</span>
+        <span class="rounded-full border border-edge bg-ink/60 px-3 py-1">auto-deleted after {{ retention_minutes }} min</span>
+      </div>
+      <input id="file-input" type="file" class="hidden" accept="{{ accept_attribute }}" />
+    </div>
+
+    <div id="error-box" class="mt-5 hidden rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+      <div class="flex items-start gap-3">
+        <svg viewBox="0 0 24 24" class="mt-0.5 h-5 w-5 flex-none text-rose-400" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.5" />
+        </svg>
+        <div>
+          <p class="font-semibold text-rose-100">Could not process that file</p>
+          <p id="error-text" class="mt-1 text-rose-200/90"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pre-upload preview of the competitive baseline, from server config -->
+    <div class="mt-10 grid gap-4 sm:grid-cols-3">
+      <div class="panel hairline rounded-2xl border border-edge p-5">
+        <p class="text-2xl font-extrabold text-white">0</p>
+        <p class="mt-1 text-sm font-semibold text-slate-300">manual sliders</p>
+        <p class="mt-1 text-xs text-slate-500">Legacy suites ship 2–4+ controls to audition per file.</p>
+      </div>
+      <div class="panel hairline rounded-2xl border border-edge p-5">
+        <p class="text-2xl font-extrabold text-white">Cloud</p>
+        <p class="mt-1 text-sm font-semibold text-slate-300">nothing to install</p>
+        <p class="mt-1 text-xs text-slate-500">No DAW host, no licence manager, no plugin scan.</p>
+      </div>
+      <div class="panel hairline rounded-2xl border border-edge p-5">
+        <p class="text-2xl font-extrabold text-white">Live</p>
+        <p class="mt-1 text-sm font-semibold text-slate-300">benchmarks per job</p>
+        <p class="mt-1 text-xs text-slate-500">Your file's real speed, measured on this server.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── STATE 2: Processing ───────────────────────── -->
+  <section id="state-processing" class="mx-auto hidden max-w-3xl">
+    <div class="panel hairline rounded-3xl border border-edge p-8 sm:p-10">
+      <div class="flex items-center gap-4">
+        <div class="relative grid h-12 w-12 flex-none place-items-center rounded-2xl border border-accent/30 bg-accent/10">
+          <svg class="h-6 w-6 animate-spin text-accent" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".25" stroke-width="3" />
+            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+          </svg>
+        </div>
+        <div class="min-w-0">
+          <p id="proc-headline" class="truncate text-lg font-bold text-white">Uploading…</p>
+          <p id="proc-file" class="truncate font-mono text-xs text-slate-400"></p>
+        </div>
+        <p id="proc-elapsed" class="tnum ml-auto font-mono text-sm text-slate-400">0.0s</p>
+      </div>
+
+      <div class="mt-7">
+        <div class="mb-2 flex items-center justify-between text-xs font-semibold">
+          <span id="proc-stage" class="text-slate-400">Transferring file</span>
+          <span id="proc-pct" class="tnum text-accent">0%</span>
+        </div>
+        <div class="h-2.5 w-full overflow-hidden rounded-full bg-edge/80">
+          <div id="proc-bar" class="relative h-full w-0 rounded-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-300 ease-out"></div>
+        </div>
+      </div>
+
+      <ul id="proc-steps" class="mt-7 space-y-2.5 text-sm text-slate-400"></ul>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── STATE 3: Results ───────────────────────── -->
+  <section id="state-result" class="hidden">
+
+    <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h2 class="text-2xl font-extrabold tracking-tight text-white">Your audio is clean</h2>
+        <p id="result-subtitle" class="mt-1 text-sm text-slate-400"></p>
+      </div>
+      <div class="flex gap-3">
+        <a id="download-btn" href="#" download
+           class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-accent to-accent2 px-5 py-3 text-sm font-bold text-ink transition hover:brightness-110">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 4v11m0 0 4-4m-4 4-4-4" /><path d="M5 19h14" />
+          </svg>
+          Download cleaned WAV
+        </a>
+        <button id="reset-btn" type="button"
+                class="rounded-xl border border-edge bg-panel px-5 py-3 text-sm font-semibold text-slate-200 transition hover:border-accent/50 hover:text-white">
+          Process another
+        </button>
+      </div>
+    </div>
+
+    <!-- Live stat tiles -->
+    <div id="stat-tiles" class="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4"></div>
+
+    <!-- A/B players -->
+    <div class="mb-10 grid gap-5 lg:grid-cols-2">
+      <div class="panel hairline rounded-3xl border border-edge p-6">
+        <div class="mb-4 flex items-center gap-2">
+          <span class="h-2 w-2 rounded-full bg-slate-500"></span>
+          <p class="text-sm font-bold uppercase tracking-wider text-slate-400">Original</p>
+          <span class="ml-auto rounded-full border border-edge bg-ink/60 px-2.5 py-1 font-mono text-xs text-slate-400">reverberant</span>
+        </div>
+        <audio id="audio-original" controls preload="metadata" class="rounded-lg"></audio>
+        <p id="meta-original" class="mt-3 font-mono text-xs text-slate-500"></p>
+      </div>
+      <div class="panel hairline rounded-3xl border border-accent/30 p-6 ring-1 ring-accent/20">
+        <div class="mb-4 flex items-center gap-2">
+          <span class="h-2 w-2 rounded-full bg-accent"></span>
+          <p class="text-sm font-bold uppercase tracking-wider text-accent">Cleaned</p>
+          <span class="ml-auto rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 font-mono text-xs text-accent">echo stripped</span>
+        </div>
+        <audio id="audio-cleaned" controls preload="metadata" class="rounded-lg"></audio>
+        <p id="meta-cleaned" class="mt-3 font-mono text-xs text-slate-500"></p>
+      </div>
+    </div>
+
+    <!-- ─────────── Competitor Comparison Matrix ─────────── -->
+    <div class="panel hairline overflow-hidden rounded-3xl border border-edge">
+      <div class="flex flex-wrap items-end justify-between gap-4 border-b border-edge px-6 py-5">
+        <div>
+          <h3 class="text-lg font-extrabold tracking-tight text-white">Competitor Comparison Matrix</h3>
+          <p class="mt-1 text-sm text-slate-400">
+            Your file, measured here — projected against the legacy de-reverb workflow.
+          </p>
+        </div>
+        <div id="edge-badges" class="flex flex-wrap gap-2"></div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[56rem] text-left text-sm">
+          <thead class="bg-ink/50 text-xs uppercase tracking-wider text-slate-500">
+            <tr>
+              <th scope="col" class="px-6 py-3.5 font-semibold">Tool</th>
+              <th scope="col" class="px-4 py-3.5 font-semibold">Speed</th>
+              <th scope="col" class="px-4 py-3.5 font-semibold">Machine time<span class="block font-normal normal-case text-slate-600">this file</span></th>
+              <th scope="col" class="px-4 py-3.5 font-semibold">Hands-on time<span class="block font-normal normal-case text-slate-600">human minutes</span></th>
+              <th scope="col" class="px-4 py-3.5 font-semibold">Manual controls</th>
+              <th scope="col" class="px-4 py-3.5 font-semibold">Delivery</th>
+              <th scope="col" class="px-4 py-3.5 font-semibold">Price</th>
+              <th scope="col" class="px-6 py-3.5 font-semibold">API / batch</th>
+            </tr>
+          </thead>
+          <tbody id="matrix-body" class="divide-y divide-edge/70"></tbody>
+        </table>
+      </div>
+
+      <ul id="matrix-notes" class="space-y-1.5 border-t border-edge bg-ink/40 px-6 py-4 text-xs leading-relaxed text-slate-500"></ul>
+    </div>
+  </section>
+</main>
+
+<footer class="mx-auto max-w-7xl px-4 pb-10 pt-4 text-center text-xs text-slate-600 sm:px-6">
+  {{ app_name }} · audio is processed on demand and deleted automatically after {{ retention_minutes }} minutes.
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  // ───────────────────────── Config injected by the server ─────────────────
+  const MAX_BYTES = {{ max_upload_mb }} * 1024 * 1024;
+  const MAX_MB = {{ max_upload_mb }};
+  const ALLOWED = {{ accepted_extensions | tojson }};
+
+  // Rotating status copy shown while the server is working. The upload leg has
+  // real progress; the processing leg is server-side, so we narrate the stages
+  // the backend actually runs (decode → DeepFilterNet → encode).
+  const PROCESSING_MESSAGES = [
+    ['Analyzing acoustics…',        'Mapping the room signature'],
+    ['Stripping room reverb…',      'DeepFilterNet inference running'],
+    ['Separating voice from tail…', 'Isolating direct sound'],
+    ['Suppressing echo…',           'Attenuating late reflections'],
+    ['Rebuilding clean audio…',     'Encoding 48 kHz output'],
+    ['Finalizing benchmarks…',      'Timing every stage']
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    hero: $('hero'),
+    upload: $('state-upload'), processing: $('state-processing'), result: $('state-result'),
+    dropzone: $('dropzone'), input: $('file-input'),
+    errorBox: $('error-box'), errorText: $('error-text'),
+    headline: $('proc-headline'), procFile: $('proc-file'), elapsed: $('proc-elapsed'),
+    stage: $('proc-stage'), pct: $('proc-pct'), bar: $('proc-bar'), steps: $('proc-steps'),
+    subtitle: $('result-subtitle'), tiles: $('stat-tiles'),
+    audioOriginal: $('audio-original'), audioCleaned: $('audio-cleaned'),
+    metaOriginal: $('meta-original'), metaCleaned: $('meta-cleaned'),
+    download: $('download-btn'), reset: $('reset-btn'),
+    matrixBody: $('matrix-body'), matrixNotes: $('matrix-notes'), edges: $('edge-badges')
+  };
+
+  let timers = [];
+  const clearTimers = () => { timers.forEach(clearInterval); timers = []; };
+
+  // ───────────────────────── View helpers ──────────────────────────────────
+  function show(which) {
+    // The hero sells the product; once results exist, they lead instead.
+    els.hero.classList.toggle('hidden', which === 'result');
+    els.upload.classList.toggle('hidden', which !== 'upload');
+    els.processing.classList.toggle('hidden', which !== 'processing');
+    els.result.classList.toggle('hidden', which !== 'result');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function showError(message) {
+    clearTimers();
+    els.errorText.textContent = message;
+    els.errorBox.classList.remove('hidden');
+    show('upload');
+  }
+
+  function hideError() { els.errorBox.classList.add('hidden'); }
+
+  const fmtBytes = (bytes) => bytes >= 1048576
+    ? (bytes / 1048576).toFixed(2) + ' MB'
+    : (bytes / 1024).toFixed(0) + ' KB';
+
+  function fmtSeconds(seconds) {
+    if (seconds == null) return '—';
+    if (seconds < 1) return (seconds * 1000).toFixed(0) + ' ms';
+    if (seconds < 60) return seconds.toFixed(1) + ' s';
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return m + 'm ' + String(s).padStart(2, '0') + 's';
+  }
+
+  function setProgress(percent, stageLabel) {
+    const value = Math.max(0, Math.min(100, percent));
+    els.bar.style.width = value + '%';
+    els.pct.textContent = Math.round(value) + '%';
+    if (stageLabel) els.stage.textContent = stageLabel;
+  }
+
+  // ───────────────────────── Validation ────────────────────────────────────
+  function validate(file) {
+    const dot = file.name.lastIndexOf('.');
+    const ext = dot === -1 ? '' : file.name.slice(dot).toLowerCase();
+    if (!ALLOWED.includes(ext)) {
+      return 'Unsupported file type "' + (ext || 'unknown') + '". Upload ' + ALLOWED.join(', ') + '.';
+    }
+    if (file.size > MAX_BYTES) {
+      return 'That file is ' + fmtBytes(file.size) + '. The limit is ' + MAX_MB + ' MB.';
+    }
+    if (file.size === 0) return 'That file is empty.';
+    return null;
+  }
+
+  // ───────────────────────── Processing narration ───────────────────────────
+  function startNarration(file) {
+    els.steps.innerHTML = '';
+    els.procFile.textContent = file.name + ' · ' + fmtBytes(file.size);
+    els.headline.textContent = 'Uploading…';
+    setProgress(0, 'Transferring file');
+
+    const started = performance.now();
+    timers.push(setInterval(function () {
+      els.elapsed.textContent = ((performance.now() - started) / 1000).toFixed(1) + 's';
+    }, 100));
+    return started;
+  }
+
+  function startProcessingMessages() {
+    // Upload is done; the request is now in flight server-side. Rotate copy and
+    // creep the bar toward 97% so the UI never looks frozen, then let the real
+    // response snap it to 100%.
+    let index = 0;
+    let crept = 72;
+    const apply = function () {
+      const [headline, stage] = PROCESSING_MESSAGES[index % PROCESSING_MESSAGES.length];
+      els.headline.textContent = headline;
+      const item = document.createElement('li');
+      item.className = 'flex items-center gap-2.5';
+      item.innerHTML =
+        '<span class="grid h-4 w-4 flex-none place-items-center rounded-full bg-accent/15 text-accent">' +
+        '<svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"><path d="M4 13l5 5L20 7"/></svg>' +
+        '</span><span></span>';
+      item.lastChild.textContent = stage;
+      els.steps.appendChild(item);
+      index += 1;
+    };
+    apply();
+    timers.push(setInterval(apply, 2600));
+    timers.push(setInterval(function () {
+      crept = Math.min(97, crept + (97 - crept) * 0.12);
+      setProgress(crept, 'Processing on the server');
+    }, 400));
+  }
+
+  // ───────────────────────── Results rendering ─────────────────────────────
+  function tile(label, value, caption, emphasis) {
+    const border = emphasis ? 'border-accent/30 ring-1 ring-accent/20' : 'border-edge';
+    const colour = emphasis ? 'text-accent' : 'text-white';
+    const node = document.createElement('div');
+    node.className = 'panel hairline rounded-2xl border ' + border + ' p-5';
+    node.innerHTML =
+      '<p class="text-xs font-semibold uppercase tracking-wider text-slate-500"></p>' +
+      '<p class="tnum mt-2 text-2xl font-extrabold ' + colour + '"></p>' +
+      '<p class="mt-1 text-xs text-slate-500"></p>';
+    node.children[0].textContent = label;
+    node.children[1].textContent = value;
+    node.children[2].textContent = caption;
+    return node;
+  }
+
+  function renderTiles(data) {
+    const b = data.benchmark;
+    els.tiles.innerHTML = '';
+    els.tiles.appendChild(tile('File size', data.original.size_mb.toFixed(2) + ' MB',
+      data.original.duration_seconds.toFixed(1) + 's of audio · ' + data.original.sample_rate + ' Hz'));
+    els.tiles.appendChild(tile('Processing time', fmtSeconds(b.total_seconds),
+      'decode ' + fmtSeconds(b.decode_seconds) + ' · model ' + fmtSeconds(b.enhance_seconds)));
+    els.tiles.appendChild(tile('Speed ratio', b.speed_ratio.toFixed(1) + '× realtime',
+      'seconds of audio cleaned per second of compute', true));
+    els.tiles.appendChild(tile('Engine', data.engine,
+      'no sliders touched · 1-click workflow'));
+  }
+
+  function renderMatrix(matrix) {
+    els.matrixBody.innerHTML = '';
+    matrix.rows.forEach(function (row) {
+      const tr = document.createElement('tr');
+      tr.className = row.is_self
+        ? 'bg-accent/[0.07] ring-1 ring-inset ring-accent/20'
+        : 'hover:bg-white/[0.02]';
+
+      const badge = row.measured
+        ? '<span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300">measured</span>'
+        : '<span class="rounded-full border border-slate-600/50 bg-slate-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">estimate</span>';
+
+      const cells = [
+        { html: '<div class="flex flex-col gap-1.5"><div class="flex items-center gap-2">' +
+                '<span class="font-bold ' + (row.is_self ? 'text-accent' : 'text-white') + '">' + esc(row.tool) + '</span>' + badge +
+                '</div><span class="text-xs text-slate-500">' + esc(row.category) + '</span></div>', cls: 'px-6 py-4' },
+        { html: '<span class="tnum font-mono ' + (row.is_self ? 'font-bold text-accent' : 'text-slate-300') + '">' + esc(row.speed_label) + '</span>', cls: 'px-4 py-4' },
+        { html: '<span class="tnum font-mono ' + (row.is_self ? 'font-bold text-white' : 'text-slate-300') + '">' + esc(row.machine_time) + '</span>', cls: 'px-4 py-4' },
+        { html: '<span class="tnum font-mono ' + (row.is_self ? 'font-bold text-white' : 'text-slate-300') + '">' + esc(row.operator_time) + '</span>', cls: 'px-4 py-4' },
+        { html: row.is_self
+            ? '<span class="inline-flex items-center gap-1.5 font-semibold text-accent"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M4 13l5 5L20 7"/></svg>' + esc(row.manual_controls) + '</span>'
+            : '<span class="text-slate-400">' + esc(row.manual_controls) + '</span>', cls: 'px-4 py-4' },
+        { html: '<span class="text-slate-400">' + esc(row.delivery) + '</span>', cls: 'px-4 py-4' },
+        { html: '<span class="' + (row.is_self ? 'font-semibold text-slate-200' : 'text-slate-400') + '">' + esc(row.price) + '</span>', cls: 'px-4 py-4' },
+        { html: '<span class="text-slate-400">' + esc(row.api_or_batch) + '</span>', cls: 'px-6 py-4' }
+      ];
+
+      cells.forEach(function (cell) {
+        const td = document.createElement('td');
+        td.className = cell.cls + ' align-top';
+        td.innerHTML = cell.html;
+        tr.appendChild(td);
+      });
+      els.matrixBody.appendChild(tr);
+    });
+
+    els.matrixNotes.innerHTML = '';
+    matrix.notes.forEach(function (note) {
+      const li = document.createElement('li');
+      li.className = 'flex gap-2';
+      li.innerHTML = '<span class="text-slate-600">—</span><span></span>';
+      li.lastChild.textContent = note;
+      els.matrixNotes.appendChild(li);
+    });
+
+    els.edges.innerHTML = '';
+    [
+      ['from-accent/15 border-accent/30 text-accent', matrix.edge.speed_headline],
+      ['from-accent2/15 border-accent2/30 text-accent2', matrix.edge.workflow_headline],
+      ['from-emerald-500/15 border-emerald-500/30 text-emerald-300', matrix.edge.round_trip_saved + ' saved per file']
+    ].forEach(function (pair) {
+      const span = document.createElement('span');
+      span.className = 'rounded-full border bg-gradient-to-r to-transparent px-3 py-1.5 text-xs font-bold ' + pair[0];
+      span.textContent = pair[1];
+      els.edges.appendChild(span);
+    });
+  }
+
+  function esc(value) {
+    const div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+  }
+
+  function renderResult(data) {
+    clearTimers();
+    setProgress(100, 'Complete');
+
+    els.subtitle.textContent =
+      data.original.filename + ' · ' + data.original.duration_seconds.toFixed(1) + 's cleaned in ' +
+      fmtSeconds(data.benchmark.total_seconds) + ' (' + data.benchmark.speed_ratio.toFixed(1) + '× realtime)';
+
+    els.audioOriginal.src = data.original.url;
+    els.audioCleaned.src = data.cleaned.url;
+    els.metaOriginal.textContent =
+      data.original.size_mb.toFixed(2) + ' MB · ' + data.original.sample_rate + ' Hz · ' +
+      data.original.channels + ' ch';
+    els.metaCleaned.textContent =
+      data.cleaned.size_mb.toFixed(2) + ' MB · ' + data.cleaned.sample_rate + ' Hz · ' +
+      data.cleaned.channels + ' ch · WAV';
+    els.download.href = data.cleaned.download_url;
+
+    renderTiles(data);
+    renderMatrix(data.matrix);
+    show('result');
+  }
+
+  // ───────────────────────── Upload ────────────────────────────────────────
+  function upload(file) {
+    const problem = validate(file);
+    if (problem) { showError(problem); return; }
+
+    hideError();
+    show('processing');
+    startNarration(file);
+
+    const form = new FormData();
+    form.append('file', file, file.name);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload', true);
+    xhr.responseType = 'json';
+
+    xhr.upload.onprogress = function (event) {
+      if (!event.lengthComputable) return;
+      // Reserve the top of the bar for server-side work.
+      setProgress((event.loaded / event.total) * 70, 'Transferring file');
+    };
+    xhr.upload.onload = function () {
+      setProgress(72, 'Processing on the server');
+      startProcessingMessages();
+    };
+
+    xhr.onload = function () {
+      clearTimers();
+      const body = xhr.response && typeof xhr.response === 'object'
+        ? xhr.response
+        : safeParse(xhr.responseText);
+      if (xhr.status >= 200 && xhr.status < 300 && body && body.job_id) {
+        renderResult(body);
+      } else {
+        showError(pickMessage(body, xhr.status));
+      }
+    };
+    xhr.onerror = function () {
+      showError('The upload failed — check your connection and try again.');
+    };
+    xhr.ontimeout = function () {
+      showError('The server took too long to respond. Try a shorter file.');
+    };
+    xhr.send(form);
+  }
+
+  function safeParse(text) {
+    try { return JSON.parse(text); } catch (err) { return null; }
+  }
+
+  function pickMessage(body, status) {
+    if (body && typeof body.detail === 'string') return body.detail;
+    if (body && Array.isArray(body.detail) && body.detail.length) {
+      return body.detail[0].msg || 'That file was rejected.';
+    }
+    if (status === 413) return 'That file is larger than the ' + MAX_MB + ' MB limit.';
+    if (status === 503) return 'The de-reverb engine is not available on this server yet.';
+    return 'Processing failed (HTTP ' + status + '). Please try again.';
+  }
+
+  // ───────────────────────── Wiring ────────────────────────────────────────
+  els.dropzone.addEventListener('click', function () { els.input.click(); });
+  els.dropzone.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); els.input.click(); }
+  });
+  els.input.addEventListener('change', function () {
+    if (els.input.files && els.input.files[0]) upload(els.input.files[0]);
+    els.input.value = '';
+  });
+
+  ['dragenter', 'dragover'].forEach(function (name) {
+    els.dropzone.addEventListener(name, function (event) {
+      event.preventDefault();
+      els.dropzone.classList.add('dz-active');
+    });
+  });
+  ['dragleave', 'dragend'].forEach(function (name) {
+    els.dropzone.addEventListener(name, function () { els.dropzone.classList.remove('dz-active'); });
+  });
+  els.dropzone.addEventListener('drop', function (event) {
+    event.preventDefault();
+    els.dropzone.classList.remove('dz-active');
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length) upload(files[0]);
+  });
+  // Stop the browser from navigating away when a file misses the dropzone.
+  ['dragover', 'drop'].forEach(function (name) {
+    window.addEventListener(name, function (event) { event.preventDefault(); });
+  });
+
+  els.reset.addEventListener('click', function () {
+    clearTimers();
+    hideError();
+    els.audioOriginal.pause(); els.audioCleaned.pause();
+    els.audioOriginal.removeAttribute('src'); els.audioCleaned.removeAttribute('src');
+    show('upload');
+  });
+})();
+</script>
+</body>
+</html>
