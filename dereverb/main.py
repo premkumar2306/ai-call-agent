@@ -44,11 +44,11 @@ import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
@@ -59,6 +59,7 @@ from audio_processor import (
     Benchmark,
     DereverbPipeline,
 )
+from job_store import JobStore, normalise_device_id
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -80,13 +81,28 @@ STORAGE_ROOT = Path(os.getenv("DEREVERB_STORAGE_DIR", BASE_DIR / "storage")).res
 UPLOAD_DIR = STORAGE_ROOT / "uploads"
 OUTPUT_DIR = STORAGE_ROOT / "outputs"
 
-#: Artefacts are deleted this long after creation (privacy + disk hygiene).
-RETENTION_MINUTES = float(os.getenv("DEREVERB_RETENTION_MINUTES", "60"))
+#: Audio artefacts are deleted this long after creation. The mobile History tab
+#: promises past jobs stay re-openable, so the default is days rather than the
+#: single hour a stateless web dashboard needed. History *rows* outlive the
+#: files regardless, and show as expired once the audio is gone.
+RETENTION_MINUTES = float(os.getenv("DEREVERB_RETENTION_MINUTES", str(7 * 24 * 60)))
 JANITOR_INTERVAL_SECONDS = float(os.getenv("DEREVERB_JANITOR_INTERVAL", "300"))
 
 #: How many files may be de-reverbed at once. DeepFilterNet is CPU-hungry, so
 #: queueing is better than thrashing.
 MAX_CONCURRENT_JOBS = int(os.getenv("DEREVERB_MAX_CONCURRENT_JOBS", "2"))
+
+#: SQLite file backing per-device job history (see job_store.py).
+DATABASE_PATH = Path(os.getenv("DEREVERB_DB_PATH", STORAGE_ROOT / "jobs.db"))
+
+#: Origins allowed to call the API from a browser. The Expo app on a device
+#: sends no Origin header and is unaffected; this exists for `expo start --web`
+#: and any browser client. Comma-separated, or ``*`` to allow all.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("DEREVERB_ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
 
 #: Set ``DEREVERB_WARMUP=1`` to load model weights at boot instead of on the
 #: first customer request (recommended for production).
@@ -261,48 +277,9 @@ def build_comparison_matrix(original: AudioStats, benchmark: Benchmark) -> Dict[
 # --------------------------------------------------------------------------- #
 
 
-@dataclass
-class JobRecord:
-    """In-memory metadata for one processed file."""
-
-    job_id: str
-    original_name: str
-    original_path: Path
-    cleaned_path: Path
-    created_at: float
-    payload: Dict[str, Any]
-
-
-class JobStore:
-    """Thread-safe registry of recent jobs.
-
-    Deliberately in-memory: artefacts are short-lived by design, and file
-    lookups fall back to disk so a process restart does not break an open tab.
-    """
-
-    def __init__(self) -> None:
-        self._jobs: Dict[str, JobRecord] = {}
-        self._lock = asyncio.Lock()
-
-    async def put(self, record: JobRecord) -> None:
-        async with self._lock:
-            self._jobs[record.job_id] = record
-
-    async def get(self, job_id: str) -> Optional[JobRecord]:
-        async with self._lock:
-            return self._jobs.get(job_id)
-
-    async def forget(self, job_ids: List[str]) -> None:
-        async with self._lock:
-            for job_id in job_ids:
-                self._jobs.pop(job_id, None)
-
-    async def expired_ids(self, cutoff: float) -> List[str]:
-        async with self._lock:
-            return [jid for jid, rec in self._jobs.items() if rec.created_at < cutoff]
-
-
-JOB_STORE = JobStore()
+#: Durable per-device job history. Unlike the old in-memory registry, this
+#: survives restarts, which the mobile History tab depends on.
+HISTORY = JobStore(DATABASE_PATH)
 PIPELINE = DereverbPipeline()
 JOB_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
@@ -336,12 +313,14 @@ def _purge_expired_files() -> int:
 
 
 async def _run_retention_sweep() -> None:
-    """Sweep expired files and drop their registry entries."""
+    """Delete expired artefacts, then mark their history rows as expired.
+
+    History rows are deliberately kept: the app still lists a job that ran last
+    month, it just reports ``files_available: false`` so the UI can show it
+    without offering playback.
+    """
     await asyncio.to_thread(_purge_expired_files)
-    cutoff = time.time() - RETENTION_MINUTES * 60
-    stale = await JOB_STORE.expired_ids(cutoff)
-    if stale:
-        await JOB_STORE.forget(stale)
+    await asyncio.to_thread(HISTORY.forget_missing_files)
 
 
 async def _janitor_loop() -> None:
@@ -403,6 +382,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# The Expo app on a real device issues plain HTTP requests with no Origin, so
+# CORS only matters for browser clients (`expo start --web`, the dashboard).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+)
 
 
 @app.exception_handler(AudioProcessingError)
@@ -485,6 +475,22 @@ def _safe_download_stem(original_name: str) -> str:
     return cleaned[:80] or "audio"
 
 
+def _require_device(device_id: Optional[str]) -> str:
+    """Validate the ``X-Device-Id`` header for endpoints that need identity.
+
+    The app generates this UUID once on first launch and keeps it locally. It
+    is the only thing tying a job to a user - there are no accounts - so an
+    absent or malformed value is a hard 400 rather than a silent empty list.
+    """
+    device = normalise_device_id(device_id)
+    if not device:
+        raise HTTPException(
+            status_code=400,
+            detail="A valid X-Device-Id header (UUID) is required for history.",
+        )
+    return device
+
+
 def _parse_job_id(job_id: str) -> str:
     """Reject anything that is not a UUID, which rules out path traversal."""
     try:
@@ -496,15 +502,15 @@ def _parse_job_id(job_id: str) -> str:
 async def _locate(job_id: str, kind: str) -> Path:
     """Resolve the on-disk path for a job's ``original`` or ``cleaned`` file.
 
-    Checks the in-memory registry first, then falls back to a UUID-prefixed
-    disk lookup so links keep working across a process restart.
+    Checks the history database first, then falls back to a UUID-prefixed disk
+    lookup so links keep working even if the row was pruned.
     """
     safe_id = _parse_job_id(job_id)
-    record = await JOB_STORE.get(safe_id)
+    record = await asyncio.to_thread(HISTORY.get, job_id=safe_id)
     if record:
-        path = record.original_path if kind == "original" else record.cleaned_path
-        if path.is_file():
-            return path
+        raw = record.original_path if kind == "original" else record.cleaned_path
+        if raw and Path(raw).is_file():
+            return Path(raw)
 
     directory = UPLOAD_DIR if kind == "original" else OUTPUT_DIR
     matches = sorted(directory.glob(f"{safe_id}*")) if directory.is_dir() else []
@@ -558,11 +564,44 @@ async def healthz() -> Dict[str, Any]:
     }
 
 
+async def _record_failure(
+    job_id: str,
+    device: Optional[str],
+    filename: Optional[str],
+    exc: Exception,
+) -> None:
+    """Write a ``failed`` history row, never letting bookkeeping mask the error.
+
+    Only the user-facing message is stored: the app renders it verbatim, so raw
+    ffmpeg stderr must not get in. Any failure to record is logged and
+    swallowed, because the original exception is the one worth propagating.
+    """
+    if not device:
+        return
+    if isinstance(exc, AudioProcessingError):
+        message = exc.user_message
+    elif isinstance(exc, HTTPException):
+        message = str(exc.detail)
+    else:  # pragma: no cover - defensive
+        message = "Processing failed."
+    try:
+        await asyncio.to_thread(
+            HISTORY.record_failure,
+            job_id=job_id,
+            device_id=device,
+            original_name=filename or job_id,
+            error=message,
+        )
+    except Exception:  # pragma: no cover - bookkeeping must never mask the cause
+        LOGGER.exception("job=%s could not record failure", job_id)
+
+
 @app.post("/upload")
 async def upload(
     background_tasks: BackgroundTasks,
     request: Request,
     file: UploadFile = File(..., description="Audio file: .wav, .mp3 or .m4a"),
+    x_device_id: Optional[str] = Header(default=None, alias="X-Device-Id"),
 ) -> JSONResponse:
     """Accept an audio file, de-reverb it, and return results + benchmarks.
 
@@ -581,6 +620,8 @@ async def upload(
     suffix = _validate_filename(file.filename)
     job_id = str(uuid.uuid4())
     stored_upload = UPLOAD_DIR / f"{job_id}_original{suffix}"
+    # Optional: the web dashboard sends none and simply gets no history.
+    device = normalise_device_id(x_device_id)
 
     request_started = time.perf_counter()
     try:
@@ -602,15 +643,19 @@ async def upload(
             result = await asyncio.to_thread(
                 PIPELINE.process, stored_upload, job_id=job_id, work_dir=OUTPUT_DIR
             )
-    except (HTTPException, AudioProcessingError):
+    except (HTTPException, AudioProcessingError) as exc:
         stored_upload.unlink(missing_ok=True)
+        # The reference app lists failed runs; record one so History matches.
+        await _record_failure(job_id, device, file.filename, exc)
         raise
     except Exception as exc:  # pragma: no cover - last-resort safety net
         stored_upload.unlink(missing_ok=True)
         LOGGER.exception("job=%s unexpected failure", job_id)
-        raise HTTPException(
+        failure = HTTPException(
             status_code=500, detail="Processing failed unexpectedly. Please try again."
-        ) from exc
+        )
+        await _record_failure(job_id, device, file.filename, failure)
+        raise failure from exc
     finally:
         await file.close()
 
@@ -627,15 +672,17 @@ async def upload(
     payload["matrix"] = build_comparison_matrix(result.original, result.benchmark)
     payload["retention_minutes"] = int(RETENTION_MINUTES)
 
-    await JOB_STORE.put(
-        JobRecord(
-            job_id=job_id,
-            original_name=file.filename or f"{job_id}{suffix}",
-            original_path=stored_upload,
-            cleaned_path=result.cleaned.path,
-            created_at=time.time(),
-            payload=payload,
-        )
+    await asyncio.to_thread(
+        HISTORY.record_success,
+        job_id=job_id,
+        device_id=device,
+        original_name=file.filename or f"{job_id}{suffix}",
+        original_path=stored_upload,
+        cleaned_path=result.cleaned.path,
+        duration_seconds=result.original.duration_seconds,
+        size_bytes=result.original.size_bytes,
+        engine=result.engine,
+        payload=payload,
     )
     # Housekeeping runs after the response is flushed, never on the hot path.
     background_tasks.add_task(_run_retention_sweep)
@@ -645,10 +692,84 @@ async def upload(
 @app.get("/jobs/{job_id}")
 async def job_details(job_id: str) -> Dict[str, Any]:
     """Return the stored payload for a job (handy for the API and for polling)."""
-    record = await JOB_STORE.get(_parse_job_id(job_id))
+    record = await asyncio.to_thread(HISTORY.get, job_id=_parse_job_id(job_id))
     if not record:
         raise HTTPException(status_code=404, detail="That job has expired or never existed.")
-    return record.payload
+    return record.detail()
+
+
+# --------------------------------------------------------------------------- #
+# Mobile history API (device-scoped, no accounts)
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/jobs")
+async def list_jobs(
+    limit: int = 50,
+    offset: int = 0,
+    x_device_id: Optional[str] = Header(default=None, alias="X-Device-Id"),
+) -> Dict[str, Any]:
+    """Newest-first history for the calling device, for the History tab."""
+    device = _require_device(x_device_id)
+    rows = await asyncio.to_thread(
+        HISTORY.list_for_device, device, limit=limit, offset=offset
+    )
+    total = await asyncio.to_thread(HISTORY.count_for_device, device)
+    return {
+        "jobs": [row.summary() for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "retention_minutes": int(RETENTION_MINUTES),
+    }
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(
+    job_id: str,
+    x_device_id: Optional[str] = Header(default=None, alias="X-Device-Id"),
+) -> Dict[str, Any]:
+    """One history entry, scoped to the calling device."""
+    device = _require_device(x_device_id)
+    row = await asyncio.to_thread(
+        HISTORY.get, job_id=_parse_job_id(job_id), device_id=device
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="That job is not in your history.")
+    return row.detail()
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(
+    job_id: str,
+    x_device_id: Optional[str] = Header(default=None, alias="X-Device-Id"),
+) -> Dict[str, Any]:
+    """Remove one entry and its audio. Backs swipe-to-delete in History."""
+    device = _require_device(x_device_id)
+    row = await asyncio.to_thread(
+        HISTORY.delete, job_id=_parse_job_id(job_id), device_id=device
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="That job is not in your history.")
+    for raw in (row.original_path, row.cleaned_path):
+        if raw:
+            Path(raw).unlink(missing_ok=True)
+    return {"deleted": row.job_id}
+
+
+@app.delete("/api/jobs")
+async def clear_history(
+    x_device_id: Optional[str] = Header(default=None, alias="X-Device-Id"),
+) -> Dict[str, Any]:
+    """Delete every entry for this device. Backs 'Clear history' in Settings."""
+    device = _require_device(x_device_id)
+    rows = await asyncio.to_thread(HISTORY.list_for_device, device, limit=200)
+    for row in rows:
+        for raw in (row.original_path, row.cleaned_path):
+            if raw:
+                Path(raw).unlink(missing_ok=True)
+    removed = await asyncio.to_thread(HISTORY.purge_device, device)
+    return {"deleted": removed}
 
 
 @app.get("/audio/{job_id}/{kind}")
@@ -664,7 +785,7 @@ async def stream_audio(job_id: str, kind: str) -> FileResponse:
 async def download_cleaned(job_id: str) -> FileResponse:
     """Download the cleaned file, named after the user's original upload."""
     path = await _locate(job_id, "cleaned")
-    record = await JOB_STORE.get(_parse_job_id(job_id))
+    record = await asyncio.to_thread(HISTORY.get, job_id=_parse_job_id(job_id))
     stem = _safe_download_stem(record.original_name) if record else "audio"
     # `filename=` lets Starlette build (and correctly quote) Content-Disposition;
     # setting that header by hand is what allowed injection.

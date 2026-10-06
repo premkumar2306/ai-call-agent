@@ -4,13 +4,19 @@ A production-ready MVP micro-SaaS: drop in a reverberant recording, get a clean,
 echo-free file back in one click — plus a **Competitor Comparison Matrix** that
 benchmarks your file's real processing numbers against the legacy desktop tools.
 
+Two clients share one backend: a Tailwind web dashboard and an Expo
+(React Native) app for iOS, Android and web.
+
 ```
-dereverb/
+.
 ├── main.py              FastAPI app: routing, upload limits, benchmarks, matrix, cleanup
 ├── audio_processor.py   DeepFilterNet pipeline: decode → enhance → (tail gate) → encode
+├── job_store.py         SQLite job history, scoped by anonymous device id
 ├── templates/
 │   └── index.html       Tailwind dashboard: dropzone, progress, A/B players, matrix
+├── mobile/              Expo app — Create · History · Settings (see mobile/README.md)
 ├── requirements.txt     Python dependencies
+├── .gitignore
 └── README.md
 ```
 
@@ -19,6 +25,10 @@ dereverb/
 ## Quick start
 
 ```bash
+# 0. Get the code
+git clone https://github.com/premkumar2306/echostrip.git
+cd echostrip
+
 # 1. System dependency (decoding mp3/m4a and normalising to 48 kHz mono)
 sudo apt-get install -y ffmpeg
 
@@ -85,7 +95,9 @@ All settings are environment variables with production-safe defaults.
 | `DEREVERB_MAX_DURATION_SECONDS` | `900` | Reject very long files before processing |
 | `DEREVERB_MAX_CONCURRENT_JOBS` | `2` | Inference slots; extra requests queue |
 | `DEREVERB_STORAGE_DIR` | `./storage` | Where uploads/outputs live |
-| `DEREVERB_RETENTION_MINUTES` | `60` | Artefacts auto-deleted after this |
+| `DEREVERB_RETENTION_MINUTES` | `10080` (7 days) | Audio auto-deleted after this; history rows are kept |
+| `DEREVERB_DB_PATH` | `<storage>/jobs.db` | SQLite file holding job history |
+| `DEREVERB_ALLOWED_ORIGINS` | `*` | CORS origins for browser clients |
 | `DEREVERB_JANITOR_INTERVAL` | `300` | Seconds between retention sweeps |
 | `DEREVERB_ENGINE` | `auto` | `auto` \| `python` \| `cli` |
 | `DEREVERB_WARMUP` | `0` | `1` loads weights at boot, not on first request |
@@ -115,6 +127,30 @@ avoid musical-noise artefacts. It is **off by default** — turn it on per-deplo
 | `GET` | `/audio/{job_id}/cleaned` | Cleaned audio for `<audio>` playback |
 | `GET` | `/download/{job_id}` | Cleaned audio as an attachment |
 | `GET` | `/healthz` | Status, engine availability, limits |
+
+### Mobile history API (device-scoped, no accounts)
+
+The app sends an `X-Device-Id` header — a UUID it generates on first launch and
+keeps locally. That header is the only thing tying a job to a user; there are no
+accounts and no personal data. A missing or malformed value is rejected with
+`400` rather than silently returning an empty list.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/jobs?limit=&offset=` | Newest-first history for this device |
+| `GET` | `/api/jobs/{job_id}` | One entry, including the full result payload |
+| `DELETE` | `/api/jobs/{job_id}` | Remove one entry and its audio |
+| `DELETE` | `/api/jobs` | Clear this device's entire history |
+
+History **rows outlive the audio**. The retention sweep deletes files on
+schedule but keeps the row, which then reports `files_available: false` — so a
+month-old job still lists, marked `Expired`, instead of vanishing. Uploads from
+the web dashboard carry no device id and are stored with `device_id = NULL`:
+recorded for operations, never listable by any device.
+
+Jobs that *fail* are recorded too, so the History tab can show `Failed` with the
+user-facing reason (never raw ffmpeg stderr), matching what a user expects after
+a bad upload.
 
 ```bash
 curl -F "file=@room.wav" localhost:8000/upload
@@ -184,6 +220,25 @@ per file. `edge.round_trip_saved` combines machine time with hands-on human time
 * **Intermediates are always cleaned up**, including when a job fails.
 * **Logging**: every stage logs `job=<uuid> stage=… elapsed=…`, so a failed
   conversion can be traced to the exact stage and its ffmpeg stderr.
+
+## Mobile app
+
+`mobile/` is an Expo (SDK 57) app with three tabs:
+
+* **Create** — pick a `.wav` / `.mp3` / `.m4a`, upload with a real progress bar,
+  and watch the pipeline's stages narrated while the server works.
+* **History** — every recording this device has run, with `Done` / `Failed` /
+  `Expired` status, duration, size and relative time. Tap to re-open, long-press
+  to delete, pull to refresh.
+* **Settings** — light / dark / system appearance (persisted), server and engine
+  status, the privacy note with this device's id, and clear-all-history.
+
+Tapping an entry opens the result screen: measured benchmarks, Original vs
+Cleaned players, the Competitor Comparison Matrix laid out for a phone, and
+export to the system share sheet.
+
+See `mobile/README.md` for running it and for the `EXPO_PUBLIC_API_URL` setup a
+physical device needs.
 
 ## Frontend notes
 
