@@ -23,6 +23,10 @@ export async function validateTwilioSignature(
   return timingSafeEqual(btoa(String.fromCharCode(...new Uint8Array(sig))), signature);
 }
 
+export function twilioSignedUrl(webhookUrl: string, path: string, requestUrl: string): string {
+  return `${webhookUrl.replace(/\/$/, '')}${path}${new URL(requestUrl).search}`;
+}
+
 function twiml(say: string, gatherAction?: string): string {
   const gather = gatherAction
     ? `<Gather input="speech" action="${xml(gatherAction)}" speechTimeout="3" language="en-US" enhanced="true"></Gather>`
@@ -56,7 +60,7 @@ async function checkSig(c: Context<HonoEnv>, path: string): Promise<boolean> {
   const body      = await c.req.parseBody();
   const signature = c.req.header('x-twilio-signature') ?? '';
   // Twilio signs the full URL it called, including any query string.
-  const url = `${webhookUrl.replace(/\/$/, '')}${path}${new URL(c.req.url).search}`;
+  const url = twilioSignedUrl(webhookUrl, path, c.req.url);
   return validateTwilioSignature(authToken, signature, url, body as Record<string, string>);
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { timingSafeEqual, customerHashSalt, tokenSecretKey } from '../src/config';
-import { validateTwilioSignature } from '../src/routes/twilio';
+import { twilioSignedUrl, validateTwilioSignature } from '../src/routes/twilio';
 import { verifyMetaSignature, isOptOut } from '../src/routes/whatsapp';
 import { signStreamToken, verifyStreamToken } from '../src/utils/stream-token';
 import { escapeHtml } from '../src/services/email.service';
@@ -45,6 +45,14 @@ describe('validateTwilioSignature', () => {
     expect(await validateTwilioSignature('tok', sig, url, params)).toBe(true);
     expect(await validateTwilioSignature('tok', sig, url, { ...params, From: '+1999' })).toBe(false);
     expect(await validateTwilioSignature('other', sig, url, params)).toBe(false);
+  });
+
+  it('includes the request query string in the signed webhook URL', () => {
+    expect(twilioSignedUrl(
+      'https://example.workers.dev/',
+      '/twilio/inbound',
+      'https://internal.example/twilio/inbound?businessType=kovai_wellness_clinic',
+    )).toBe('https://example.workers.dev/twilio/inbound?businessType=kovai_wellness_clinic');
   });
 });
 
