@@ -44,32 +44,78 @@ function xml(s: string) {
 
 const TEXT_XML = { 'Content-Type': 'text/xml' };
 
+// Three outcomes, not two. "We are misconfigured" and "this request is not
+// from Twilio" both used to collapse into a bare 403, which Twilio renders to
+// the caller as "an application error has occurred" — identical for an
+// operator mistake and an attack, and diagnosable only by finding the logs.
+type SigCheck =
+  | { ok: true }
+  | { ok: false; reason: 'misconfigured'; missing: string[] }
+  | { ok: false; reason: 'bad_signature' };
+
 // Fails closed in production: a missing TWILIO_AUTH_TOKEN/TWILIO_WEBHOOK_URL
 // must not silently turn signature checking off.
-async function checkSig(c: Context<HonoEnv>, path: string): Promise<boolean> {
+async function checkSig(c: Context<HonoEnv>, path: string): Promise<SigCheck> {
   const authToken  = c.env.TWILIO_AUTH_TOKEN;
   const webhookUrl = c.env.TWILIO_WEBHOOK_URL;
-  if (c.env.NODE_ENV === 'development') return true;
+  if (c.env.NODE_ENV === 'development') return { ok: true };
   if (!authToken || !webhookUrl) {
-    if (isProduction(c.env)) {
-      console.error('[twilio] TWILIO_AUTH_TOKEN / TWILIO_WEBHOOK_URL not set — rejecting webhook');
-      return false;
-    }
-    return true;
+    const missing = [
+      !authToken && 'TWILIO_AUTH_TOKEN',
+      !webhookUrl && 'TWILIO_WEBHOOK_URL',
+    ].filter(Boolean) as string[];
+    if (isProduction(c.env)) return { ok: false, reason: 'misconfigured', missing };
+    return { ok: true };
   }
   const body      = await c.req.parseBody();
   const signature = c.req.header('x-twilio-signature') ?? '';
   // Twilio signs the full URL it called, including any query string.
+  // main extracted this into a tested helper; use it rather than rebuilding
+  // the same string inline.
   const url = twilioSignedUrl(webhookUrl, path, c.req.url);
-  return validateTwilioSignature(authToken, signature, url, body as Record<string, string>);
+  if (await validateTwilioSignature(authToken, signature, url, body as Record<string, string>)) {
+    return { ok: true };
+  }
+  // By far the most common cause is TWILIO_WEBHOOK_URL not matching the host
+  // Twilio actually dialled — after a Worker rename, a custom domain, or a
+  // console URL edit. The signature is over the URL string, so a host that
+  // differs by one character fails exactly like a forged request. Log both so
+  // a single `wrangler tail` line settles which it is. No secrets here: the
+  // URLs are public and the signature is already a public request header.
+  const actual = new URL(c.req.url);
+  console.error(JSON.stringify({
+    level: 'error', msg: 'twilio signature mismatch', path,
+    signedUrl: url,
+    requestUrl: `${actual.origin}${actual.pathname}${actual.search}`,
+    hostMatches: actual.origin === new URL(webhookUrl).origin,
+    hasSignatureHeader: signature.length > 0,
+  }));
+  return { ok: false, reason: 'bad_signature' };
 }
 
 function requireTwilioSig(path: string) {
   return async (c: Context<HonoEnv>, next: Next) => {
-    if (!await checkSig(c, path)) {
-      return c.text('<?xml version="1.0"?><Response><Say>Forbidden.</Say></Response>', 403, TEXT_XML);
+    const check = await checkSig(c, path);
+    if (check.ok) return await next();
+
+    if (check.reason === 'misconfigured') {
+      // Our fault, not the caller's and not an attacker's. Say so out loud in
+      // the logs, and tell the caller something true instead of letting
+      // Twilio play its generic application-error message. Still no agent and
+      // no tool access, so this concedes nothing to someone probing the
+      // endpoint — they learn only that the line is down, which the generic
+      // error already told them.
+      console.error(`[twilio] ${check.missing.join(' and ')} not set — rejecting webhook. `
+        + 'Set with: wrangler secret put <NAME>. TWILIO_WEBHOOK_URL must be the exact public '
+        + 'base URL Twilio dials, e.g. https://mogi-platform.<account>.workers.dev');
+      return c.text(
+        '<?xml version="1.0"?><Response><Say>This line is not fully configured yet. '
+        + 'Please try again later.</Say></Response>',
+        200, TEXT_XML,
+      );
     }
-    await next();
+
+    return c.text('<?xml version="1.0"?><Response><Say>Forbidden.</Say></Response>', 403, TEXT_XML);
   };
 }
 
@@ -83,7 +129,24 @@ twilioRouter.post('/inbound', requireTwilioSig('/twilio/inbound'), withTwilioSes
   // (query strings on <Stream url> aren't reliably forwarded by Twilio's real client,
   // but our own synthetic test harness relies on it).
   const streamUrl  = `wss://${host}/twilio/stream?businessType=${encodeURIComponent(businessType)}`;
-  const streamToken = await signStreamToken(c.env, businessType);
+
+  // tokenSecretKey() throws when TOKEN_SECRET is unset or under 32 chars in
+  // production. Unhandled, that becomes a 500 and Twilio plays its generic
+  // application-error message — the same thing the caller hears for every
+  // other fault, with nothing naming the cause.
+  let streamToken: string;
+  try {
+    streamToken = await signStreamToken(c.env, businessType);
+  } catch (err: any) {
+    console.error(`[twilio] cannot mint stream token: ${err?.message || err}. `
+      + 'Set a TOKEN_SECRET of at least 32 characters: wrangler secret put TOKEN_SECRET');
+    return c.text(
+      '<?xml version="1.0"?><Response><Say>This line is not fully configured yet. '
+      + 'Please try again later.</Say></Response>',
+      200, TEXT_XML,
+    );
+  }
+
   return c.text(
     `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${xml(streamUrl)}">` +
     `<Parameter name="businessType" value="${xml(businessType)}"/>` +

@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { requestId } from 'hono/request-id';
 import type { Env } from './types';
+import { missingProductionConfig } from './config';
 import { getSectors } from './services/sector.service';
 import type { HonoEnv } from './middleware';
 import { authRouter } from './routes/auth';
@@ -68,8 +69,13 @@ app.get('/health', async (c) => {
     c.env.CACHE.get('health:probe'),
   ]);
   const [db, kv] = checks.map(r => (r.status === 'fulfilled' ? 'ok' : 'error'));
-  const ok = db === 'ok' && kv === 'ok';
-  return c.json({ status: ok ? 'ok' : 'degraded', db, kv }, ok ? 200 : 503);
+  const missing = missingProductionConfig(c.env);
+  const ok = db === 'ok' && kv === 'ok' && missing.length === 0;
+  // `missing` names variables, never values. A binding can be healthy while
+  // the phone line is dead for want of a secret, and that gap is exactly how
+  // a deploy passed its smoke test while every inbound call failed — so
+  // unset required config is a 503 here, not a footnote.
+  return c.json({ status: ok ? 'ok' : 'degraded', db, kv, config: { missing } }, ok ? 200 : 503);
 });
 
 // ── Sectors list (public) ───────────────────────────────────────────────────

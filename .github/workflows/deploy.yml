@@ -61,15 +61,23 @@ jobs:
       # Requires the deep-check fields, which only the new code returns, so a
       # stale edge serving the previous version can't pass. New versions take
       # a few seconds to propagate after `wrangler deploy` returns.
+      #
+      # config.missing must also be empty. Healthy bindings alongside an unset
+      # secret is exactly the state that let a deploy go green while every
+      # inbound call failed, so db+kv ok is not sufficient on its own.
       - name: Smoke test
         run: |
           for i in $(seq 1 10); do
             body=$(curl -sS --max-time 10 "$WORKER_URL/health?deep=1" || true)
             echo "attempt $i: $body"
-            if echo "$body" | grep -q '"db":"ok"' && echo "$body" | grep -q '"kv":"ok"'; then exit 0; fi
+            if echo "$body" | grep -q '"db":"ok"' \
+              && echo "$body" | grep -q '"kv":"ok"' \
+              && echo "$body" | grep -q '"missing":\[\]'; then exit 0; fi
             sleep 6
           done
-          echo "::error::$WORKER_URL/health?deep=1 never reported db+kv ok after deploy"
+          echo "::error::$WORKER_URL/health?deep=1 never reported db+kv ok with complete config. \
+          A non-empty config.missing names variables that are unset — \
+          set each with 'wrangler secret put <NAME>'."
           exit 1
 
   deploy-web:

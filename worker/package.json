@@ -13,7 +13,8 @@
     "db:migrate": "wrangler d1 migrations apply DB --remote",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:bootstrap:local": "wrangler d1 execute DB --local --file=./schema.sql && wrangler d1 migrations apply DB --local",
-    "simulate-call": "node scripts/simulate-call.mjs"
+    "simulate-call": "node scripts/simulate-call.mjs",
+    "diagnose-voice": "node scripts/diagnose-voice.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
