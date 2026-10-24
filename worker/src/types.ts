@@ -101,9 +101,11 @@ export interface Env {
   // live calls without a code change.
   DG_MODEL?: string;
   DG_LANGUAGE?: string;
-  // Set to '0'/'false' to make barge-in wait for the first interim transcript
-  // instead of Deepgram's VAD SpeechStarted event. Slower to react, but takes
-  // recognised words rather than any voice activity.
+  // How eagerly the assistant stops talking: 'final' (default), 'interim' or
+  // 'vad'. See BargeInMode in durable-objects/call-relay.ts. Raise it only on
+  // a line confirmed not to echo our own audio back into the inbound track.
+  VOICE_BARGE_IN_MODE?: string;
+  /** @deprecated Superseded by VOICE_BARGE_IN_MODE; still honoured. */
   VOICE_BARGE_IN_ON_VAD?: string;
   // Set to '0'/'false' to disable speaking a self-sufficient tool result
   // directly and always round-trip it through Claude for paraphrasing.
