@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+# No per-version public preview URLs: every version would otherwise be
+# reachable (with production secrets) at its own URL.
+preview_urls = false
 # Ship source maps so stack traces in logs point at src/, not the bundle.
 upload_source_maps = true
 
