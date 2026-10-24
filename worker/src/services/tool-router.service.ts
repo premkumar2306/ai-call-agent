@@ -27,7 +27,7 @@ async function setCart(env: Env, key: string, cart: { productId: string; quantit
 
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 
-function parseHoursRange(range: string): { openH: number; closeH: number } | null {
+export function parseHoursRange(range: string): { openH: number; closeH: number } | null {
   // e.g. "8am–7pm" or "7:30am–6pm"
   const m = range.match(/^(\d+)(?::(\d+))?(am|pm)[–-](\d+)(?::(\d+))?(am|pm)$/i);
   if (!m) return null;
@@ -71,6 +71,25 @@ export async function getBookedDatetimes(env: Env, businessType: string): Promis
   return new Set(booked.map(r => r.scheduledAt!.slice(0, 16)));
 }
 
+// Calendar date + weekday of `date` as seen in the business's timezone.
+// Slot times are business-local wall-clock values, so the day they fall on
+// must come from that zone, not from the Worker's UTC clock (otherwise a
+// Chicago shop's Monday hours get offered on Sunday evening local time).
+export function localDay(date: Date, timeZone: string | undefined): { ymd: string; dayKey: typeof DAY_NAMES[number] } {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+    }).formatToParts(date);
+  } catch {
+    // Unknown IANA zone in sector config — fall back rather than fail the tool.
+    return localDay(date, 'UTC');
+  }
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '';
+  const dayKey = get('weekday').toLowerCase().slice(0, 3) as typeof DAY_NAMES[number];
+  return { ymd: `${get('year')}-${get('month')}-${get('day')}`, dayKey };
+}
+
 async function getAvailableSlots(
   env: Env,
   businessType: string,
@@ -84,9 +103,9 @@ async function getAvailableSlots(
   const durationH = durationMinutes / 60;
 
   for (let dayOffset = 1; dayOffset <= 14 && rawSlots.length < 20; dayOffset++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() + dayOffset);
-    const dayKey = DAY_NAMES[d.getDay()];
+    const { ymd: dateStr, dayKey } = localDay(new Date(now.getTime() + dayOffset * 86_400_000), meta?.timezone);
+    // Noon UTC on the local date: safe to format as a label in any zone.
+    const labelDate = new Date(`${dateStr}T12:00:00Z`);
     const hoursStr = meta?.hours[dayKey];
     if (!hoursStr) continue;
 
@@ -97,9 +116,8 @@ async function getAvailableSlots(
       const ampm = h >= 12 ? 'PM' : 'AM';
       const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
       const timeLabel = `${h12}:00 ${ampm}`;
-      const dateStr = d.toISOString().slice(0, 10);
       const hPad = String(h).padStart(2, '0');
-      const dateLabel = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+      const dateLabel = labelDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
       rawSlots.push({
         date: dateStr,
         time: timeLabel,
@@ -410,9 +428,23 @@ export async function executeTool(
         return { success: false, spoken_response: `Unknown tool: ${toolName}`, error: 'UNKNOWN_TOOL' };
     }
   } catch (err: any) {
-    return { success: false, spoken_response: `Sorry, something went wrong: ${err.message}`, error: err.code ?? 'ERROR' };
+    const code: string = err?.code ?? 'ERROR';
+    // Known business errors get a caller-safe sentence; anything else is
+    // logged, never spoken — raw error text can leak internals (SQL, URLs).
+    const known = TOOL_ERROR_MESSAGES[code];
+    if (!known) console.error(`[tool:${toolName}] error`, err?.message || err);
+    return { success: false, spoken_response: known ?? "Sorry, I ran into a problem with that. Could you try again?", error: code };
   }
 }
+
+const TOOL_ERROR_MESSAGES: Record<string, string> = {
+  NOT_FOUND: "I couldn't find that one.",
+  INVALID_SECTOR: "That service isn't offered here.",
+  ADDRESS_REQUIRED: "I'll need a shipping address for that item.",
+  INVALID_STATUS: "That booking can't be changed anymore.",
+  INVALID_SCHEDULE: "I need a valid upcoming date and time for that booking.",
+  SLOT_TAKEN: "Sorry, that time was just taken. Want me to check other openings?",
+};
 
 // ── Tool definitions — sector-agnostic, voice-optimised ───────────────────
 // Each sector populates the category enum from its SECTORS metadata.

@@ -12,6 +12,7 @@ interface SectorConfig {
 interface Props {
   sector: string;
   base: string;
+  adminKey: string;
 }
 
 function Toast({ msg, type, onClear }: { msg: string; type: 'ok' | 'error' | ''; onClear: () => void }) {
@@ -38,9 +39,7 @@ const inputStyle: React.CSSProperties = {
   color: '#fff', padding: '10px 14px', fontSize: 14, outline: 'none', boxSizing: 'border-box',
 };
 
-const ADMIN_KEY = import.meta.env.VITE_ADMIN_KEY ?? '';
-
-export default function Dashboard({ sector, base }: Props) {
+export default function Dashboard({ sector, base, adminKey }: Props) {
   const [cfg, setCfg] = useState<SectorConfig>({
     storeName: '', greeting: '', agentName: 'Mogi',
     primaryColor: '#6c47ff', supportEmail: '', maxRecommendations: 3,
@@ -52,13 +51,15 @@ export default function Dashboard({ sector, base }: Props) {
 
   const loadConfig = useCallback(async () => {
     try {
-      const res = await fetch(`${base}/admin/config/${sector}`);
+      if (!sector || !adminKey) return;
+      const res = await fetch(`${base}/admin/config/${sector}`, { headers: { 'X-Admin-Key': adminKey } });
       const json = await res.json();
       if (json.success) setCfg(json.data);
+      else showToast(res.status === 401 ? 'Admin key rejected' : 'Failed to load config', 'error');
     } catch {
       showToast('Failed to load config', 'error');
     }
-  }, [sector, base]);
+  }, [sector, base, adminKey]);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
 
@@ -67,7 +68,7 @@ export default function Dashboard({ sector, base }: Props) {
     try {
       const res = await fetch(`${base}/admin/config/${sector}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
         body: JSON.stringify(cfg),
       });
       if (res.ok) showToast('Saved!');

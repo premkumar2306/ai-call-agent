@@ -2,6 +2,15 @@ name = "mogi-platform"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+# Ship source maps so stack traces in logs point at src/, not the bundle.
+upload_source_maps = true
+
+# Workers Logs: persisted, queryable logs in the dashboard (wrangler tail
+# only shows live output). Lower head_sampling_rate if volume gets costly.
+[observability]
+enabled = true
+head_sampling_rate = 1
 
 [[d1_databases]]
 binding = "DB"
@@ -34,7 +43,21 @@ TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
 WA_DEFAULT_BUSINESS_TYPE = "dental"
 # WA_PHONE_NUMBER_MAP = '{"PHONE_NUMBER_ID_1":"dental","PHONE_NUMBER_ID_2":"auto_shop"}'
 
+# ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # optional override, see src/config.ts
+# ALLOWED_ORIGINS = "https://admin.example.com"  # extra CORS origins for the admin UI
+
 # Secrets — run: wrangler secret put <NAME>
+# Required in production (the Worker fails closed without them):
+# TOKEN_SECRET          (>= 32 random chars; signs session + media-stream tokens)
+# CUSTOMER_HASH_SALT    (HMAC salt for customer/phone identifiers — never rotate casually)
+# ANTHROPIC_API_KEY
+# ADMIN_SECRET          (X-Admin-Key for /admin/*)
+# TWILIO_AUTH_TOKEN     (webhook signature verification)
+# TWILIO_WEBHOOK_URL    (public base URL Twilio calls, e.g. https://mogi-platform.<acct>.workers.dev)
+# DEEPGRAM_API_KEY, CARTESIA_API_KEY   (voice)
+# Optional: MOGI_SECRET, RESEND_API_KEY, EMAIL_FROM, CARTESIA_VOICE_ID, CARTESIA_MODEL_ID
+#
+# WhatsApp (required if the /whatsapp webhook is in use):
 # WA_APP_SECRET         (Meta app secret → X-Hub-Signature-256)
 # WA_VERIFY_TOKEN       (arbitrary string you pick, enter in Meta webhook config)
 # WA_PHONE_NUMBER_ID    (found in Meta for Developers → WhatsApp → Phone Numbers)

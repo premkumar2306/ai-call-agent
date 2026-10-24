@@ -11,13 +11,13 @@
  * Worker's /twilio/stream route instead.
  *
  * Usage:
- *   node test/simulate-call.js                                  # 2s silence — tests connection + greeting
- *   node test/simulate-call.js path/to/speech.wav                # real speech — tests full STT→LLM→TTS
- *   RELAY_URL=wss://<preview>.workers.dev/twilio/stream node test/simulate-call.js speech.wav
- *   BUSINESS_TYPE=kovai_wellness_clinic node test/simulate-call.js speech.wav
+ *   node scripts/simulate-call.mjs                                  # 2s silence — tests connection + greeting
+ *   node scripts/simulate-call.mjs path/to/speech.wav                # real speech — tests full STT→LLM→TTS
+ *   RELAY_URL=wss://<preview>.workers.dev/twilio/stream node scripts/simulate-call.mjs speech.wav
+ *   BUSINESS_TYPE=kovai_wellness_clinic node scripts/simulate-call.mjs speech.wav
  *
  * The WAV file is auto-converted to µ-law 8 kHz mono via ffmpeg.
- * Received TTS audio is saved to test/received-<timestamp>.ul
+ * Received TTS audio is saved to scripts/received-<timestamp>.ul
  *
  * Timing: watch for "⏱ first-chunk-spoken" in the Worker's console log
  * (wrangler dev / `wrangler tail`) — that's the metric this test exists to

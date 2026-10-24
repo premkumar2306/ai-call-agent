@@ -7,26 +7,20 @@ interface DebugEntry { turn: number; utterance: string; tool_calls: ToolCall[]; 
 interface Props { sector: string; base: string }
 
 // ── Speech helpers — Deepgram STT + Cartesia TTS ─────────────────────────────
+// Both are proxied through the Worker (/mogi/transcribe, /mogi/tts) so no
+// provider API key is ever shipped in the browser bundle.
 
-const CA_KEY = import.meta.env.VITE_CARTESIA_API_KEY ?? '';
-const CA_VOICE = import.meta.env.VITE_CARTESIA_VOICE_ID ?? '791d5162-d5eb-40f0-8189-f19db44611d8';
-
-async function speak(text: string, onEnd?: () => void) {
-  const res = await fetch('https://api.cartesia.ai/tts/bytes', {
+async function speak(base: string, token: string, text: string, onEnd?: () => void) {
+  const res = await fetch(`${base}/mogi/tts`, {
     method: 'POST',
-    headers: { 'Cartesia-Version': '2025-04-16', 'X-API-Key': CA_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model_id: 'sonic-3',
-      transcript: text,
-      voice: { mode: 'id', id: CA_VOICE },
-      output_format: { container: 'wav', encoding: 'pcm_f32le', sample_rate: 44100 },
-    }),
-  });
-  if (!res.ok) { console.error('Cartesia TTS error', res.status); onEnd?.(); return; }
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).catch(() => null);
+  if (!res?.ok) { console.error('TTS error', res?.status); onEnd?.(); return; }
   const url = URL.createObjectURL(await res.blob());
   const audio = new Audio(url);
   audio.onended = () => { URL.revokeObjectURL(url); onEnd?.(); };
-  audio.play();
+  audio.play().catch(() => { URL.revokeObjectURL(url); onEnd?.(); });
 }
 
 // No shared secret sent from browser — JWT Bearer token is the only auth
@@ -44,13 +38,6 @@ const s = {
 
 
 export default function VoiceTest({ sector: defaultSector, base }: Props) {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
-  useEffect(() => {
-    const h = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', h);
-    return () => window.removeEventListener('resize', h);
-  }, []);
-
   const [sector, setSector] = useState(defaultSector);
   const [customerId, setCustomerId] = useState('customer-001');
   const [token, setToken] = useState<string | null>(null);
@@ -152,7 +139,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
         // Speak the response in voice mode, then re-arm the mic
         if (voiceMode && json.data.spoken_response) {
           setSpeaking(true);
-          speak(json.data.spoken_response, () => {
+          speak(base, token, json.data.spoken_response, () => {
             setSpeaking(false);
             startListening();
           });

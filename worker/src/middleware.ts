@@ -1,6 +1,7 @@
 import { Context, Next } from 'hono';
 import { jwtVerify } from 'jose';
 import type { Env, SessionPayload } from './types';
+import { timingSafeEqual, tokenSecretKey } from './config';
 
 export type HonoEnv = {
   Bindings: Env;
@@ -13,14 +14,24 @@ export async function withSession(c: Context<HonoEnv>, next: Next) {
   if (!auth?.startsWith('Bearer ')) {
     return c.json({ success: false, error: 'Bearer token required' }, 401);
   }
+  let session: SessionPayload;
   try {
-    const key = new TextEncoder().encode(c.env.TOKEN_SECRET);
-    const { payload } = await jwtVerify(auth.slice(7), key);
-    c.set('session', payload as unknown as SessionPayload);
-    await next();
+    session = await verifySessionToken(c.env, auth.slice(7));
   } catch {
     return c.json({ success: false, error: 'Invalid or expired token' }, 401);
   }
+  c.set('session', session);
+  // next() is outside the try so downstream errors reach the global error
+  // handler instead of being misreported as an auth failure.
+  await next();
+}
+
+export async function verifySessionToken(env: Env, token: string): Promise<SessionPayload> {
+  const { payload } = await jwtVerify(token, tokenSecretKey(env), { algorithms: ['HS256'] });
+  if (typeof payload.sub !== 'string' || typeof payload.businessType !== 'string') {
+    throw new Error('Malformed session token');
+  }
+  return payload as unknown as SessionPayload;
 }
 
 // Builds the fallback anonymous-caller session used when a Twilio webhook has
@@ -51,16 +62,16 @@ export async function withTwilioSession(c: Context<HonoEnv>, next: Next) {
   const token = c.req.query('token');
 
   if (token) {
+    let session: SessionPayload;
     try {
-      const key = new TextEncoder().encode(c.env.TOKEN_SECRET);
-      const { payload } = await jwtVerify(token, key);
-      c.set('session', payload as unknown as SessionPayload);
-      return await next();
+      session = await verifySessionToken(c.env, token);
     } catch {
       return c.text('<?xml version="1.0"?><Response><Say>Session expired. Please call back.</Say></Response>', 200, {
         'Content-Type': 'text/xml',
       });
     }
+    c.set('session', session);
+    return await next();
   }
 
   // No token — ?businessType= query param overrides the env var default
@@ -76,8 +87,11 @@ export async function withTwilioSession(c: Context<HonoEnv>, next: Next) {
 }
 
 // Service-to-service auth — keep off the browser
+// Fails closed: an unset MOGI_SECRET rejects every request rather than
+// matching a missing header (undefined === undefined).
 export async function withMogiSecret(c: Context<HonoEnv>, next: Next) {
-  if (c.req.header('x-mogi-secret') !== c.env.MOGI_SECRET) {
+  const provided = c.req.header('x-mogi-secret');
+  if (!c.env.MOGI_SECRET || !provided || !timingSafeEqual(provided, c.env.MOGI_SECRET)) {
     return c.json({ success: false, error: 'Invalid Mogi secret' }, 401);
   }
   await next();
@@ -86,7 +100,7 @@ export async function withMogiSecret(c: Context<HonoEnv>, next: Next) {
 // Operator admin auth — protects all mutating /admin/* routes
 export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
   const key = c.req.header('x-admin-key');
-  if (!key || key !== c.env.ADMIN_SECRET) {
+  if (!c.env.ADMIN_SECRET || !key || !timingSafeEqual(key, c.env.ADMIN_SECRET)) {
     return c.json({ success: false, error: 'Admin key required' }, 401);
   }
   await next();
@@ -97,17 +111,24 @@ export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
 // ipRateLimit     — identify by CF-Connecting-IP; use before auth is established
 // sessionRateLimit— identify by JWT sub; apply after withSession
 
+// KV has no atomic increment, so concurrent requests can slightly overshoot
+// `max`. That's acceptable: the goal is capping third-party spend, not exact
+// quotas.
+async function hitLimit(env: Env, kvKey: string, max: number, windowSeconds: number): Promise<boolean> {
+  const raw = await env.CACHE.get(kvKey);
+  const count = raw ? parseInt(raw, 10) : 0;
+  if (count >= max) return true;
+  await env.CACHE.put(kvKey, String(count + 1), { expirationTtl: Math.max(60, windowSeconds) });
+  return false;
+}
+
+const tooMany = (c: Context<HonoEnv>) =>
+  c.json({ success: false, error: 'Too many requests. Please wait before retrying.' }, 429);
+
 export function ipRateLimit(scope: string, max: number, windowSeconds: number) {
   return async function (c: Context<HonoEnv>, next: Next) {
     const ip = c.req.header('cf-connecting-ip') ?? c.req.header('x-forwarded-for') ?? 'unknown';
-    const kvKey = `rl:${scope}:${ip}`;
-    const raw = await c.env.CACHE.get(kvKey);
-    const count = raw ? parseInt(raw, 10) : 0;
-    if (count >= max) {
-      return c.json({ success: false, error: 'Too many requests. Please wait before retrying.' }, 429);
-    }
-    // Best-effort increment — KV doesn't support atomic ops, sufficient for cost protection
-    await c.env.CACHE.put(kvKey, String(count + 1), { expirationTtl: windowSeconds });
+    if (await hitLimit(c.env, `rl:${scope}:${ip}`, max, windowSeconds)) return tooMany(c);
     await next();
   };
 }
@@ -116,13 +137,7 @@ export function sessionRateLimit(scope: string, max: number, windowSeconds: numb
   return async function (c: Context<HonoEnv>, next: Next) {
     const session = c.get('session');
     if (!session) { await next(); return; }
-    const kvKey = `rl:${scope}:${session.sub}`;
-    const raw = await c.env.CACHE.get(kvKey);
-    const count = raw ? parseInt(raw, 10) : 0;
-    if (count >= max) {
-      return c.json({ success: false, error: 'Too many requests. Please wait before retrying.' }, 429);
-    }
-    await c.env.CACHE.put(kvKey, String(count + 1), { expirationTtl: windowSeconds });
+    if (await hitLimit(c.env, `rl:${scope}:${session.sub}`, max, windowSeconds)) return tooMany(c);
     await next();
   };
 }

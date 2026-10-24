@@ -6,6 +6,8 @@ import { getSector } from '../services/sector.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
 import { createCallCache, type CallCache } from '../services/call-context';
 import { createDeepgramSTT, type Stt } from './stt-deepgram';
+import { verifyStreamToken } from '../utils/stream-token';
+import { isProduction } from '../config';
 import { cartesiaSpeak } from './tts-cartesia';
 
 // One CallRelay instance per phone call. Ported from relay/relay.js's per-connection
@@ -35,7 +37,7 @@ export class CallRelay extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     // Query-string businessType is a fallback for our own synthetic test harness
-    // (relay/test/simulate-call.js), which connects with the full URL directly.
+    // (scripts/simulate-call.mjs), which connects with the full URL directly.
     // Twilio's real Media Streams client does not reliably forward the query
     // string from <Stream url="...">, so the 'start' event's customParameters
     // (set via <Parameter> in the TwiML) is the source of truth for real calls.
@@ -46,19 +48,27 @@ export class CallRelay extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     this.twWs = server;
 
-    // STT is async (needs an await to open the Deepgram WS); use a no-op until ready
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // Opened only after the stream is authenticated, so an unauthenticated
+  // connection never opens a (billed) Deepgram session. Startup overlaps the
+  // greeting TTS, so the caller doesn't notice the delay.
+  private startStt() {
     createDeepgramSTT(
       this.env.DEEPGRAM_API_KEY ?? '',
       (text) => { this.handleTranscript(text); },
       /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
     )
-      .then(s => { this.stt = s; })
+      .then(s => {
+        // The call may already have ended while Deepgram was connecting.
+        if (this.twWs?.readyState !== WebSocket.OPEN) { s.close(); return; }
+        this.stt = s;
+      })
       .catch((e) => {
         console.error('[stt startup]', e?.message || e);
         if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1011, 'STT startup failed');
       });
-
-    return new Response(null, { status: 101, webSocket: client });
   }
 
   private bargeIn() {
@@ -157,7 +167,23 @@ export class CallRelay extends DurableObject<Env> {
       this.streamSid = msg.start.streamSid;
       console.log(`[call] ${this.callSid.slice(-8)}`);
 
-      const businessType = msg.start.customParameters?.businessType ?? this.urlBusinessType;
+      // The WebSocket itself is unauthenticated; the signed token minted by
+      // /twilio/inbound (which *is* Twilio-signature-checked) proves this
+      // stream came from a real inbound call. Outside production, a missing
+      // token is tolerated so scripts/simulate-call.mjs keeps working.
+      const params = msg.start.customParameters ?? {};
+      let businessType: string | undefined;
+      if (params.streamToken) {
+        businessType = (await verifyStreamToken(this.env, params.streamToken)) ?? undefined;
+        if (!businessType) { this.reject('invalid stream token'); return; }
+      } else if (isProduction(this.env)) {
+        this.reject('missing stream token');
+        return;
+      } else {
+        businessType = params.businessType ?? this.urlBusinessType;
+      }
+
+      this.startStt();
       this.session = buildDefaultTwilioSession(this.env, businessType) ?? undefined;
 
       const sectorMeta = businessType ? await getSector(this.env, businessType).catch(() => null) : null;
@@ -195,6 +221,12 @@ export class CallRelay extends DurableObject<Env> {
     } else if (msg.event === 'stop') {
       this.stt.close();
     }
+  }
+
+  private reject(reason: string) {
+    console.warn(`[call] ${this.callSid.slice(-8)} rejected: ${reason}`);
+    this.stt.close();
+    if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1008, 'Unauthorized');
   }
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean) {
