@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import Dashboard from './pages/Dashboard';
 import VoiceTest from './pages/VoiceTest';
 import WhatsApp from './pages/WhatsApp';
+import Calls from './pages/Calls';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 
-const TABS = ['Customize', 'Voice Test', 'WhatsApp', 'Overview'] as const;
+const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Overview'] as const;
 type Tab = typeof TABS[number];
 
-const BASE = import.meta.env.VITE_API_URL ?? '';
+const BASE = import.meta.env.VITE_API_URL
+  || 'https://mogi-platform.premkumar-2ba.workers.dev';
 
 interface SectorOption { key: string; name: string }
 
@@ -84,6 +86,7 @@ export default function App() {
 
         {tab === 'Customize' && <Dashboard sector={sector} base={BASE} adminKey={adminKey} />}
         {tab === 'Voice Test' && <VoiceTest sector={sector} base={BASE} />}
+        {tab === 'Calls' && <Calls base={BASE} adminKey={adminKey} />}
         {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} adminKey={adminKey} />}
         {tab === 'Overview' && <Overview />}
       </main>

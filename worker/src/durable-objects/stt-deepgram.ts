@@ -4,16 +4,48 @@
 // Workers' fetch() requires http(s):// — it rewrites the scheme to ws(s):// internally
 // when the Upgrade header is present.
 
-// interim_results + utterance_end_ms let us react to Deepgram's UtteranceEnd
-// event (word-timing-based) instead of always waiting for the next is_final
-// Results message with trailing silence (endpointing). endpointing is also
-// lowered from the original 300ms toward 200ms as a cheap complementary win.
-// UtteranceEnd requires interim_results: 'true' per Deepgram's docs.
-const DG_URL = 'https://api.deepgram.com/v1/listen?' + new URLSearchParams({
-  model: 'nova-2', language: 'multi', encoding: 'mulaw', sample_rate: '8000',
-  channels: '1', endpointing: '200', interim_results: 'true', utterance_end_ms: '1000',
-  smart_format: 'true',
-});
+// Two separate signals come out of here:
+//
+//   onSpeechStart — fired as soon as Deepgram reports *any* speech for a new
+//     utterance (vad_events' SpeechStarted, or the first interim Results
+//     message, whichever lands first). This is the barge-in trigger. It must
+//     not wait for finalization: the caller is already talking over the
+//     assistant by this point, and every ms until TTS stops is talk-over.
+//
+//   onTranscript — fired once per utterance with the finalized text, and is
+//     what actually starts a turn.
+//
+// On finalization: `endpointing` (silence-based) drives speech_final, and
+// utterance_end_ms drives UtteranceEnd (word-timing-based). With the values
+// below speech_final normally wins — endpointing is 200ms where
+// utterance_end_ms cannot go below 1000ms — so UtteranceEnd is a *fallback*
+// for utterances where Deepgram never emits speech_final, not a latency win
+// in the common case. (The commit that introduced it claimed otherwise; the
+// real win there was using the interim text rather than waiting for a final
+// Results message.)
+
+export interface SttOptions {
+  apiKey: string;
+  /** Deepgram model. Default 'nova-2'. Try 'nova-3' for lower finalization latency. */
+  model?: string;
+  /** 'multi' (default) for multilingual; 'en' is faster if the deployment is English-only. */
+  language?: string;
+  debug?: boolean;
+}
+
+function dgUrl(model: string, language: string): string {
+  return 'https://api.deepgram.com/v1/listen?' + new URLSearchParams({
+    model, language,
+    encoding: 'mulaw', sample_rate: '8000', channels: '1',
+    endpointing: '200', interim_results: 'true', utterance_end_ms: '1000',
+    smart_format: 'true',
+    // Emits SpeechStarted as soon as voice activity is detected, which beats
+    // even the first interim Results message. Drives barge-in.
+    vad_events: 'true',
+  });
+}
+
+export type SpeechStartReason = 'vad' | 'interim';
 
 export interface Stt {
   sendAudio(buf: ArrayBuffer): void;
@@ -21,13 +53,14 @@ export interface Stt {
 }
 
 export async function createDeepgramSTT(
-  apiKey: string,
+  opts: SttOptions,
   onTranscript: (text: string) => void,
-  debug: boolean = false,
+  onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
+  const { apiKey, model = 'nova-2', language = 'multi', debug = false } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
-  const resp = await fetch(DG_URL, {
+  const resp = await fetch(dgUrl(model, language), {
     headers: { Upgrade: 'websocket', Authorization: `Token ${apiKey}` },
   });
   const ws = resp.webSocket;
@@ -54,6 +87,17 @@ export async function createDeepgramSTT(
   let lastText = '';
   let utteranceStart = 0;
   let finalized = false;
+  // Barge-in fires at most once per utterance. SpeechStarted and the first
+  // interim both signal the same thing and can both arrive; whichever is
+  // first wins and the other is ignored until the next finalize().
+  let speechAnnounced = false;
+
+  const announceSpeech = (reason: SpeechStartReason) => {
+    if (speechAnnounced) return;
+    speechAnnounced = true;
+    if (debug) console.log(`[dg stt] speech-start (${reason})`);
+    onSpeechStart?.(reason);
+  };
 
   const finalize = (text: string, reason: 'speech_final' | 'utterance_end') => {
     if (!text || finalized) return;
@@ -62,12 +106,19 @@ export async function createDeepgramSTT(
     console.log(`[dg stt] ⏱ transcript-finalized (${reason}): ${ms}ms — "${text}"`);
     lastText = '';
     utteranceStart = 0;
+    speechAnnounced = false;
     onTranscript(text);
   };
 
   ws.addEventListener('message', (event: MessageEvent) => {
     try {
       const msg = JSON.parse(event.data as string);
+
+      if (msg.type === 'SpeechStarted') {
+        if (!utteranceStart) utteranceStart = Date.now();
+        announceSpeech('vad');
+        return;
+      }
 
       if (msg.type === 'Results') {
         const text = msg.channel?.alternatives?.[0]?.transcript?.trim();
@@ -82,6 +133,8 @@ export async function createDeepgramSTT(
             if (!lastText || finalized) utteranceStart = Date.now();
             lastText = text;
             finalized = false;
+            // Backstop for barge-in if vad_events is unavailable or missed.
+            announceSpeech('interim');
           } else if (!finalized) {
             // is_final but not (yet) speech_final, and we haven't already
             // finalized this utterance — keep lastText fresh as a fallback
@@ -101,7 +154,15 @@ export async function createDeepgramSTT(
 
       if (msg.type === 'UtteranceEnd') {
         if (debug) console.log(`[dg stt] UtteranceEnd lastText="${lastText}" finalized=${finalized}`);
-        if (lastText) finalize(lastText, 'utterance_end');
+        if (lastText) {
+          finalize(lastText, 'utterance_end');
+        } else {
+          // Speech was detected but produced no transcript (noise, a cough, a
+          // word Deepgram couldn't place). finalize() never runs, so reset the
+          // barge-in latch here — otherwise one unintelligible noise would
+          // suppress barge-in for the rest of the call.
+          speechAnnounced = false;
+        }
         return;
       }
     } catch (e: any) {

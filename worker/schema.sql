@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════
--- avery-platform — complete schema + seed (ground truth)
+-- mogi-platform — complete schema + seed (ground truth)
 -- Run against a fresh D1:
---   wrangler d1 execute avery-platform --remote --file=./schema.sql
+--   wrangler d1 execute DB --remote --file=./schema.sql
 -- ═══════════════════════════════════════════════════════════════════
 
 -- ── Tables ──────────────────────────────────────────────────────────
