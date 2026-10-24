@@ -9,7 +9,7 @@ const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Overview'] as con
 type Tab = typeof TABS[number];
 
 const BASE = import.meta.env.VITE_API_URL
-  || (import.meta.env.PROD ? 'https://mogi-platform.premkumar-2ba.workers.dev' : '');
+  || 'https://mogi-platform.premkumar-2ba.workers.dev';
 
 interface SectorOption { key: string; name: string }
 
