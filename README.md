@@ -103,7 +103,7 @@ npm run db:migrate:local   # creates local D1 (SQLite)
 Seed with products and services:
 
 ```bash
-wrangler d1 execute avery-platform --local --file=./drizzle/0001_seed.sql
+wrangler d1 execute mogi-platform --local --file=./drizzle/0001_seed.sql
 ```
 
 ### 5. Start local dev server
@@ -163,7 +163,7 @@ back the same way. Otherwise, just place a real call.
 ```bash
 cd worker
 npm run type-check   # catch TypeScript errors first
-npm run deploy       # wrangler deploy → avery-platform.premkumar-2ba.workers.dev
+npm run deploy       # wrangler deploy → mogi-platform.premkumar-2ba.workers.dev
 ```
 
 ### Database schema change

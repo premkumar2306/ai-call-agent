@@ -20,6 +20,10 @@ app.use('*', cors({
   origin: (origin) => {
     if (!origin) return null;
     if (
+      origin === 'https://mogi-admin.pages.dev' ||
+      origin.endsWith('.mogi-admin.pages.dev') ||
+      // Kept so an already-deployed avery-admin Pages project keeps working
+      // until it's retired; safe to drop once nothing serves from it.
       origin === 'https://avery-admin.pages.dev' ||
       origin.endsWith('.avery-admin.pages.dev') ||
       /^http:\/\/localhost:\d+$/.test(origin)

@@ -44,13 +44,6 @@ const s = {
 
 
 export default function VoiceTest({ sector: defaultSector, base }: Props) {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
-  useEffect(() => {
-    const h = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', h);
-    return () => window.removeEventListener('resize', h);
-  }, []);
-
   const [sector, setSector] = useState(defaultSector);
   const [customerId, setCustomerId] = useState('customer-001');
   const [token, setToken] = useState<string | null>(null);
