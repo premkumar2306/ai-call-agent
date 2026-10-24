@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "deploy": "wrangler pages deploy dist --project-name mogi-admin"
+    "deploy": "wrangler pages deploy dist --project-name avery-admin"
   },
   "dependencies": {
     "react": "^19.0.0",

@@ -20,7 +20,7 @@ env:
   # Actions → Variables) if the Worker or Pages project lives elsewhere. The
   # Worker name itself always comes from worker/wrangler.toml.
   WORKER_URL: ${{ vars.WORKER_URL || 'https://mogi-platform.premkumar-2ba.workers.dev' }}
-  PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'mogi-admin' }}
+  PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'avery-admin' }}
   WRANGLER_SEND_METRICS: "false"
 
 jobs:
@@ -58,13 +58,18 @@ jobs:
       - name: Deploy Worker
         run: npx wrangler deploy --message "${{ github.sha }}"
 
+      # Requires the deep-check fields, which only the new code returns, so a
+      # stale edge serving the previous version can't pass. New versions take
+      # a few seconds to propagate after `wrangler deploy` returns.
       - name: Smoke test
         run: |
-          for i in 1 2 3 4 5; do
-            if curl -fsS --max-time 10 "$WORKER_URL/health?deep=1"; then echo; exit 0; fi
-            echo "health check attempt $i failed; retrying…"; sleep 6
+          for i in $(seq 1 10); do
+            body=$(curl -sS --max-time 10 "$WORKER_URL/health?deep=1" || true)
+            echo "attempt $i: $body"
+            if echo "$body" | grep -q '"db":"ok"' && echo "$body" | grep -q '"kv":"ok"'; then exit 0; fi
+            sleep 6
           done
-          echo "::error::$WORKER_URL/health?deep=1 did not return 200 after deploy"
+          echo "::error::$WORKER_URL/health?deep=1 never reported db+kv ok after deploy"
           exit 1
 
   deploy-web:
