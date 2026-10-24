@@ -1,10 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
-import { agentModel, createAnthropic, MAX_TOOL_ROUNDS } from '../config';
+import { createAnthropic, MAX_TOOL_ROUNDS, voiceModel } from '../config';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
-import { executeTool, getToolDefinitions } from './tool-router.service';
+import { executeTool, getToolDefinitions, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
 import type { CallCache } from './call-context';
 import {
@@ -38,16 +38,33 @@ export interface TurnResult {
   history: Turn[];
 }
 
-// Called with each sentence-sized chunk of the model's text as soon as it's
-// ready (before the full turn — including any tool round-trips — completes),
-// so the caller (CallRelay) can start TTS well before the whole answer exists.
-// Awaited so chunk delivery order is preserved 1:1 with speech order.
+// Called with each chunk of the model's text as soon as it's ready (before
+// the full turn — including any tool round-trips — completes), so the caller
+// (CallRelay) can start TTS well before the whole answer exists.
+//
+// NOT awaited. Ordering is the callee's job: CallRelay chains chunks onto a
+// single promise so playback stays strictly sequential. Awaiting here used to
+// mean the Anthropic stream stopped being read until every queued TTS call
+// had finished, which on a tool turn delayed issuing the tool call itself
+// behind synthesis of the model's preamble text.
 export type OnChunk = (chunk: string) => void | Promise<void>;
+
+// Minimum characters before the *first* chunk of a turn may be flushed on a
+// clause boundary rather than a sentence end. Short enough to beat the
+// sentence wait, long enough that TTS still gets a speakable phrase —
+// "Great news," on its own sounds clipped.
+const FIRST_CHUNK_MIN_CHARS = 25;
+
+// Hard ceiling on how long the first chunk may sit unflushed waiting for
+// punctuation. Past this, break at the last word boundary. This is what
+// bounds worst-case time-to-first-audio on a long run-on opening sentence —
+// the exact case where waiting for a period hurts most.
+const FIRST_CHUNK_MAX_CHARS = 90;
 
 // Pops the next complete sentence off the front of `buffer` (ending in
 // . ! or ? followed by whitespace or end-of-string). Returns null if the
 // buffer doesn't yet contain a full sentence.
-function popSentence(buffer: string): { chunk: string; rest: string } | null {
+export function popSentence(buffer: string): { chunk: string; rest: string } | null {
   const m = buffer.match(/[.!?]+(\s+|$)/);
   if (!m || m.index === undefined) return null;
   const end = m.index + m[0].length;
@@ -55,6 +72,68 @@ function popSentence(buffer: string): { chunk: string; rest: string } | null {
   const rest = buffer.slice(end);
   if (!chunk) return rest === buffer ? null : { chunk: '', rest };
   return { chunk, rest };
+}
+
+// The first chunk of a turn is the one the caller is actually waiting on, so
+// it gets flushed on a clause boundary (comma, semicolon, colon, dash) once
+// there's enough text to be worth speaking — rather than waiting for terminal
+// punctuation like every later chunk does. Prosody on a clause is slightly
+// flatter than on a whole sentence, which is why this is first-chunk-only:
+// by the time chunk 2 is needed, chunk 1 is already playing and covering it.
+export function popFirstChunk(buffer: string): { chunk: string; rest: string } | null {
+  // A finished sentence is always the best unit to speak — take it if we have one.
+  const sentence = popSentence(buffer);
+  if (sentence) return sentence;
+  if (buffer.length < FIRST_CHUNK_MIN_CHARS) return null;
+
+  // Otherwise the earliest clause boundary that yields a long-enough phrase.
+  const re = /[,;:]\s+|\s+[—–-]\s+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(buffer)) !== null) {
+    const end = m.index + m[0].length;
+    if (end >= FIRST_CHUNK_MIN_CHARS) {
+      const chunk = buffer.slice(0, end).trim();
+      if (chunk) return { chunk, rest: buffer.slice(end) };
+    }
+  }
+
+  // No punctuation in sight and the caller is still waiting — break at the
+  // last word boundary rather than let time-to-first-audio run unbounded.
+  if (buffer.length >= FIRST_CHUNK_MAX_CHARS) {
+    const cut = buffer.lastIndexOf(' ', FIRST_CHUNK_MAX_CHARS);
+    if (cut >= FIRST_CHUNK_MIN_CHARS) {
+      const chunk = buffer.slice(0, cut).trim();
+      if (chunk) return { chunk, rest: buffer.slice(cut + 1) };
+    }
+  }
+  return null;
+}
+
+// Tools whose hand-written `spoken_response` is a complete, natural reply on
+// its own. When one of these is the only tool called in a round, we speak it
+// directly and end the turn instead of making a second Claude call purely to
+// paraphrase it — which is the single largest cost on a tool turn (one full
+// extra round trip, TTFT included).
+//
+// Scoped deliberately narrowly: each case below also checks the tool actually
+// produced a usable result, because the escalation/clarification rules in the
+// system prompt genuinely need the model when a search is ambiguous or a
+// lookup came back empty. Set VOICE_DIRECT_TOOL_REPLY=0 to disable and fall
+// back to always round-tripping.
+export function canSpeakToolResultDirectly(toolName: string, result: ToolResult): boolean {
+  if (!result.success || !result.spoken_response) return false;
+  const d = result.data as any;
+  switch (toolName) {
+    case 'get_business_hours':
+      return true;
+    case 'check_availability':
+      return Array.isArray(d?.slots) && d.slots.length > 0;
+    case 'search_services':
+    case 'search_products':
+      return d?.matchType === 'match';
+    default:
+      return false;
+  }
 }
 
 export function extractCompleteSentences(buffer: string): { chunks: string[]; rest: string } {
@@ -127,14 +206,14 @@ export async function runTurn(
 
   if (shouldEscalateUnclearService(history, utterance)) {
     const spokenResponse = getUnclearServiceEscalationResponse(bizName);
-    if (onChunk) await onChunk(spokenResponse);
+    onChunk?.(spokenResponse);
     const updatedHistory: Turn[] = [
       ...history,
       { role: 'user', content: utterance },
       { role: 'assistant', content: spokenResponse },
     ];
     if (cache) cache.history = updatedHistory;
-    persistTurn(env, callSid, sub, businessType, updatedHistory, background);
+    persistTurn(env, callSid, sub, businessType, updatedHistory, background, !cache);
     return { spokenResponse, history: updatedHistory };
   }
 
@@ -145,8 +224,9 @@ export async function runTurn(
   // breakpoint on the stable block lets Anthropic reuse it turn-to-turn
   // (and call-to-call) instead of reprocessing it every time. Check
   // `usage.cache_read_input_tokens` in the logs below to confirm this is
-  // actually landing — if it's always 0 the prompt may be under Haiku's
-  // minimum cacheable length and this isn't buying anything.
+  // actually landing. This prompt is ~1.8K tokens, which cleared nothing on
+  // Haiku 4.5 (4096-token minimum cacheable prefix — the breakpoints were
+  // silently inert) but is comfortably over Haiku 5.5's 512-token minimum.
   const stableRules = businessType === 'health_nav'
     ? `You are Mogi, a health plan member services specialist for ${bizName}, on a live phone call. You are empathetic, knowledgeable about insurance, and speak like a real person — warm and clear, never robotic.
 
@@ -210,11 +290,40 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
   // ── Agentic loop ─────────────────────────────────────────────────────────
   let spokenResponse = '';
   const anthropic = createAnthropic(env);
+  const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '');
+
+  // Whether anything has been handed to TTS yet this turn. Governs whether
+  // the next flush may break on a clause (first chunk) or must wait for a
+  // sentence end (every chunk after it).
+  let emittedAny = false;
+
+  const emit = (chunk: string) => {
+    spokenResponse = spokenResponse ? `${spokenResponse} ${chunk}` : chunk;
+    emittedAny = true;
+    // Deliberately not awaited — see the OnChunk doc comment.
+    onChunk?.(chunk);
+  };
+
+  // Pulls every chunk currently available out of `buf` and returns what's left.
+  const drain = (buf: string): string => {
+    let rest = buf;
+    if (!emittedAny) {
+      const first = popFirstChunk(rest);
+      if (!first) return rest;
+      if (first.chunk) emit(first.chunk);
+      rest = first.rest;
+    }
+    const { chunks, rest: remainder } = extractCompleteSentences(rest);
+    for (const chunk of chunks) emit(chunk);
+    return remainder;
+  };
 
   for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
     const stream = anthropic.messages.stream({
-      model: agentModel(env),
+      model: voiceModel(env),
       max_tokens: 400,
+      thinking: { type: 'disabled' },
+      output_config: { effort: 'low' },
       system: systemPrompt,
       tools,
       messages,
@@ -225,13 +334,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
         if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
-        buffer += event.delta.text;
-        const { chunks, rest } = extractCompleteSentences(buffer);
-        buffer = rest;
-        for (const chunk of chunks) {
-          spokenResponse = spokenResponse ? `${spokenResponse} ${chunk}` : chunk;
-          if (onChunk) await onChunk(chunk);
-        }
+        buffer = drain(buffer + event.delta.text);
       }
     }
 
@@ -245,14 +348,11 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     // Flush any trailing text that didn't end on sentence punctuation
     // (e.g. the model's chatter right before a tool_use block).
     const trailing = buffer.trim();
-    if (trailing) {
-      spokenResponse = spokenResponse ? `${spokenResponse} ${trailing}` : trailing;
-      if (onChunk) await onChunk(trailing);
-    }
+    if (trailing) emit(trailing);
 
     if (response.stop_reason === 'tool_use') {
       const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
-      const toolResults = await Promise.all(toolBlocks.map(async (tb) => {
+      const executed = await Promise.all(toolBlocks.map(async (tb) => {
         console.log(`[${tag}] tool: ${tb.name}`);
         const toolT0 = Date.now();
         const result = await executeTool(
@@ -265,6 +365,23 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
           (label) => console.log(`[${tag}] ⏱ tool:${tb.name}:${label}: ${Date.now() - toolT0}ms`),
         );
         lap(`tool:${tb.name} total`);
+        return { tb, result };
+      }));
+      lap(`tools#${i} (${toolBlocks.map(t => t.name).join(',')})`);
+
+      // Shortcut: a single tool whose own spoken_response already answers the
+      // caller. Speak it and end the turn rather than spending a second
+      // Claude call to restate it. The model never sees this tool result —
+      // the spoken text lands in history below, so the next turn reads it as
+      // something the assistant simply said.
+      if (directToolReply && executed.length === 1
+          && canSpeakToolResultDirectly(executed[0].tb.name, executed[0].result)) {
+        emit(executed[0].result.spoken_response);
+        lap(`direct-tool-reply:${executed[0].tb.name} (skipped anthropic#${i + 1})`);
+        break;
+      }
+
+      const toolResults = executed.map(({ tb, result }) => {
         // §3a — feed the tool's own hand-written voice-shaped response back
         // to the model as a phrasing hint (see stableRules rule 11) instead
         // of discarding it. Doesn't save a round trip, but gives call #2 a
@@ -277,8 +394,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
           content: JSON.stringify({ ...payload, _spoken_hint: result.spoken_response }),
         };
         return toolResult;
-      }));
-      lap(`tools#${i} (${toolBlocks.map(t => t.name).join(',')})`);
+      });
       messages.push({ role: 'assistant', content: response.content });
       // Cache breakpoint after the tool results: this turn's messages array
       // (history + utterance + assistant tool_use + tool_result) is the
@@ -298,7 +414,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
 
   if (!spokenResponse) {
     spokenResponse = "I'm having trouble right now. Please try again.";
-    if (onChunk) await onChunk(spokenResponse);
+    onChunk?.(spokenResponse);
   }
 
   // ── Persist updated history ───────────────────────────────────────────────
@@ -308,7 +424,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     { role: 'assistant', content: spokenResponse },
   ];
   if (cache) cache.history = updatedHistory;
-  persistTurn(env, callSid, sub, businessType, updatedHistory, background);
+  persistTurn(env, callSid, sub, businessType, updatedHistory, background, !cache);
 
   return { spokenResponse, history: updatedHistory };
 }
@@ -319,9 +435,17 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
 // of a live call actually read.
 function persistTurn(
   env: Env, callSid: string, customerIdHashed: string, businessType: string,
-  turns: Turn[], background: Background,
+  turns: Turn[], background: Background, writeTranscript: boolean,
 ) {
   background(saveHistory(env, callSid, turns).catch(err => console.error('saveHistory error', err.message)));
+  // saveTranscript is a SELECT-then-UPDATE against D1 that rewrites the whole
+  // (growing) turns array. On a live call that is per-turn work on the Durable
+  // Object's single thread, running alongside the next turn, for no benefit:
+  // CallRelay flushes the transcript once when the call ends, and the KV
+  // saveHistory above is the durability backstop in between (it's also what
+  // /twilio/status reads for end-of-call classification). Stateless callers
+  // have no end-of-call hook, so they keep the per-turn write.
+  if (!writeTranscript) return;
   background(saveTranscript(env, { callSid, customerIdHashed, businessType, turns })
     .catch(err => console.error('transcript error', err.message)));
 }

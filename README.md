@@ -240,3 +240,22 @@ admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requi
 - **Health:** point an uptime monitor at `/health?deep=1` (returns 503 if D1 or KV fail).
 - **Cost guards:** per-IP/per-session KV rate limits on token minting, voice turns, STT/TTS
   proxies and transcript email; Anthropic calls time out after 20s with one retry.
+
+### Voice latency tuning
+
+Plain vars (set in `wrangler.toml`), not secrets. All optional — the defaults are
+what ships.
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `VOICE_MODEL` | `claude-haiku-5-5` | Overrides the model used on live calls only (`DEFAULT_VOICE_MODEL` in `src/config.ts`). `ANTHROPIC_MODEL` covers the other agent surfaces. |
+| `DG_MODEL` | `nova-2` | Deepgram model. Try `nova-3` for lower finalization latency. |
+| `DG_LANGUAGE` | `multi` | Set to `en` on an English-only deployment — faster than the multilingual model. |
+| `VOICE_BARGE_IN_ON_VAD` | on | Set `0` to make barge-in wait for the first interim transcript instead of Deepgram's VAD event. Slower to react, but needs recognised words rather than any voice activity. |
+| `VOICE_DIRECT_TOOL_REPLY` | on | Set `0` to always round-trip a tool result through Claude for paraphrasing instead of speaking the tool's own response. Costs one extra model call per tool turn. |
+| `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
+
+Watch the `⏱` lines in `npx wrangler tail`: `transcript-finalized` (STT),
+`anthropic#N first-token`, `direct-tool-reply` (when the second model call is
+skipped), `first-chunk-spoken` (finalized transcript → first audio out), and
+`cache_read=` (prompt caching actually landing).

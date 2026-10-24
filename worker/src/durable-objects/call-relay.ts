@@ -4,11 +4,12 @@ import { buildDefaultTwilioSession } from '../middleware';
 import { runTurn } from '../services/turn.service';
 import { getSector } from '../services/sector.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
+import { saveTranscript } from '../services/transcript.service';
 import { createCallCache, type CallCache } from '../services/call-context';
 import { createDeepgramSTT, type Stt } from './stt-deepgram';
 import { verifyStreamToken } from '../utils/stream-token';
 import { isProduction } from '../config';
-import { cartesiaSpeak } from './tts-cartesia';
+import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesia';
 
 // One CallRelay instance per phone call. Ported from relay/relay.js's per-connection
 // WebSocket handler (Twilio Media Streams → Deepgram STT → runTurn() → Cartesia TTS),
@@ -20,6 +21,11 @@ import { cartesiaSpeak } from './tts-cartesia';
 
 const FILLERS = ['One moment...', 'Let me check that for you...', 'Almost there...'];
 
+// Don't honour a barge-in within this long of the assistant starting to
+// speak. Guards against the leading edge of our own audio echoing back on a
+// speakerphone and instantly cutting off the reply we just began.
+const BARGE_IN_MIN_SPEAK_MS = 300;
+
 export class CallRelay extends DurableObject<Env> {
   private twWs?: WebSocket;
   private stt: Stt = { sendAudio: () => {}, close: () => {} };
@@ -29,10 +35,20 @@ export class CallRelay extends DurableObject<Env> {
   private streamSid = '';
   private busy = false;
   private currentAbort?: AbortController;
+  private speakStartedAt = 0;
+  private transcriptFlushed = false;
   // Call-lifetime cache: sector metadata, product list, tool defs, history,
   // orders and booked-slot set all live here instead of round-tripping to
   // KV/D1 on every turn. See issue #7 / worker/src/services/call-context.ts.
   private cache: CallCache = createCallCache();
+
+  private get ttsConfig(): CartesiaConfig {
+    return {
+      apiKey: this.env.CARTESIA_API_KEY!,
+      voiceId: this.env.CARTESIA_VOICE_ID,
+      modelId: this.env.CARTESIA_MODEL_ID,
+    };
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -56,9 +72,14 @@ export class CallRelay extends DurableObject<Env> {
   // greeting TTS, so the caller doesn't notice the delay.
   private startStt() {
     createDeepgramSTT(
-      this.env.DEEPGRAM_API_KEY ?? '',
+      {
+        apiKey: this.env.DEEPGRAM_API_KEY ?? '',
+        model: this.env.DG_MODEL,
+        language: this.env.DG_LANGUAGE,
+        debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
+      },
       (text) => { this.handleTranscript(text); },
-      /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
+      (reason) => { this.handleSpeechStart(reason); },
     )
       .then(s => {
         // The call may already have ended while Deepgram was connecting.
@@ -79,13 +100,32 @@ export class CallRelay extends DurableObject<Env> {
     this.busy = false;
   }
 
+  // Fired the moment Deepgram reports speech — before any transcript exists.
+  // This is what makes barge-in feel immediate: previously barge-in was
+  // triggered from handleTranscript(), i.e. only once the caller had finished
+  // their whole utterance and endpointing had elapsed, so the assistant
+  // talked over them for the entire interruption plus ~200ms.
+  //
+  // `reason` is 'vad' (Deepgram's SpeechStarted — earliest) or 'interim' (the
+  // first interim transcript — later, but it took real recognised words to
+  // get there). Set VOICE_BARGE_IN_ON_VAD=0 to wait for 'interim' on lines
+  // where raw VAD proves too trigger-happy.
+  private handleSpeechStart(reason: 'vad' | 'interim') {
+    if (!this.busy) return;
+    if (reason === 'vad' && /^(0|false)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '')) return;
+    if (Date.now() - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) return;
+    console.log(`[barge-in] speech-start (${reason}) — stopping TTS`);
+    this.bargeIn();
+  }
+
   private async speak(text: string, signal?: AbortSignal, sendMark: boolean = true): Promise<void> {
     console.log(`[tts] "${text}"`);
     const t0 = Date.now();
-    await cartesiaSpeak(
-      { apiKey: this.env.CARTESIA_API_KEY!, voiceId: this.env.CARTESIA_VOICE_ID, modelId: this.env.CARTESIA_MODEL_ID },
-      text, this.streamSid, this.twWs!, signal, sendMark,
-    );
+    const res = await cartesiaStart(this.ttsConfig, text, signal).catch((e) => {
+      if (e?.name !== 'AbortError') console.error('[cartesia start]', e?.message || e);
+      return null;
+    });
+    await cartesiaDrain(res, this.streamSid, this.twWs!, signal, sendMark);
     console.log(`[tts] ⏱ "${text.slice(0, 20)}": ${Date.now() - t0}ms`);
   }
 
@@ -93,48 +133,72 @@ export class CallRelay extends DurableObject<Env> {
     if (!this.session || !this.twWs) return;
 
     if (this.busy) {
-      console.log(`[barge-in] "${text.slice(0, 40)}"`);
+      // Normally handleSpeechStart() already aborted the previous turn well
+      // before this point; this stays as a backstop for the case where no
+      // speech-start signal arrived (e.g. vad barge-in disabled and the
+      // utterance finalized straight off a speech_final).
+      console.log(`[barge-in] on transcript "${text.slice(0, 40)}"`);
       this.bargeIn();
     }
 
     this.busy = true;
+    this.speakStartedAt = Date.now();
     const ac = new AbortController();
     this.currentAbort = ac;
     const { signal } = ac;
     const tag = this.callSid.slice(-8);
     const t0 = Date.now();
 
-    // Chunks stream in from runTurn() as sentences become ready; chain them
-    // so TTS calls run strictly one-after-another (no overlapping audio) and
-    // so barge-in (via `signal`) stops the sequence cleanly instead of
-    // continuing to speak already-queued chunks.
+    // Chunks stream in from runTurn() as they become ready. Synthesis for a
+    // chunk is kicked off the instant it arrives, so its TTFB overlaps with
+    // whatever is still playing; only the *draining* to Twilio is chained, so
+    // audio stays strictly sequential and barge-in (via `signal`) stops the
+    // sequence cleanly instead of continuing to speak already-queued chunks.
     let chunkChain: Promise<void> = Promise.resolve();
     let firstChunkLogged = false;
 
     // Fallback only: if the model hasn't produced its first spoken chunk
     // within this window (e.g. a slow tool call before any text), say
     // something so the caller isn't met with dead air. With streaming,
-    // real turns should usually beat this comfortably, so it should rarely
-    // fire — kept as a safety net rather than the primary latency fix it
-    // used to be.
-    const FILLER_GRACE_MS = 1500;
+    // first-chunk flushing on a clause boundary, and the direct tool-reply
+    // shortcut in runTurn(), real turns should beat this comfortably.
+    const FILLER_GRACE_MS = 1200;
     const fillerTimer = setTimeout(() => {
       if (!firstChunkLogged && !signal.aborted) {
         onChunk(FILLERS[Math.floor(Math.random() * FILLERS.length)]);
       }
     }, FILLER_GRACE_MS);
 
-    const onChunk = (chunk: string): Promise<void> => {
-      chunkChain = chunkChain.then(async () => {
-        if (signal.aborted) return;
-        clearTimeout(fillerTimer);
-        if (!firstChunkLogged) {
-          firstChunkLogged = true;
-          console.log(`[${tag}] ⏱ first-chunk-spoken: ${Date.now() - t0}ms`);
-        }
-        await this.speak(chunk, signal, false);
+    const onChunk = (chunk: string): void => {
+      if (signal.aborted) return;
+      clearTimeout(fillerTimer);
+
+      // Fire the request now — do not wait for the chain.
+      const started = cartesiaStart(this.ttsConfig, chunk, signal).catch((e) => {
+        if (e?.name !== 'AbortError') console.error('[cartesia start]', e?.message || e);
+        return null;
       });
-      return chunkChain;
+
+      chunkChain = chunkChain.then(async () => {
+        // Contained: one chunk failing to synthesize must not reject the
+        // chain, because every later chunk is appended to it and would then
+        // be silently skipped — losing the rest of the turn's audio.
+        try {
+          const res = await started;
+          if (signal.aborted || !res) {
+            // Nobody will read this body; release it rather than leak the stream.
+            await res?.body?.cancel().catch(() => {});
+            return;
+          }
+          if (!firstChunkLogged) {
+            firstChunkLogged = true;
+            console.log(`[${tag}] ⏱ first-chunk-spoken: ${Date.now() - t0}ms`);
+          }
+          await cartesiaDrain(res, this.streamSid, this.twWs!, signal, false);
+        } catch (e: any) {
+          if (e?.name !== 'AbortError') console.error('[tts chunk]', e?.message || e);
+        }
+      });
     };
 
     try {
@@ -150,6 +214,25 @@ export class CallRelay extends DurableObject<Env> {
     } finally {
       clearTimeout(fillerTimer);
       if (this.currentAbort === ac) { this.currentAbort = undefined; this.busy = false; }
+    }
+  }
+
+  // runTurn() skips its per-turn D1 transcript write when a call cache is in
+  // play (every turn would otherwise be a SELECT + UPDATE rewriting the whole
+  // growing turns array, on the DO's single thread, alongside the next turn).
+  // This is the one write for the call.
+  private async flushTranscript(): Promise<void> {
+    if (this.transcriptFlushed || !this.session || this.cache.history.length === 0) return;
+    this.transcriptFlushed = true;
+    try {
+      await saveTranscript(this.env, {
+        callSid: this.callSid,
+        customerIdHashed: this.session.sub,
+        businessType: this.session.businessType,
+        turns: this.cache.history,
+      });
+    } catch (e: any) {
+      console.error('[transcript flush]', e?.message || e);
     }
   }
 
@@ -186,22 +269,48 @@ export class CallRelay extends DurableObject<Env> {
       this.startStt();
       this.session = buildDefaultTwilioSession(this.env, businessType) ?? undefined;
 
-      const sectorMeta = businessType ? await getSector(this.env, businessType).catch(() => null) : null;
-      // Seed the call cache with what greeting already fetched, so runTurn's
-      // very first invocation doesn't re-fetch it (it was previously calling
-      // getSector() again itself on turn 1 despite this same lookup having
-      // just happened here).
-      this.cache.sectorMeta = sectorMeta;
-      const storeName = sectorMeta?.name ?? businessType ?? 'us';
+      // Kick the sector lookup off, but don't block the greeting on it — it's
+      // a KV hit at best and a D1 round trip on a cold cache, and it used to
+      // sit directly in front of the caller's very first audio.
+      const sectorPromise = businessType
+        ? getSector(this.env, businessType).catch(() => null)
+        : Promise.resolve(null);
+      // Seed the call cache as soon as it lands, so runTurn's first
+      // invocation doesn't re-fetch it.
+      sectorPromise.then(m => { if (m) this.cache.sectorMeta = m; });
+
       const capabilityHint = businessType === 'health_nav'
         ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
         : "I can tell you about our services and hours, or book you an appointment — what can I help with?";
-      const greeting = `Welcome to ${storeName}. I'm Mogi, your voice assistant. ${capabilityHint}`;
 
       this.busy = true;
-      this.speak(greeting)
-        .catch(e => console.error('[greeting]', e?.message || e))
-        .finally(() => { this.busy = false; });
+      this.speakStartedAt = Date.now();
+      // The greeting gets a real AbortController registered as the current
+      // turn, so a caller who talks over it actually cuts it off. Without a
+      // signal, bargeIn() would clear Twilio's buffer while Cartesia kept
+      // streaming fresh frames into it — the greeting would talk on.
+      const greetAbort = new AbortController();
+      this.currentAbort = greetAbort;
+      const greetSignal = greetAbort.signal;
+      // Opener first (no dependency on the lookup), then the part that needs
+      // the business name. Two Cartesia calls, but they drain in order and
+      // the caller hears audio a KV/D1 round trip sooner.
+      this.speak('Thanks for calling!', greetSignal, false)
+        .then(async () => {
+          if (greetSignal.aborted) return;
+          const sectorMeta = await sectorPromise;
+          if (greetSignal.aborted) return;
+          const storeName = sectorMeta?.name ?? businessType ?? 'us';
+          await this.speak(
+            `You've reached ${storeName}. I'm Mogi, your voice assistant. ${capabilityHint}`,
+            greetSignal,
+          );
+        })
+        .catch(e => { if (e?.name !== 'AbortError') console.error('[greeting]', e?.message || e); })
+        .finally(() => {
+          // Only release if a real turn hasn't already taken over.
+          if (this.currentAbort === greetAbort) { this.currentAbort = undefined; this.busy = false; }
+        });
 
       // Prefetch the booked-slot set in parallel with the greeting/caller's
       // first utterance, so the first check_availability call in the call
@@ -220,6 +329,7 @@ export class CallRelay extends DurableObject<Env> {
 
     } else if (msg.event === 'stop') {
       this.stt.close();
+      this.ctx.waitUntil(this.flushTranscript());
     }
   }
 
@@ -232,6 +342,7 @@ export class CallRelay extends DurableObject<Env> {
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean) {
     if (this.currentAbort) this.currentAbort.abort();
     this.stt.close();
+    this.ctx.waitUntil(this.flushTranscript());
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {
