@@ -22,11 +22,6 @@ export interface WeeklyHours {
   fri?: string; sat?: string; sun?: string;
 }
 
-// SECTORS is no longer hardcoded — loaded dynamically from D1 via sector.service.ts
-// This empty object is kept only so existing imports don't break during migration.
-// All runtime code uses getSectors(env) / getSector(env, key) instead.
-export const SECTORS: Record<string, SectorMeta> = {};
-
 export interface SessionPayload {
   sub: string;       // hashed customer ID
   businessType: string;
@@ -82,6 +77,10 @@ export interface Env {
   MOGI_SECRET: string;
   ADMIN_SECRET: string;
   ANTHROPIC_API_KEY: string;
+  ANTHROPIC_MODEL?: string;          // overrides DEFAULT_AGENT_MODEL (config.ts)
+  VOICE_MODEL?: string;              // overrides DEFAULT_VOICE_MODEL (config.ts)
+  // Comma-separated extra CORS origins for the admin UI, e.g. a custom domain.
+  ALLOWED_ORIGINS?: string;
   DEEPGRAM_API_KEY?: string;
   CARTESIA_API_KEY?: string;
   CARTESIA_VOICE_ID?: string;

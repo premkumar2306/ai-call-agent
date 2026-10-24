@@ -1,9 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
+import { createAnthropic, MAX_TOOL_ROUNDS, voiceModel } from '../config';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
-import { scoreProducts } from './recommendations.service';
 import { executeTool, getToolDefinitions, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
 import type { CallCache } from './call-context';
@@ -26,9 +26,12 @@ export async function saveHistory(env: Env, callSid: string, history: Turn[]): P
   await env.CART.put(`call:${callSid}`, JSON.stringify(history), { expirationTtl: 3600 });
 }
 
-function getAnthropic(apiKey: string) {
-  return new Anthropic({ apiKey });
-}
+// Schedules durability-only work (history/transcript writes) that must not
+// block the spoken reply. HTTP routes pass ctx.waitUntil so the isolate isn't
+// torn down before the write lands; the CallRelay DO lives for the whole call
+// so a plain floating promise is fine there.
+export type Background = (p: Promise<unknown>) => void;
+const floating: Background = (p) => { void p; };
 
 export interface TurnResult {
   spokenResponse: string;
@@ -45,17 +48,6 @@ export interface TurnResult {
 // had finished, which on a tool turn delayed issuing the tool call itself
 // behind synthesis of the model's preamble text.
 export type OnChunk = (chunk: string) => void | Promise<void>;
-
-// The voice model. Haiku 5.5 over Haiku 4.5 for two reasons: its minimum
-// cacheable prefix is 512 tokens rather than 4096, which is what makes the
-// cache_control breakpoints below actually do something (this prompt is
-// ~1.8K tokens — under 4096, so on Haiku 4.5 every breakpoint was silently
-// inert), and it is ~10x cheaper per token.
-//
-// Thinking is explicitly disabled and effort pinned low: Haiku 5.5 runs
-// adaptive thinking on by default at medium effort, which for a two-sentence
-// phone reply is latency we pay for nothing.
-const VOICE_MODEL = 'claude-haiku-5-5';
 
 // Minimum characters before the *first* chunk of a turn may be flushed on a
 // clause boundary rather than a sentence end. Short enough to beat the
@@ -163,6 +155,7 @@ export async function runTurn(
   utterance: string,
   onChunk?: OnChunk,
   cache?: CallCache,
+  background: Background = floating,
 ): Promise<TurnResult> {
   const { businessType, account, sub } = session;
   const tag = callSid.slice(-8);
@@ -205,8 +198,6 @@ export async function runTurn(
 
   const recentOrders = ordersResult.status === 'fulfilled'
     ? (ordersResult.value as any[]).slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
-  const recs = productsResult.status === 'fulfilled'
-    ? scoreProducts(productsResult.value as any[], account.store_credit_cents).slice(0, 3).map((r: any) => r.name) : [];
 
   const sectorMeta = sectorResult.status === 'fulfilled' && sectorResult.value
     ? (sectorResult.value as any)
@@ -222,12 +213,7 @@ export async function runTurn(
       { role: 'assistant', content: spokenResponse },
     ];
     if (cache) cache.history = updatedHistory;
-    // Fire-and-forget: the answer is already spoken, this is durability-only.
-    saveHistory(env, callSid, updatedHistory).catch(err => console.error('saveHistory error', err.message));
-    if (!cache) {
-      saveTranscript(env, { callSid, customerIdHashed: sub, businessType, turns: updatedHistory })
-        .catch(err => console.error('transcript error', err.message));
-    }
+    persistTurn(env, callSid, sub, businessType, updatedHistory, background, !cache);
     return { spokenResponse, history: updatedHistory };
   }
 
@@ -303,7 +289,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
 
   // ── Agentic loop ─────────────────────────────────────────────────────────
   let spokenResponse = '';
-  const anthropic = getAnthropic(env.ANTHROPIC_API_KEY);
+  const anthropic = createAnthropic(env);
   const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '');
 
   // Whether anything has been handed to TTS yet this turn. Governs whether
@@ -332,9 +318,9 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     return remainder;
   };
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
     const stream = anthropic.messages.stream({
-      model: VOICE_MODEL,
+      model: voiceModel(env),
       max_tokens: 400,
       thinking: { type: 'disabled' },
       output_config: { effort: 'low' },
@@ -438,23 +424,28 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     { role: 'assistant', content: spokenResponse },
   ];
   if (cache) cache.history = updatedHistory;
-  // Fire-and-forget: the answer is already spoken by the time this runs
-  // (onChunk delivery happens above), so awaiting it only delays the DO for
-  // no benefit to the caller. KV write-behind is durability-only — the
-  // in-memory `cache.history` above is what subsequent turns actually read.
-  saveHistory(env, callSid, updatedHistory).catch(err => console.error('saveHistory error', err.message));
-
-  // Transcript persistence. saveTranscript is a SELECT-then-UPDATE against D1
-  // that rewrites the whole (growing) turns array, so running it every turn
-  // burns the Durable Object's single thread alongside the next turn for no
-  // benefit. On the DO path CallRelay flushes once when the call ends;
-  // KV-backed saveHistory above is the durability backstop in between (it's
-  // also what /twilio/status reads for end-of-call classification). Stateless
-  // callers have no end-of-call hook, so they keep the per-turn write.
-  if (!cache) {
-    saveTranscript(env, { callSid, customerIdHashed: sub, businessType, turns: updatedHistory })
-      .catch(err => console.error('transcript error', err.message));
-  }
+  persistTurn(env, callSid, sub, businessType, updatedHistory, background, !cache);
 
   return { spokenResponse, history: updatedHistory };
+}
+
+// The answer is already spoken by the time this runs (onChunk delivery
+// happens first), so awaiting it would only delay the caller. KV write-behind
+// is durability-only — the in-memory `cache.history` is what subsequent turns
+// of a live call actually read.
+function persistTurn(
+  env: Env, callSid: string, customerIdHashed: string, businessType: string,
+  turns: Turn[], background: Background, writeTranscript: boolean,
+) {
+  background(saveHistory(env, callSid, turns).catch(err => console.error('saveHistory error', err.message)));
+  // saveTranscript is a SELECT-then-UPDATE against D1 that rewrites the whole
+  // (growing) turns array. On a live call that is per-turn work on the Durable
+  // Object's single thread, running alongside the next turn, for no benefit:
+  // CallRelay flushes the transcript once when the call ends, and the KV
+  // saveHistory above is the durability backstop in between (it's also what
+  // /twilio/status reads for end-of-call classification). Stateless callers
+  // have no end-of-call hook, so they keep the per-turn write.
+  if (!writeTranscript) return;
+  background(saveTranscript(env, { callSid, customerIdHashed, businessType, turns })
+    .catch(err => console.error('transcript error', err.message)));
 }

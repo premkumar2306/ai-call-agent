@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════
 -- mogi-platform — complete schema + seed (ground truth)
 -- Run against a fresh D1:
---   wrangler d1 execute mogi-platform --remote --file=./schema.sql
+--   wrangler d1 execute DB --remote --file=./schema.sql
 -- ═══════════════════════════════════════════════════════════════════
 
 -- ── Tables ──────────────────────────────────────────────────────────

@@ -5,13 +5,15 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "wrangler d1 migrations apply mogi-platform",
-    "db:migrate:local": "wrangler d1 migrations apply mogi-platform --local",
-    "db:seed": "wrangler d1 execute mogi-platform --file=./drizzle/seed.sql",
-    "db:seed:local": "wrangler d1 execute mogi-platform --local --file=./drizzle/seed.sql",
     "type-check": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run type-check && npm test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:bootstrap:local": "wrangler d1 execute DB --local --file=./schema.sql && wrangler d1 migrations apply DB --local",
+    "simulate-call": "node scripts/simulate-call.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
@@ -23,7 +25,11 @@
     "@cloudflare/workers-types": "^4.20250401.0",
     "drizzle-kit": "^0.30.0",
     "typescript": "^5.8.0",
+    "vitest": "^3.2.7",
     "wrangler": "^4.0.0",
     "ws": "^8.21.3"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

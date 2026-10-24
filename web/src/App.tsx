@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Dashboard from './pages/Dashboard';
 import VoiceTest from './pages/VoiceTest';
 import WhatsApp from './pages/WhatsApp';
+import { loadAdminKey, saveAdminKey } from './adminKey';
 
 const TABS = ['Customize', 'Voice Test', 'WhatsApp', 'Overview'] as const;
 type Tab = typeof TABS[number];
@@ -14,6 +15,9 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('Voice Test');
   const [sector, setSector] = useState<string>('');
   const [sectors, setSectors] = useState<SectorOption[]>([]);
+  const [adminKey, setAdminKey] = useState<string>(loadAdminKey);
+
+  const updateAdminKey = (key: string) => { setAdminKey(key); saveAdminKey(key); };
 
   useEffect(() => {
     fetch(`${BASE}/sectors`)
@@ -36,6 +40,16 @@ export default function App() {
           Client Dashboard
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
+          <label style={{ fontSize: 13, color: '#888' }} htmlFor="admin-key">Admin key</label>
+          <input
+            id="admin-key"
+            type="password"
+            autoComplete="off"
+            value={adminKey}
+            onChange={e => updateAdminKey(e.target.value)}
+            placeholder="X-Admin-Key"
+            style={{ background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '6px 12px', borderRadius: 8, outline: 'none', width: 140 }}
+          />
           <label style={{ fontSize: 13, color: '#888' }}>Business</label>
           <select
             value={sector}
@@ -68,9 +82,9 @@ export default function App() {
           ))}
         </div>
 
-        {tab === 'Customize' && <Dashboard sector={sector} base={BASE} />}
+        {tab === 'Customize' && <Dashboard sector={sector} base={BASE} adminKey={adminKey} />}
         {tab === 'Voice Test' && <VoiceTest sector={sector} base={BASE} />}
-        {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} />}
+        {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} adminKey={adminKey} />}
         {tab === 'Overview' && <Overview />}
       </main>
     </div>

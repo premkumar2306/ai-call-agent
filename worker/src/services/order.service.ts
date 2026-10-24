@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { getDb } from '../db/client';
 import { orders as ordersTable } from '../db/schema';
 import { getProductById } from './catalog.service';
@@ -22,6 +22,21 @@ function mapRow(r: typeof ordersTable.$inferSelect): Order {
   };
 }
 
+// Accepts "YYYY-MM-DDTHH:MM[:SS[.sss]][Z|±HH:MM]" — the shape the booking
+// tools produce — and rejects anything else before it reaches the DB.
+const SCHEDULED_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/;
+
+export function validateScheduledAt(scheduledAt: string, now = new Date()): string | null {
+  if (!SCHEDULED_AT_RE.test(scheduledAt) || Number.isNaN(Date.parse(scheduledAt))) {
+    return 'scheduled_at must be an ISO datetime like 2026-04-15T09:00:00';
+  }
+  // Compare on the calendar date only: stored times are business-local
+  // wall-clock values without an offset, so sub-day comparisons against UTC
+  // "now" would be wrong. Same-day bookings are still allowed.
+  if (scheduledAt.slice(0, 10) < now.toISOString().slice(0, 10)) return 'scheduled_at is in the past';
+  return null;
+}
+
 export async function placeOrder(
   env: Env,
   customerIdHashed: string,
@@ -38,6 +53,11 @@ export async function placeOrder(
   const needsShipping = ['PHYSICAL_PART', 'PHYSICAL_ACCESSORY'].includes(product.type);
   if (needsShipping && !shippingAddress) {
     throw Object.assign(new Error('Shipping address required'), { code: 'ADDRESS_REQUIRED' });
+  }
+
+  if (scheduledAt) {
+    const problem = validateScheduledAt(scheduledAt);
+    if (problem) throw Object.assign(new Error(problem), { code: 'INVALID_SCHEDULE' });
   }
 
   const db = getDb(env.DB);
@@ -64,7 +84,34 @@ export async function placeOrder(
     updatedAt: now,
   };
 
-  await db.insert(ordersTable).values(row);
+  if (scheduledAt) {
+    // Single-statement conditional insert: SQLite runs it atomically, so two
+    // callers racing for the same slot can't both succeed (a SELECT-then-
+    // INSERT would leave a window between the two). Slot identity matches
+    // getBookedDatetimes(): business + minute-resolution start time.
+    const nowSec = Math.floor(now.getTime() / 1000);
+    const result = await db.run(sql`
+      INSERT INTO orders (
+        id, customer_id_hashed, business_type, product_id, vendor_name, product_name, status,
+        price_cents, payment_method, tracking_number, scheduled_at,
+        shipping_line1, shipping_city, shipping_state, shipping_zip, created_at, updated_at
+      )
+      SELECT ${id}, ${customerIdHashed}, ${sector}, ${productId}, ${product.vendorName}, ${product.name}, 'PENDING',
+        ${product.priceCents}, ${paymentMethod}, NULL, ${scheduledAt},
+        ${shippingAddress?.line1 ?? null}, ${shippingAddress?.city ?? null},
+        ${shippingAddress?.state ?? null}, ${shippingAddress?.zip ?? null}, ${nowSec}, ${nowSec}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM orders
+        WHERE business_type = ${sector}
+          AND status != 'CANCELLED'
+          AND substr(scheduled_at, 1, 16) = substr(${scheduledAt}, 1, 16)
+      )`);
+    if (!result.meta.changes) {
+      throw Object.assign(new Error('That time slot was just booked'), { code: 'SLOT_TAKEN' });
+    }
+  } else {
+    await db.insert(ordersTable).values(row);
+  }
 
   // Order stays PENDING — real fulfillment (vendor webhook / admin confirmation) will advance status.
   // SERVICE_BOOKING appointments are confirmed via the admin dashboard or a webhook callback.

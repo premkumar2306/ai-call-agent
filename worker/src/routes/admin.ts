@@ -17,7 +17,7 @@ interface SectorConfig {
   maxRecommendations: number;
 }
 
-function defaultConfig(name: string, sector: string): SectorConfig {
+function defaultConfig(name: string): SectorConfig {
   return {
     storeName: name,
     greeting: `Welcome to ${name}! How can I help you today?`,
@@ -34,7 +34,7 @@ async function getConfig(env: HonoEnv['Bindings'], sector: string): Promise<Sect
   const raw = await env.CACHE.get(CONFIG_KEY(sector));
   if (raw) return JSON.parse(raw) as SectorConfig;
   const meta = await getSector(env, sector);
-  return defaultConfig(meta?.name ?? sector, sector);
+  return defaultConfig(meta?.name ?? sector);
 }
 
 async function putConfig(env: HonoEnv['Bindings'], sector: string, cfg: SectorConfig): Promise<void> {
@@ -92,7 +92,12 @@ adminRouter.put('/config/:sector', withAdminKey, async (c) => {
   if (!meta) return c.json({ success: false, error: 'Unknown sector' }, 404);
   const existing = await getConfig(c.env, sector);
   const body = await c.req.json().catch(() => ({}));
-  const updated = { ...existing, ...body };
+  // Only merge known keys with matching types — the stored blob is read back
+  // by the UI, so arbitrary keys/types would persist garbage.
+  const updated: SectorConfig = { ...existing };
+  for (const key of Object.keys(existing) as (keyof SectorConfig)[]) {
+    if (body && typeof body[key] === typeof existing[key]) (updated as any)[key] = body[key];
+  }
   await putConfig(c.env, sector, updated);
   return c.json({ success: true, data: updated });
 });
@@ -150,8 +155,11 @@ adminRouter.post('/products', withAdminKey, async (c) => {
       target: productsTable.id,
       set: { name: p.name, priceCents: p.price_cents ?? 0, description: p.description ?? '' },
     });
-    // Invalidate product cache
-    await c.env.CACHE.delete(`products:${p.business_type}:all`);
+    // Invalidate product caches (list + single-product lookup)
+    await Promise.all([
+      c.env.CACHE.delete(`products:${p.business_type}:all`),
+      c.env.CACHE.delete(`product:${p.id}`),
+    ]);
   }
   return c.json({ success: true, data: { inserted: rows.length } });
 });

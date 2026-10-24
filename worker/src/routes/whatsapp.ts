@@ -39,10 +39,9 @@
  */
 
 import { Hono } from 'hono';
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import type { HonoEnv } from '../middleware';
 import { getSector } from '../services/sector.service';
-import { getProducts } from '../services/catalog.service';
 import { getOrders } from '../services/order.service';
 import { executeTool, getToolDefinitions } from '../services/tool-router.service';
 import { saveTranscript } from '../services/transcript.service';
@@ -52,6 +51,9 @@ import {
 } from '../services/voice-guard.service';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
 import type { Env, SessionPayload } from '../types';
+import {
+  agentModel, createAnthropic, customerHashSalt, HTTP_TIMEOUT_MS, isProduction, MAX_TOOL_ROUNDS, timingSafeEqual,
+} from '../config';
 
 const whatsappRouter = new Hono<HonoEnv>();
 
@@ -65,7 +67,7 @@ type WaMessage      = WaTextMessage | WaAudioMessage | { from: string; id: strin
 
 // ── Signature verification ─────────────────────────────────────────────────────
 
-async function verifyMetaSignature(
+export async function verifyMetaSignature(
   appSecret: string,
   rawBody: string,
   header: string,
@@ -76,13 +78,7 @@ async function verifyMetaSignature(
   );
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
   const computed = 'sha256=' + Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-  // Constant-time comparison
-  if (computed.length !== header.length) return false;
-  let diff = 0;
-  for (let i = 0; i < computed.length; i++) {
-    diff |= computed.charCodeAt(i) ^ header.charCodeAt(i);
-  }
-  return diff === 0;
+  return timingSafeEqual(computed, header);
 }
 
 // ── KV helpers ─────────────────────────────────────────────────────────────────
@@ -135,21 +131,26 @@ function resolveBusinessType(phoneNumberId: string, env: Env): string {
 
 // ── Opt-out detection ──────────────────────────────────────────────────────────
 
-function isOptOut(text: string): boolean {
-  return /\b(stop|unsubscribe|cancel|optout|opt.?out)\b/i.test(text);
+// Only a message that *is* an opt-out keyword counts. Matching the keyword
+// anywhere would unsubscribe "I need to cancel my appointment" or "can you
+// stop by Tuesday?" instead of handing them to the agent.
+export function isOptOut(text: string): boolean {
+  return /^\s*(stop|stop all|unsubscribe|cancel|end|quit|opt[\s-]?out)\s*[.!]*\s*$/i.test(text);
 }
 
 // ── Meta Graph API helpers ─────────────────────────────────────────────────────
 
 async function downloadWaAudio(env: Env, mediaId: string): Promise<ArrayBuffer | null> {
   try {
-    const urlRes = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+    const urlRes = await fetch(`https://graph.facebook.com/v22.0/${encodeURIComponent(mediaId)}`, {
       headers: { Authorization: `Bearer ${env.WA_ACCESS_TOKEN}` },
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     if (!urlRes.ok) return null;
     const { url } = await urlRes.json() as { url: string };
     const audioRes = await fetch(url, {
       headers: { Authorization: `Bearer ${env.WA_ACCESS_TOKEN}` },
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     if (!audioRes.ok) return null;
     return audioRes.arrayBuffer();
@@ -167,6 +168,7 @@ async function transcribeWaAudio(env: Env, audioBuffer: ArrayBuffer): Promise<st
         'Content-Type': 'audio/ogg; codecs=opus',
       },
       body: audioBuffer,
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     if (!res.ok) return '';
     const data = await res.json() as any;
@@ -189,6 +191,7 @@ async function sendWaReply(env: Env, to: string, text: string): Promise<void> {
       type: 'text',
       text: { preview_url: false, body: text },
     }),
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   if (!res.ok) {
     const errBody = await res.text();
@@ -209,7 +212,8 @@ whatsappRouter.get('/webhook', async (c) => {
   const verifyToken = c.req.query('hub.verify_token');
   const challenge   = c.req.query('hub.challenge');
 
-  if (mode === 'subscribe' && verifyToken === c.env.WA_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && c.env.WA_VERIFY_TOKEN && verifyToken
+      && timingSafeEqual(verifyToken, c.env.WA_VERIFY_TOKEN)) {
     return c.text(challenge ?? '', 200);
   }
   return c.text('Forbidden', 403);
@@ -221,11 +225,14 @@ whatsappRouter.post('/webhook', async (c) => {
   // 1. Read raw body
   const rawBody = await c.req.text();
 
-  // 2. Verify Meta signature
+  // 2. Verify Meta signature. In production a missing WA_APP_SECRET rejects
+  // everything rather than silently accepting unsigned payloads.
   const sigHeader = c.req.header('x-hub-signature-256') ?? '';
-  if (c.env.NODE_ENV === 'production' && c.env.WA_APP_SECRET) {
-    const valid = await verifyMetaSignature(c.env.WA_APP_SECRET, rawBody, sigHeader);
-    if (!valid) return c.text('Forbidden', 403);
+  if (c.env.WA_APP_SECRET) {
+    if (!await verifyMetaSignature(c.env.WA_APP_SECRET, rawBody, sigHeader)) return c.text('Forbidden', 403);
+  } else if (isProduction(c.env)) {
+    console.error('[wa] WA_APP_SECRET not set — rejecting webhook');
+    return c.text('Forbidden', 403);
   }
 
   // 3. Parse body
@@ -256,25 +263,35 @@ whatsappRouter.post('/webhook', async (c) => {
   if (await isSeenMessage(c.env, message.id)) return c.text('OK', 200);
   await markMessageSeen(c.env, message.id);
 
+  // Meta retries any webhook that isn't acknowledged quickly, so the LLM
+  // loop runs after the 200 goes out (dedup above makes retries harmless).
+  c.executionCtx.waitUntil(
+    handleMessage(c.env, message, phoneNumberId)
+      .catch(err => console.error('[wa] unhandled error:', err?.message || err)),
+  );
+  return c.text('OK', 200);
+});
+
+async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string): Promise<void> {
   // 7. Hash phone
-  const phoneHash = await hashId(message.from, c.env.CUSTOMER_HASH_SALT ?? 'dev-hash-salt');
+  const phoneHash = await hashId(message.from, customerHashSalt(env));
 
   // 8. Resolve business type
-  const businessType = resolveBusinessType(phoneNumberId, c.env);
+  const businessType = resolveBusinessType(phoneNumberId, env);
 
   // 9. Rate limit
-  const overLimit = await checkAndIncrementWaRateLimit(c.env, phoneHash);
+  const overLimit = await checkAndIncrementWaRateLimit(env, phoneHash);
   if (overLimit) {
-    await sendWaReply(c.env, message.from, "You've sent a lot of messages recently. Please wait a moment before continuing.").catch(() => {});
-    return c.text('OK', 200);
+    await sendWaReply(env, message.from, "You've sent a lot of messages recently. Please wait a moment before continuing.").catch(() => {});
+    return;
   }
 
   // 10. Opt-out check (text only)
   if (message.type === 'text') {
     const textMsg = message as WaTextMessage;
     if (isOptOut(textMsg.text.body)) {
-      await sendWaReply(c.env, message.from, "You've been unsubscribed. Text us any time to start again.").catch(() => {});
-      return c.text('OK', 200);
+      await sendWaReply(env, message.from, "You've been unsubscribed. Text us any time to start again.").catch(() => {});
+      return;
     }
   }
 
@@ -284,22 +301,22 @@ whatsappRouter.post('/webhook', async (c) => {
     utterance = (message as WaTextMessage).text.body.trim();
   } else if (message.type === 'audio') {
     const audioMsg = message as WaAudioMessage;
-    const buf = await downloadWaAudio(c.env, audioMsg.audio.id);
+    const buf = await downloadWaAudio(env, audioMsg.audio.id);
     if (buf) {
-      utterance = await transcribeWaAudio(c.env, buf);
+      utterance = await transcribeWaAudio(env, buf);
     }
     if (!utterance) {
-      await sendWaReply(c.env, message.from, "I couldn't make out that voice message. Could you type your request instead?").catch(() => {});
-      return c.text('OK', 200);
+      await sendWaReply(env, message.from, "I couldn't make out that voice message. Could you type your request instead?").catch(() => {});
+      return;
     }
   } else {
-    await sendWaReply(c.env, message.from, "I can only handle text and voice messages. Please type your request.").catch(() => {});
-    return c.text('OK', 200);
+    await sendWaReply(env, message.from, "I can only handle text and voice messages. Please type your request.").catch(() => {});
+    return;
   }
 
   try {
     // 12. Get/create customer
-    const account = await getOrCreateCustomer(c.env, phoneHash);
+    const account = await getOrCreateCustomer(env, phoneHash);
 
     // 13. Build session
     const now = Math.floor(Date.now() / 1000);
@@ -311,19 +328,15 @@ whatsappRouter.post('/webhook', async (c) => {
       account,
     };
 
-    // 14. Load history
-    const history = await loadWaHistory(c.env, phoneHash, businessType);
-
-    // 15. Parallel context fetch
-    const [ordersResult, productsResult] = await Promise.allSettled([
-      getOrders(c.env, phoneHash, businessType),
-      getProducts(c.env, businessType),
+    // 14–16. History, recent orders and sector metadata are independent —
+    // fetch them in one wave.
+    const [history, recentOrders, sectorMeta] = await Promise.all([
+      loadWaHistory(env, phoneHash, businessType),
+      getOrders(env, phoneHash, businessType)
+        .then(orders => orders.slice(0, 3).map(o => `${o.productName} (${o.status})`))
+        .catch(() => [] as string[]),
+      getSector(env, businessType),
     ]);
-    const recentOrders = ordersResult.status === 'fulfilled'
-      ? ordersResult.value.slice(0, 3).map(o => `${o.productName} (${o.status})`) : [];
-
-    // 16. Sector meta
-    const sectorMeta = await getSector(c.env, businessType);
     const bizName = sectorMeta?.name ?? businessType;
     const credit = (account.store_credit_cents / 100).toFixed(2);
 
@@ -335,11 +348,11 @@ whatsappRouter.post('/webhook', async (c) => {
         { role: 'user', content: utterance },
         { role: 'assistant', content: escalationReply },
       ];
-      await saveWaHistory(c.env, phoneHash, businessType, updatedHistory);
-      saveTranscript(c.env, { callSid: `wa:${phoneHash.slice(0, 8)}`, customerIdHashed: phoneHash, businessType, turns: updatedHistory })
+      await saveWaHistory(env, phoneHash, businessType, updatedHistory);
+      await saveTranscript(env, { callSid: `wa:${phoneHash.slice(0, 8)}`, customerIdHashed: phoneHash, businessType, turns: updatedHistory })
         .catch(err => console.error('wa transcript error', err.message));
-      await sendWaReply(c.env, message.from, escalationReply).catch(() => {});
-      return c.text('OK', 200);
+      await sendWaReply(env, message.from, escalationReply).catch(() => {});
+      return;
     }
 
     // 18. Build system prompt
@@ -368,7 +381,7 @@ RULES:
    (The system handles opt-out before this prompt, so this is a safety backstop.)`;
 
     // 19. Agentic loop
-    const anthropic = new Anthropic({ apiKey: c.env.ANTHROPIC_API_KEY });
+    const anthropic = createAnthropic(env);
     const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta).map(t => ({
       name: t.name,
       description: t.description,
@@ -381,9 +394,9 @@ RULES:
     ];
 
     let replyText = '';
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
       const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: agentModel(env),
         max_tokens: 600,
         system: systemPrompt,
         tools,
@@ -394,7 +407,7 @@ RULES:
         const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
         const toolResults = await Promise.all(toolBlocks.map(async (tb) => {
           console.log(`[wa:${phoneHash.slice(-8)}] tool: ${tb.name}`);
-          const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, c.env, sectorMeta);
+          const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, env, sectorMeta);
           return { type: 'tool_result' as const, tool_use_id: tb.id, content: JSON.stringify(result.data ?? { message: result.spoken_response }) };
         }));
         messages.push({ role: 'assistant', content: response.content });
@@ -415,27 +428,23 @@ RULES:
       { role: 'user', content: utterance },
       { role: 'assistant', content: replyText },
     ], 30);
-    await saveWaHistory(c.env, phoneHash, businessType, updatedHistory);
+    await saveWaHistory(env, phoneHash, businessType, updatedHistory);
 
     // 22. Send reply
-    await sendWaReply(c.env, message.from, replyText);
+    await sendWaReply(env, message.from, replyText);
 
-    // 23. Fire-and-forget transcript
-    saveTranscript(c.env, {
+    // 23. Transcript (already off the response path — see waitUntil above)
+    await saveTranscript(env, {
       callSid: `wa:${phoneHash.slice(0, 8)}`,
       customerIdHashed: phoneHash,
       businessType,
       turns: updatedHistory,
     }).catch(err => console.error('wa transcript error', err.message));
 
-    // 24. Return 200
-    return c.text('OK', 200);
-
   } catch (err: any) {
     console.error(`[wa:${phoneHash.slice(-8)}] error:`, err.message);
-    await sendWaReply(c.env, message.from, "I'm having technical difficulties. Please try again shortly.").catch(() => {});
-    return c.text('OK', 200);
+    await sendWaReply(env, message.from, "I'm having technical difficulties. Please try again shortly.").catch(() => {});
   }
-});
+}
 
 export { whatsappRouter };

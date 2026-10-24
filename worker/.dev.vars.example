@@ -1,0 +1,23 @@
+# Local secrets for `wrangler dev`. Copy to .dev.vars (gitignored):
+#   cp .dev.vars.example .dev.vars
+# Production values are set with `wrangler secret put <NAME>` — see the
+# secrets list in wrangler.toml.
+
+# Relaxes fail-closed checks for local work (unsigned Twilio/WhatsApp
+# webhooks, media streams without a signed token, dev hash salt).
+NODE_ENV=development
+
+TOKEN_SECRET=dev-secret-minimum-32-characters-long
+CUSTOMER_HASH_SALT=dev-hash-salt
+ADMIN_SECRET=dev-admin-key
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Voice
+DEEPGRAM_API_KEY=
+CARTESIA_API_KEY=
+
+# Optional
+RESEND_API_KEY=
+EMAIL_FROM=Mogi <mogi@yourstore.example.com>
+TWILIO_AUTH_TOKEN=
+TWILIO_WEBHOOK_URL=

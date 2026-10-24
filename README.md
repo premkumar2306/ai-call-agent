@@ -63,7 +63,7 @@ agent loop (`runTurn()`) → Cartesia TTS streamed back to the caller, with barg
 
 ```bash
 git clone <repo-url>
-cd uhg
+cd ai-call-agent
 
 # Install worker deps
 cd worker && npm install
@@ -78,32 +78,22 @@ cd ../web && npm install
 wrangler login
 ```
 
-### 3. Set secrets (one-time)
+### 3. Local secrets
 
 ```bash
 cd worker
-
-wrangler secret put ANTHROPIC_API_KEY      # sk-ant-...
-wrangler secret put TOKEN_SECRET           # any 32+ char random string
-wrangler secret put CUSTOMER_HASH_SALT     # any random string
-wrangler secret put AVERY_SECRET           # any random string
-wrangler secret put TWILIO_AUTH_TOKEN      # from Twilio console
-wrangler secret put DEEPGRAM_API_KEY       # speech-to-text for live calls
-wrangler secret put CARTESIA_API_KEY       # text-to-speech for live calls
-wrangler secret put CARTESIA_VOICE_ID      # optional — has a built-in default
+cp .dev.vars.example .dev.vars   # gitignored; read by `wrangler dev`
 ```
 
-### 4. Run the database migrations locally
+`NODE_ENV=development` in `.dev.vars` relaxes the production fail-closed checks
+(unsigned Twilio/WhatsApp webhooks, media streams without a signed token) so you
+can test with `curl` and the call simulator.
+
+### 4. Create and seed the local database
 
 ```bash
 cd worker
-npm run db:migrate:local   # creates local D1 (SQLite)
-```
-
-Seed with products and services:
-
-```bash
-wrangler d1 execute mogi-platform --local --file=./drizzle/0001_seed.sql
+npm run db:bootstrap:local   # schema.sql + seed data, then drizzle/ migrations
 ```
 
 ### 5. Start local dev server
@@ -112,22 +102,35 @@ wrangler d1 execute mogi-platform --local --file=./drizzle/0001_seed.sql
 cd worker
 npm run dev
 # → http://localhost:8787
+curl http://localhost:8787/health          # liveness
+curl "http://localhost:8787/health?deep=1" # also checks D1 + KV
 ```
 
-Test the health endpoint:
-
-```bash
-curl http://localhost:8787/health
-# → { "status": "ok", "sectors": ["auto_shop", "clinic", "real_estate"], "anthropic": true }
-```
+Or run worker + web together from the repo root: `./dev.sh`.
 
 ### 6. Start the admin UI (optional)
 
 ```bash
 cd web
+cp .env.example .env.local   # VITE_API_URL only — never put secrets in VITE_*
 npm run dev
 # → http://localhost:5173
 ```
+
+Admin tabs (Customize, WhatsApp) need the `ADMIN_SECRET` value: enter it in the
+"Admin key" field in the header. It is kept in `sessionStorage` for the tab only.
+
+---
+
+## Checks
+
+```bash
+cd worker && npm run check   # tsc + vitest unit tests
+cd web && npm run build      # tsc + vite build
+```
+
+CI (`.github/workflows/ci.yml`) runs these on every PR plus a `wrangler deploy --dry-run`
+bundle. Pushes to `main` run CI, then deploy (`.github/workflows/deploy.yml`).
 
 ---
 
@@ -136,7 +139,6 @@ npm run dev
 ### Text-only turns (no audio, fastest)
 
 ```bash
-# Send a spoken turn straight to the LLM agent loop
 curl -X POST http://localhost:8787/twilio/turn \
   -d "CallSid=test-call-001&SpeechResult=What+are+your+Saturday+hours"
 ```
@@ -145,40 +147,58 @@ The response is TwiML XML containing what Mogi would say.
 
 ### Full audio pipeline (STT → LLM → TTS)
 
-`/twilio/inbound` returns `<Connect><Stream>` TwiML (no spoken greeting on its own) — the
-actual audio round-trip happens over the `/twilio/stream` WebSocket, upgraded into the
-`CallRelay` Durable Object. To exercise that path without a real phone call, write a small
-script that speaks Twilio's Media Streams protocol directly: connect to
-`wss://<your-worker>.workers.dev/twilio/stream?businessType=dental`, send a JSON
-`{"event":"start","start":{"callSid":"...","streamSid":"..."}}` message, then stream 20ms
-µ-law 8kHz `{"event":"media","media":{"payload":"<base64>"}}` frames — audio (TTS) comes
-back the same way. Otherwise, just place a real call.
+```bash
+cd worker
+npm run simulate-call                         # 2s silence: connection + greeting
+node scripts/simulate-call.mjs speech.wav     # real speech through the whole pipeline
+```
+
+The simulator speaks Twilio's Media Streams protocol to `/twilio/stream`. In production
+the stream must carry the signed `streamToken` that `/twilio/inbound` puts in the TwiML,
+so the simulator only works against a Worker running with `NODE_ENV=development`.
 
 ---
 
-## Deploying Changes
+## Deploying
 
-### Worker (API + AI)
+### Automatic (recommended)
+
+Merging to `main` runs CI, applies D1 migrations, deploys the Worker, smoke-tests
+`/health?deep=1`, then deploys the admin UI to Pages. Required repository secrets:
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. Optional repository variables:
+`WORKER_URL` (default `https://mogi-platform.premkumar-2ba.workers.dev`) and
+`PAGES_PROJECT` (default `mogi-admin`).
+
+### Manual
+
+```bash
+./deploy.sh            # worker + web
+./deploy.sh migrate    # D1 migrations only
+```
+
+### Production secrets (one-time)
+
+The Worker **fails closed** in production: if a secret below is missing, the routes that
+depend on it reject requests instead of running unauthenticated.
 
 ```bash
 cd worker
-npm run type-check   # catch TypeScript errors first
-npm run deploy       # wrangler deploy → mogi-platform.premkumar-2ba.workers.dev
+wrangler secret put TOKEN_SECRET          # >= 32 random chars
+wrangler secret put CUSTOMER_HASH_SALT    # random; don't rotate (re-keys every customer)
+wrangler secret put ANTHROPIC_API_KEY
+wrangler secret put ADMIN_SECRET          # X-Admin-Key for /admin/*
+wrangler secret put TWILIO_AUTH_TOKEN     # Twilio console
+wrangler secret put TWILIO_WEBHOOK_URL    # public base URL Twilio calls
+wrangler secret put DEEPGRAM_API_KEY
+wrangler secret put CARTESIA_API_KEY
+# WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN
 ```
 
 ### Database schema change
 
 1. Edit `worker/src/db/schema.ts`
-2. Generate migration: `npm run db:generate`
-3. Apply to production: `npm run db:migrate`
-
-### Web (admin UI)
-
-```bash
-cd web
-npm run build
-npm run deploy       # wrangler pages deploy dist
-```
+2. Generate a migration: `npm run db:generate`
+3. Commit it — the deploy workflow applies it (`npm run db:migrate` to apply by hand)
 
 ---
 
@@ -190,14 +210,9 @@ Use the built-in Claude Code skill:
 /add-vertical
 ```
 
-It will walk you through adding a new sector (e.g. `spa`, `gym`, `law_firm`) — collecting the business details, generating a voice-first service catalogue, and updating the codebase.
-
-Manual steps if not using the skill:
-
-1. Add entry to `SECTORS` in `worker/src/types.ts`
-2. Append vendors + products to `worker/drizzle/0001_seed.sql`
-3. Run `npm run db:seed` (local) or apply SQL to production D1
-4. Deploy: `npm run deploy`
+Sectors, vendors and products live in D1 and can be added without a deploy via the
+admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requiring
+`X-Admin-Key`).
 
 ---
 
@@ -205,44 +220,42 @@ Manual steps if not using the skill:
 
 | File | Purpose |
 |------|---------|
-| `worker/src/routes/twilio.ts` | Twilio webhook handlers, call history, agentic loop |
-| `worker/src/routes/avery.ts` | Web chat endpoint |
+| `worker/src/config.ts` | Model id, Anthropic client timeouts, fail-closed secret helpers |
+| `worker/src/routes/twilio.ts` | Twilio webhooks (signature-verified) and stream TwiML |
+| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: Deepgram STT → `runTurn()` → Cartesia TTS |
+| `worker/src/services/turn.service.ts` | Voice agent loop (streaming, prompt caching) |
 | `worker/src/services/tool-router.service.ts` | AI tool definitions (search, availability, booking) |
-| `worker/src/types.ts` | `SECTORS` config — drives everything |
+| `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
+| `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |
-| `worker/drizzle/0001_seed.sql` | Products and services for all verticals |
-| `worker/wrangler.toml` | Cloudflare bindings (D1, KV, env vars) |
+| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, secrets list |
 
 ---
 
-## Environment Variables
+## Operations
 
-Set via `wrangler secret put` for production. See `worker/.env.example` for the full list.
-
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Powers Avery's AI responses |
-| `TOKEN_SECRET` | Yes | Signs JWT session tokens |
-| `CUSTOMER_HASH_SALT` | Yes | Hashes customer IDs for privacy |
-| `AVERY_SECRET` | Yes | Service-to-service auth header |
-| `TWILIO_AUTH_TOKEN` | Yes (prod) | Validates webhook signatures |
-| `RESEND_API_KEY` | No | Sends booking confirmation emails |
+- **Logs:** Workers Logs is enabled (`[observability]` in `wrangler.toml`); live tail with
+  `npx wrangler tail`. Unhandled errors are logged as JSON with a `requestId`, which is
+  also returned to the client and in the `X-Request-Id` header.
+- **Health:** point an uptime monitor at `/health?deep=1` (returns 503 if D1 or KV fail).
+- **Cost guards:** per-IP/per-session KV rate limits on token minting, voice turns, STT/TTS
+  proxies and transcript email; Anthropic calls time out after 20s with one retry.
 
 ### Voice latency tuning
 
-These are plain vars (set in `wrangler.toml` or via `wrangler deploy --var`), not
-secrets. All are optional — the defaults are what ships.
+Plain vars (set in `wrangler.toml`), not secrets. All optional — the defaults are
+what ships.
 
 | Var | Default | Effect |
 |-----|---------|--------|
+| `VOICE_MODEL` | `claude-haiku-5-5` | Overrides the model used on live calls only (`DEFAULT_VOICE_MODEL` in `src/config.ts`). `ANTHROPIC_MODEL` covers the other agent surfaces. |
 | `DG_MODEL` | `nova-2` | Deepgram model. Try `nova-3` for lower finalization latency. |
 | `DG_LANGUAGE` | `multi` | Set to `en` on an English-only deployment — faster than the multilingual model. |
-| `VOICE_BARGE_IN_ON_VAD` | on | Set `0` to make barge-in wait for the first interim transcript instead of Deepgram's VAD event. Slower to react, but needs recognised words rather than any voice activity — use if raw VAD proves trigger-happy on your lines. |
+| `VOICE_BARGE_IN_ON_VAD` | on | Set `0` to make barge-in wait for the first interim transcript instead of Deepgram's VAD event. Slower to react, but needs recognised words rather than any voice activity. |
 | `VOICE_DIRECT_TOOL_REPLY` | on | Set `0` to always round-trip a tool result through Claude for paraphrasing instead of speaking the tool's own response. Costs one extra model call per tool turn. |
 | `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
 
-Watch the `⏱` lines in `wrangler tail` to see the effect: `transcript-finalized`
-(STT), `anthropic#N first-token`, `direct-tool-reply` (when the shortcut fires),
-and `first-chunk-spoken` (time from finalized transcript to first audio out).
-
-# ai-call-agent
+Watch the `⏱` lines in `npx wrangler tail`: `transcript-finalized` (STT),
+`anthropic#N first-token`, `direct-tool-reply` (when the second model call is
+skipped), `first-chunk-spoken` (finalized transcript → first audio out), and
+`cache_read=` (prompt caching actually landing).
