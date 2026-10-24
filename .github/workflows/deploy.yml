@@ -12,7 +12,10 @@ concurrency:
 
 env:
   NODE_VERSION: "20"
-  WORKER_NAME: avery-platform
+  WORKER_NAME: mogi-platform
+  # Must match `database_name` in worker/wrangler.toml — `wrangler d1
+  # migrations apply` resolves this against that file, not against Cloudflare.
+  D1_DATABASE_NAME: mogi-platform
   WEB_PROJECT_NAME: avery-admin
   WORKER_API_URL: https://avery-platform.premkumar-2ba.workers.dev
 
@@ -40,8 +43,11 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+      - name: Test
+        run: npm test
+
       - name: Apply D1 migrations
-        run: npx wrangler d1 migrations apply ${{ env.WORKER_NAME }} --remote
+        run: npx wrangler d1 migrations apply ${{ env.D1_DATABASE_NAME }} --remote
 
       - name: Deploy Worker
         run: npx wrangler deploy

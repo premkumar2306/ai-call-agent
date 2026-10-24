@@ -39,3 +39,6 @@ npm-debug.log*
 # Editor
 .vscode/
 .idea/
+
+# esbuild output from worker logic tests
+worker/test/.tmp-chunking/

@@ -228,4 +228,21 @@ Set via `wrangler secret put` for production. See `worker/.env.example` for the 
 | `TWILIO_AUTH_TOKEN` | Yes (prod) | Validates webhook signatures |
 | `RESEND_API_KEY` | No | Sends booking confirmation emails |
 
+### Voice latency tuning
+
+These are plain vars (set in `wrangler.toml` or via `wrangler deploy --var`), not
+secrets. All are optional — the defaults are what ships.
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `DG_MODEL` | `nova-2` | Deepgram model. Try `nova-3` for lower finalization latency. |
+| `DG_LANGUAGE` | `multi` | Set to `en` on an English-only deployment — faster than the multilingual model. |
+| `VOICE_BARGE_IN_ON_VAD` | on | Set `0` to make barge-in wait for the first interim transcript instead of Deepgram's VAD event. Slower to react, but needs recognised words rather than any voice activity — use if raw VAD proves trigger-happy on your lines. |
+| `VOICE_DIRECT_TOOL_REPLY` | on | Set `0` to always round-trip a tool result through Claude for paraphrasing instead of speaking the tool's own response. Costs one extra model call per tool turn. |
+| `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
+
+Watch the `⏱` lines in `wrangler tail` to see the effect: `transcript-finalized`
+(STT), `anthropic#N first-token`, `direct-tool-reply` (when the shortcut fires),
+and `first-chunk-spoken` (time from finalized transcript to first audio out).
+
 # ai-call-agent

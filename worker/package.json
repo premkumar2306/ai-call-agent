@@ -6,11 +6,12 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "wrangler d1 migrations apply avery-platform",
-    "db:migrate:local": "wrangler d1 migrations apply avery-platform --local",
-    "db:seed": "wrangler d1 execute avery-platform --file=./drizzle/seed.sql",
-    "db:seed:local": "wrangler d1 execute avery-platform --local --file=./drizzle/seed.sql",
-    "type-check": "tsc --noEmit"
+    "db:migrate": "wrangler d1 migrations apply mogi-platform",
+    "db:migrate:local": "wrangler d1 migrations apply mogi-platform --local",
+    "db:seed": "wrangler d1 execute mogi-platform --file=./drizzle/seed.sql",
+    "db:seed:local": "wrangler d1 execute mogi-platform --local --file=./drizzle/seed.sql",
+    "type-check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

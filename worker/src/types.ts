@@ -96,6 +96,19 @@ export interface Env {
   // UtteranceEnd messages + which signal triggered finalize()). Off by
   // default to avoid flooding wrangler tail.
   DG_DEBUG?: string;
+  // Deepgram model / language. Defaults 'nova-2' and 'multi'. Exposed as env
+  // so 'nova-3' (lower finalization latency) and 'en' (faster than the
+  // multilingual model on an English-only deployment) can be A/B'd against
+  // live calls without a code change.
+  DG_MODEL?: string;
+  DG_LANGUAGE?: string;
+  // Set to '0'/'false' to make barge-in wait for the first interim transcript
+  // instead of Deepgram's VAD SpeechStarted event. Slower to react, but takes
+  // recognised words rather than any voice activity.
+  VOICE_BARGE_IN_ON_VAD?: string;
+  // Set to '0'/'false' to disable speaking a self-sufficient tool result
+  // directly and always round-trip it through Claude for paraphrasing.
+  VOICE_DIRECT_TOOL_REPLY?: string;
   TOKEN_TTL_SECONDS?: string;
   // Twilio inbound call defaults — used when no ?token= in webhook URL
   TWILIO_DEFAULT_BUSINESS_TYPE?: string; // e.g. "auto_shop"
