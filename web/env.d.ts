@@ -1,12 +1,9 @@
 /// <reference types="vite/client" />
 
+// Everything here is compiled into the public JS bundle — never put secrets
+// (admin key, provider API keys) in a VITE_* variable.
 interface ImportMetaEnv {
   readonly VITE_API_URL?: string;
-  readonly VITE_AVERY_SECRET?: string;
-  readonly VITE_ADMIN_KEY?: string;
-  readonly VITE_DEEPGRAM_API_KEY?: string;
-  readonly VITE_CARTESIA_API_KEY?: string;
-  readonly VITE_CARTESIA_VOICE_ID?: string;
 }
 
 interface ImportMeta {

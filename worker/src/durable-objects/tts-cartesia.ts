@@ -2,8 +2,9 @@
 // Uses res.body.getReader() rather than `for await...of res.body` for portability
 // across Workers runtime versions.
 
-const CARTESIA_VERSION = '2026-03-01';
-const DEFAULT_VOICE_ID = 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4'; // Skylar - Friendly Guide
+export const CARTESIA_VERSION = '2026-03-01';
+export const DEFAULT_CARTESIA_MODEL = 'sonic-3.5';
+export const DEFAULT_VOICE_ID = 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4'; // Skylar - Friendly Guide
 
 export interface CartesiaConfig {
   apiKey: string;
@@ -29,7 +30,7 @@ export async function cartesiaSpeak(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model_id: cfg.modelId ?? 'sonic-3.5',
+      model_id: cfg.modelId ?? DEFAULT_CARTESIA_MODEL,
       transcript: text,
       voice: { mode: 'id', id: cfg.voiceId ?? DEFAULT_VOICE_ID },
       output_format: { container: 'raw', encoding: 'pcm_mulaw', sample_rate: 8000 },

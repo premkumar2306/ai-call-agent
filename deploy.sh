@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 # ── Avery Platform Deploy ─────────────────────────────────────────────────────
 # Usage:
@@ -9,13 +9,14 @@ set -e
 #   ./deploy.sh migrate  — run DB migrations only
 
 TARGET="${1:-all}"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 deploy_worker() {
   echo ""
   echo "▶ Worker"
-  cd "$(dirname "$0")/worker"
-  echo "  type-check…"
-  npm run type-check
+  cd "$ROOT/worker"
+  echo "  type-check + tests…"
+  npm run check
   echo "  deploying…"
   npm run deploy
   cd - > /dev/null
@@ -24,7 +25,7 @@ deploy_worker() {
 deploy_web() {
   echo ""
   echo "▶ Web"
-  cd "$(dirname "$0")/web"
+  cd "$ROOT/web"
   echo "  building…"
   npm run build
   echo "  deploying to Pages…"
@@ -35,7 +36,7 @@ deploy_web() {
 run_migrate() {
   echo ""
   echo "▶ DB Migrations"
-  cd "$(dirname "$0")/worker"
+  cd "$ROOT/worker"
   npm run db:migrate
   cd - > /dev/null
 }
@@ -45,10 +46,11 @@ case "$TARGET" in
   web)     deploy_web ;;
   migrate) run_migrate ;;
   all)
+    run_migrate
     deploy_worker
     deploy_web
     echo ""
-    echo "✓ Done — worker + web deployed"
+    echo "✓ Done — migrations, worker + web deployed"
     ;;
   *)
     echo "Usage: ./deploy.sh [worker|web|migrate|all]"

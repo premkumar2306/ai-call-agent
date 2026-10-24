@@ -1,9 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
+import { agentModel, createAnthropic, MAX_TOOL_ROUNDS } from '../config';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
-import { scoreProducts } from './recommendations.service';
 import { executeTool, getToolDefinitions } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
 import type { CallCache } from './call-context';
@@ -26,9 +26,12 @@ export async function saveHistory(env: Env, callSid: string, history: Turn[]): P
   await env.CART.put(`call:${callSid}`, JSON.stringify(history), { expirationTtl: 3600 });
 }
 
-function getAnthropic(apiKey: string) {
-  return new Anthropic({ apiKey });
-}
+// Schedules durability-only work (history/transcript writes) that must not
+// block the spoken reply. HTTP routes pass ctx.waitUntil so the isolate isn't
+// torn down before the write lands; the CallRelay DO lives for the whole call
+// so a plain floating promise is fine there.
+export type Background = (p: Promise<unknown>) => void;
+const floating: Background = (p) => { void p; };
 
 export interface TurnResult {
   spokenResponse: string;
@@ -54,7 +57,7 @@ function popSentence(buffer: string): { chunk: string; rest: string } | null {
   return { chunk, rest };
 }
 
-function extractCompleteSentences(buffer: string): { chunks: string[]; rest: string } {
+export function extractCompleteSentences(buffer: string): { chunks: string[]; rest: string } {
   const chunks: string[] = [];
   let rest = buffer;
   while (true) {
@@ -73,6 +76,7 @@ export async function runTurn(
   utterance: string,
   onChunk?: OnChunk,
   cache?: CallCache,
+  background: Background = floating,
 ): Promise<TurnResult> {
   const { businessType, account, sub } = session;
   const tag = callSid.slice(-8);
@@ -115,8 +119,6 @@ export async function runTurn(
 
   const recentOrders = ordersResult.status === 'fulfilled'
     ? (ordersResult.value as any[]).slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
-  const recs = productsResult.status === 'fulfilled'
-    ? scoreProducts(productsResult.value as any[], account.store_credit_cents).slice(0, 3).map((r: any) => r.name) : [];
 
   const sectorMeta = sectorResult.status === 'fulfilled' && sectorResult.value
     ? (sectorResult.value as any)
@@ -132,10 +134,7 @@ export async function runTurn(
       { role: 'assistant', content: spokenResponse },
     ];
     if (cache) cache.history = updatedHistory;
-    // Fire-and-forget: the answer is already spoken, this is durability-only.
-    saveHistory(env, callSid, updatedHistory).catch(err => console.error('saveHistory error', err.message));
-    saveTranscript(env, { callSid, customerIdHashed: sub, businessType, turns: updatedHistory })
-      .catch(err => console.error('transcript error', err.message));
+    persistTurn(env, callSid, sub, businessType, updatedHistory, background);
     return { spokenResponse, history: updatedHistory };
   }
 
@@ -210,11 +209,11 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
 
   // ── Agentic loop ─────────────────────────────────────────────────────────
   let spokenResponse = '';
-  const anthropic = getAnthropic(env.ANTHROPIC_API_KEY);
+  const anthropic = createAnthropic(env);
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
     const stream = anthropic.messages.stream({
-      model: 'claude-haiku-4-5-20251001',
+      model: agentModel(env),
       max_tokens: 400,
       system: systemPrompt,
       tools,
@@ -309,15 +308,20 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     { role: 'assistant', content: spokenResponse },
   ];
   if (cache) cache.history = updatedHistory;
-  // Fire-and-forget: the answer is already spoken by the time this runs
-  // (onChunk delivery happens above), so awaiting it only delays the DO for
-  // no benefit to the caller. KV write-behind is durability-only — the
-  // in-memory `cache.history` above is what subsequent turns actually read.
-  saveHistory(env, callSid, updatedHistory).catch(err => console.error('saveHistory error', err.message));
-
-  // Fire-and-forget transcript
-  saveTranscript(env, { callSid, customerIdHashed: sub, businessType, turns: updatedHistory })
-    .catch(err => console.error('transcript error', err.message));
+  persistTurn(env, callSid, sub, businessType, updatedHistory, background);
 
   return { spokenResponse, history: updatedHistory };
+}
+
+// The answer is already spoken by the time this runs (onChunk delivery
+// happens first), so awaiting it would only delay the caller. KV write-behind
+// is durability-only — the in-memory `cache.history` is what subsequent turns
+// of a live call actually read.
+function persistTurn(
+  env: Env, callSid: string, customerIdHashed: string, businessType: string,
+  turns: Turn[], background: Background,
+) {
+  background(saveHistory(env, callSid, turns).catch(err => console.error('saveHistory error', err.message)));
+  background(saveTranscript(env, { callSid, customerIdHashed, businessType, turns })
+    .catch(err => console.error('transcript error', err.message)));
 }

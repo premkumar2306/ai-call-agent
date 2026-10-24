@@ -1,3 +1,5 @@
+import { HTTP_TIMEOUT_MS } from '../config';
+
 /**
  * Email service — uses Resend (https://resend.com) for transactional email.
  * Set RESEND_API_KEY as a wrangler secret to enable. Falls back to console log in dev.
@@ -8,6 +10,12 @@ export interface TranscriptEntry {
   content: string;
 }
 
+// Transcript content is user/LLM-authored — escape it before it goes into HTML.
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function formatTranscript(history: TranscriptEntry[], storeName: string): string {
   const lines = history.map(h =>
     `${h.role === 'user' ? 'You' : 'Mogi'}: ${h.content}`
@@ -15,7 +23,8 @@ function formatTranscript(history: TranscriptEntry[], storeName: string): string
   return `Your ${storeName} Voice Session Transcript\n${'─'.repeat(50)}\n\n${lines.join('\n\n')}\n\n${'─'.repeat(50)}\nThank you for choosing ${storeName}!`;
 }
 
-function formatHtml(history: TranscriptEntry[], storeName: string): string {
+function formatHtml(history: TranscriptEntry[], rawStoreName: string): string {
+  const storeName = escapeHtml(rawStoreName);
   const rows = history.map(h => {
     const isUser = h.role === 'user';
     const color = isUser ? '#1a1a2e' : '#6c47ff';
@@ -23,7 +32,7 @@ function formatHtml(history: TranscriptEntry[], storeName: string): string {
     return `<tr>
       <td style="padding:8px 0">
         <span style="font-weight:700;color:${color}">${label}:</span>
-        <span style="margin-left:8px">${h.content}</span>
+        <span style="margin-left:8px">${escapeHtml(h.content)}</span>
       </td>
     </tr>`;
   }).join('');
@@ -51,12 +60,14 @@ export async function emailTranscript(
   const from = fromEmail ?? `Mogi <mogi@mogi.ai>`;
 
   if (!apiKey || apiKey === 'CHANGE_ME') {
-    console.log(`\n[EMAIL] Would send transcript to ${to}:\n${formatTranscript(history, name)}\n`);
+    // Don't log the transcript body or address — both are customer data.
+    console.log(`[email] RESEND_API_KEY not set; skipping transcript email (${history.length} turns)`);
     return;
   }
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',

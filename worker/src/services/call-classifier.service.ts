@@ -1,4 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
+import type { Env } from '../types';
+import { agentModel, createAnthropic } from '../config';
 
 export interface CallClassification {
   primary_category: string;
@@ -103,14 +105,17 @@ Output ONLY valid JSON — no markdown fences:
 
 export async function classifyCall(
   transcript: string,
-  apiKey: string,
+  env: Env,
 ): Promise<CallClassification> {
-  const client = new Anthropic({ apiKey });
+  // Runs after the call ends (off the latency path), so it can afford a
+  // longer timeout and the SDK's default retries.
+  const client = createAnthropic(env, { timeoutMs: 60_000, maxRetries: 2 });
+  const model = agentModel(env);
   const truncated = transcript.slice(0, 2000);
 
   // Pass 1 — category only, ~20 output tokens
   const p1 = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model,
     max_tokens: 20,
     system: PASS1_SYSTEM,
     messages: [{ role: 'user', content: `TRANSCRIPT:\n"""\n${truncated}\n"""` }],
@@ -120,7 +125,7 @@ export async function classifyCall(
 
   // Pass 2 — leaf + all slots for winning category, ~400 output tokens
   const p2 = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+    model,
     max_tokens: 400,
     system: buildPass2System(category),
     messages: [{ role: 'user', content: `TRANSCRIPT:\n"""\n${truncated}\n"""` }],
