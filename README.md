@@ -167,7 +167,7 @@ Merging to `main` runs CI, applies D1 migrations, deploys the Worker, smoke-test
 `/health?deep=1`, then deploys the admin UI to Pages. Required repository secrets:
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. Optional repository variables:
 `WORKER_URL` (default `https://mogi-platform.premkumar-2ba.workers.dev`) and
-`PAGES_PROJECT` (default `mogi-admin`).
+`PAGES_PROJECT` (default `avery-admin`).
 
 ### Manual
 
