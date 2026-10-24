@@ -20,7 +20,7 @@ env:
   # Actions → Variables) if the Worker or Pages project lives elsewhere. The
   # Worker name itself always comes from worker/wrangler.toml.
   WORKER_URL: ${{ vars.WORKER_URL || 'https://mogi-platform.premkumar-2ba.workers.dev' }}
-  PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'mogi-admin' }}
+  PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'avery-admin' }}
   WRANGLER_SEND_METRICS: "false"
 
 jobs:
@@ -58,21 +58,25 @@ jobs:
       - name: Deploy Worker
         run: npx wrangler deploy --message "${{ github.sha }}"
 
-      # `curl -f` prints nothing on a non-2xx, so a 503 naming the missing
-      # config looked identical to the Worker being unreachable. Capture the
-      # body and surface it — that payload is the whole point of the check.
+      # Requires the deep-check fields, which only the new code returns, so a
+      # stale edge serving the previous version can't pass. New versions take
+      # a few seconds to propagate after `wrangler deploy` returns.
+      #
+      # config.missing must also be empty. Healthy bindings alongside an unset
+      # secret is exactly the state that let a deploy go green while every
+      # inbound call failed, so db+kv ok is not sufficient on its own.
       - name: Smoke test
         run: |
-          for i in 1 2 3 4 5; do
-            body=$(curl -sS --max-time 10 -w '\n%{http_code}' "$WORKER_URL/health?deep=1" || true)
-            code=$(printf '%s' "$body" | tail -n1)
-            payload=$(printf '%s' "$body" | sed '$d')
-            if [ "$code" = "200" ]; then echo "$payload"; exit 0; fi
-            echo "health check attempt $i: HTTP ${code:-no response} ${payload}"
+          for i in $(seq 1 10); do
+            body=$(curl -sS --max-time 10 "$WORKER_URL/health?deep=1" || true)
+            echo "attempt $i: $body"
+            if echo "$body" | grep -q '"db":"ok"' \
+              && echo "$body" | grep -q '"kv":"ok"' \
+              && echo "$body" | grep -q '"missing":\[\]'; then exit 0; fi
             sleep 6
           done
-          echo "::error::$WORKER_URL/health?deep=1 did not return 200 after deploy. \
-          A 503 with config.missing means those variables are unset — \
+          echo "::error::$WORKER_URL/health?deep=1 never reported db+kv ok with complete config. \
+          A non-empty config.missing names variables that are unset — \
           set each with 'wrangler secret put <NAME>'."
           exit 1
 
