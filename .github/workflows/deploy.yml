@@ -58,13 +58,22 @@ jobs:
       - name: Deploy Worker
         run: npx wrangler deploy --message "${{ github.sha }}"
 
+      # `curl -f` prints nothing on a non-2xx, so a 503 naming the missing
+      # config looked identical to the Worker being unreachable. Capture the
+      # body and surface it — that payload is the whole point of the check.
       - name: Smoke test
         run: |
           for i in 1 2 3 4 5; do
-            if curl -fsS --max-time 10 "$WORKER_URL/health?deep=1"; then echo; exit 0; fi
-            echo "health check attempt $i failed; retrying…"; sleep 6
+            body=$(curl -sS --max-time 10 -w '\n%{http_code}' "$WORKER_URL/health?deep=1" || true)
+            code=$(printf '%s' "$body" | tail -n1)
+            payload=$(printf '%s' "$body" | sed '$d')
+            if [ "$code" = "200" ]; then echo "$payload"; exit 0; fi
+            echo "health check attempt $i: HTTP ${code:-no response} ${payload}"
+            sleep 6
           done
-          echo "::error::$WORKER_URL/health?deep=1 did not return 200 after deploy"
+          echo "::error::$WORKER_URL/health?deep=1 did not return 200 after deploy. \
+          A 503 with config.missing means those variables are unset — \
+          set each with 'wrangler secret put <NAME>'."
           exit 1
 
   deploy-web:

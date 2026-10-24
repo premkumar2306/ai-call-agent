@@ -28,6 +28,37 @@ export function isProduction(env: Env): boolean {
   return env.NODE_ENV === 'production';
 }
 
+// Config the Worker genuinely cannot serve traffic without in production.
+// Each of these fails *closed* somewhere — a missing one doesn't degrade a
+// feature, it takes a path down completely — and every one of them does so
+// deep inside a request, where the only symptom is a generic error to the
+// caller. Surfaced through /health?deep=1 so the post-deploy smoke test
+// catches it instead of the first person to dial the number.
+//
+// Returns variable names only, never values.
+export function missingProductionConfig(env: Env): string[] {
+  if (!isProduction(env)) return [];
+  const missing: string[] = [];
+
+  // Signs session tokens and the Twilio media-stream token; tokenSecretKey()
+  // throws below 32 chars, which 500s /twilio/inbound.
+  if (!env.TOKEN_SECRET || env.TOKEN_SECRET.length < 32) missing.push('TOKEN_SECRET');
+  if (!env.CUSTOMER_HASH_SALT) missing.push('CUSTOMER_HASH_SALT');
+  if (!env.ANTHROPIC_API_KEY) missing.push('ANTHROPIC_API_KEY');
+
+  // Twilio webhook signature verification fails closed without both, so every
+  // inbound call is rejected. TWILIO_WEBHOOK_URL must be the exact public base
+  // URL Twilio dials — the signature is computed over that URL string.
+  if (!env.TWILIO_AUTH_TOKEN) missing.push('TWILIO_AUTH_TOKEN');
+  if (!env.TWILIO_WEBHOOK_URL) missing.push('TWILIO_WEBHOOK_URL');
+
+  // Voice is the product; a call connects and then sits silent without these.
+  if (!env.DEEPGRAM_API_KEY) missing.push('DEEPGRAM_API_KEY');
+  if (!env.CARTESIA_API_KEY) missing.push('CARTESIA_API_KEY');
+
+  return missing;
+}
+
 // HMAC salt for customer identifiers. A missing salt in production would hash
 // every customer with a public constant, so refuse instead of degrading.
 export function customerHashSalt(env: Env): string {
