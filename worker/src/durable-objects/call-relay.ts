@@ -26,6 +26,64 @@ const FILLERS = ['One moment...', 'Let me check that for you...', 'Almost there.
 // speakerphone and instantly cutting off the reply we just began.
 const BARGE_IN_MIN_SPEAK_MS = 300;
 
+// How eagerly the assistant stops talking when it hears something.
+//
+//   final   — only once Deepgram has finalized an utterance. The behaviour
+//             before #12. Slowest to react (the caller talks over the
+//             assistant for their whole utterance plus endpointing) but it
+//             cannot be fooled by noise.
+//   interim — on the first interim transcript that looks like real words.
+//             Much faster, and requires Deepgram to have actually recognised
+//             speech rather than merely detected sound.
+//   vad     — on Deepgram's SpeechStarted, the earliest possible signal.
+//
+// Default is `final`. #12 shipped `vad` as the default and that was wrong for
+// a PSTN line: Twilio does not echo-cancel the inbound track against what we
+// play, so the assistant's own voice comes back up the caller's handset,
+// trips VAD, and aborts the greeting — dead air. `vad` and `interim` are
+// worth enabling once a line is known to behave, which is what the env knob
+// is for; they are not safe as an unverified default.
+type BargeInMode = 'final' | 'interim' | 'vad';
+
+function bargeInMode(env: Env): BargeInMode {
+  const raw = (env.VOICE_BARGE_IN_MODE ?? '').trim().toLowerCase();
+  if (raw === 'final' || raw === 'interim' || raw === 'vad') return raw;
+  // Back-compat with the boolean this replaced: VOICE_BARGE_IN_ON_VAD=0 meant
+  // "wait for interim text instead of raw VAD".
+  if (/^(0|false)$/i.test(env.VOICE_BARGE_IN_ON_VAD ?? '')) return 'interim';
+  if (/^(1|true)$/i.test(env.VOICE_BARGE_IN_ON_VAD ?? '')) return 'vad';
+  return 'final';
+}
+
+// Short words people actually interrupt with. Without these the length rule
+// below would ignore "wait" and "stop" — the most common real barge-ins —
+// while still reacting to a stray "um".
+const INTERRUPTION_WORDS = new Set([
+  'wait', 'stop', 'no', 'nope', 'hold', 'sorry', 'hey', 'hello', 'yes', 'yeah',
+  'nah', 'what', 'huh', 'pardon', 'cancel', 'wrong', 'help',
+]);
+
+/**
+ * Whether an interim transcript is substantial enough to be worth cutting the
+ * assistant off for. A single recognised fragment is as likely to be a cough
+ * or a clipped echo as it is the caller interrupting.
+ *
+ * This is a filter, not a guarantee. It cannot separate the caller from the
+ * assistant's own voice returning up the handset, because an echo of our own
+ * multi-word speech passes any word-count test. That is why `interim` is not
+ * the default barge-in mode — only why it is usable at all on a line that
+ * doesn't echo badly.
+ */
+export function isSubstantialSpeech(text: string | undefined): boolean {
+  if (!text) return false;
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return true;
+  if (words.length !== 1) return false;
+  const word = words[0].toLowerCase().replace(/[^a-z']/g, '');
+  // A long word ("appointment") or a known interjection ("wait").
+  return word.length >= 6 || INTERRUPTION_WORDS.has(word);
+}
+
 export class CallRelay extends DurableObject<Env> {
   private twWs?: WebSocket;
   private stt: Stt = { sendAudio: () => {}, close: () => {} };
@@ -79,7 +137,7 @@ export class CallRelay extends DurableObject<Env> {
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
       (text) => { this.handleTranscript(text); },
-      (reason) => { this.handleSpeechStart(reason); },
+      (reason, text) => { this.handleSpeechStart(reason, text); },
     )
       .then(s => {
         // The call may already have ended while Deepgram was connecting.
@@ -110,11 +168,19 @@ export class CallRelay extends DurableObject<Env> {
   // first interim transcript — later, but it took real recognised words to
   // get there). Set VOICE_BARGE_IN_ON_VAD=0 to wait for 'interim' on lines
   // where raw VAD proves too trigger-happy.
-  private handleSpeechStart(reason: 'vad' | 'interim') {
+  private handleSpeechStart(reason: 'vad' | 'interim', text?: string) {
     if (!this.busy) return;
-    if (reason === 'vad' && /^(0|false)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '')) return;
+
+    const mode = bargeInMode(this.env);
+    // `final` leaves barge-in entirely to handleTranscript(), as before #12.
+    if (mode === 'final') return;
+    if (mode === 'interim' && reason !== 'interim') return;
     if (Date.now() - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) return;
-    console.log(`[barge-in] speech-start (${reason}) — stopping TTS`);
+    // Raw VAD carries no transcript to weigh, which is exactly why it is not
+    // the default. On interim we have words, so insist they look like speech.
+    if (reason === 'interim' && !isSubstantialSpeech(text)) return;
+
+    console.log(`[barge-in] speech-start (${reason}, mode=${mode}) "${(text ?? '').slice(0, 40)}" — stopping TTS`);
     this.bargeIn();
   }
 

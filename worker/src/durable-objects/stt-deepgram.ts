@@ -55,7 +55,7 @@ export interface Stt {
 export async function createDeepgramSTT(
   opts: SttOptions,
   onTranscript: (text: string) => void,
-  onSpeechStart?: (reason: SpeechStartReason) => void,
+  onSpeechStart?: (reason: SpeechStartReason, text?: string) => void,
 ): Promise<Stt> {
   const { apiKey, model = 'nova-2', language = 'multi', debug = false } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
@@ -92,11 +92,14 @@ export async function createDeepgramSTT(
   // first wins and the other is ignored until the next finalize().
   let speechAnnounced = false;
 
-  const announceSpeech = (reason: SpeechStartReason) => {
+  // `text` is the interim transcript when there is one. The caller needs it
+  // to judge whether this is real speech or our own audio echoing back off
+  // the caller's handset, which Deepgram happily recognises as words.
+  const announceSpeech = (reason: SpeechStartReason, text?: string) => {
     if (speechAnnounced) return;
     speechAnnounced = true;
-    if (debug) console.log(`[dg stt] speech-start (${reason})`);
-    onSpeechStart?.(reason);
+    if (debug) console.log(`[dg stt] speech-start (${reason}) "${text ?? ''}"`);
+    onSpeechStart?.(reason, text);
   };
 
   const finalize = (text: string, reason: 'speech_final' | 'utterance_end') => {
@@ -134,7 +137,7 @@ export async function createDeepgramSTT(
             lastText = text;
             finalized = false;
             // Backstop for barge-in if vad_events is unavailable or missed.
-            announceSpeech('interim');
+            announceSpeech('interim', text);
           } else if (!finalized) {
             // is_final but not (yet) speech_final, and we haven't already
             // finalized this utterance — keep lastText fresh as a fallback
