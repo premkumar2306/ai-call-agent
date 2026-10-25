@@ -41,9 +41,9 @@ new_sqlite_classes = ["CallRelay"]
 [vars]
 NODE_ENV = "production"
 TOKEN_TTL_SECONDS = "900"
-TWILIO_DEFAULT_BUSINESS_TYPE = "dental"
+TWILIO_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
-WA_DEFAULT_BUSINESS_TYPE = "dental"
+WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_PHONE_NUMBER_MAP = '{"PHONE_NUMBER_ID_1":"dental","PHONE_NUMBER_ID_2":"auto_shop"}'
 
 # ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # optional override, see src/config.ts

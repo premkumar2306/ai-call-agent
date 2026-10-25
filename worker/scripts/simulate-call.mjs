@@ -32,7 +32,7 @@ import { writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-const BUSINESS_TYPE = process.env.BUSINESS_TYPE ?? 'dental';
+const BUSINESS_TYPE = process.env.BUSINESS_TYPE ?? 'advanced_vtech';
 const RELAY_URL = process.env.RELAY_URL
   ?? `ws://localhost:8787/twilio/stream?businessType=${encodeURIComponent(BUSINESS_TYPE)}`;
 const CALL_SID = 'CA' + 'test'.padEnd(32, '0');
