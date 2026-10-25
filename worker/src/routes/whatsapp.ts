@@ -50,7 +50,7 @@ import {
   shouldEscalateUnclearService,
 } from '../services/voice-guard.service';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
-import type { Env, SessionPayload } from '../types';
+import { getDefaultBusiness } from '../services/line-config';import type { Env, SessionPayload } from '../types';
 import {
   agentModel, createAnthropic, customerHashSalt, HTTP_TIMEOUT_MS, isProduction, MAX_TOOL_ROUNDS, timingSafeEqual,
 } from '../config';
@@ -119,14 +119,14 @@ async function checkAndIncrementWaRateLimit(env: Env, phoneHash: string): Promis
 
 // ── Business type resolution ───────────────────────────────────────────────────
 
-function resolveBusinessType(phoneNumberId: string, env: Env): string {
+async function resolveBusinessType(phoneNumberId: string, env: Env): Promise<string> {
   if (env.WA_PHONE_NUMBER_MAP) {
     try {
       const map = JSON.parse(env.WA_PHONE_NUMBER_MAP) as Record<string, string>;
       if (map[phoneNumberId]) return map[phoneNumberId];
     } catch { /* ignore malformed JSON */ }
   }
-  return env.WA_DEFAULT_BUSINESS_TYPE ?? 'advanced_vtech';
+  return (await getDefaultBusiness(env)) ?? env.WA_DEFAULT_BUSINESS_TYPE ?? 'advanced_vtech';
 }
 
 // ── Opt-out detection ──────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
   const phoneHash = await hashId(message.from, customerHashSalt(env));
 
   // 8. Resolve business type
-  const businessType = resolveBusinessType(phoneNumberId, env);
+  const businessType = await resolveBusinessType(phoneNumberId, env);
 
   // 9. Rate limit
   const overLimit = await checkAndIncrementWaRateLimit(env, phoneHash);

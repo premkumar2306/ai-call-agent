@@ -4,6 +4,7 @@ import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
 import { getSectors, getSector, upsertSector } from '../services/sector.service';
 import { getDb } from '../db/client';
+import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
@@ -42,6 +43,33 @@ async function putConfig(env: HonoEnv['Bindings'], sector: string, cfg: SectorCo
 }
 
 // ── Sector CRUD ────────────────────────────────────────────────────────────
+
+// GET /admin/default-business — which business answers the phone line
+adminRouter.get('/default-business', withAdminKey, async (c) => {
+  const selected = await getDefaultBusiness(c.env);
+  return c.json({
+    success: true,
+    data: {
+      selected,
+      effective: selected ?? c.env.TWILIO_DEFAULT_BUSINESS_TYPE ?? null,
+      envDefault: c.env.TWILIO_DEFAULT_BUSINESS_TYPE ?? null,
+    },
+  });
+});
+
+// PUT /admin/default-business { businessType: string | null } — null reverts to the env default
+adminRouter.put('/default-business', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const businessType = body?.businessType;
+  if (businessType !== null && typeof businessType !== 'string') {
+    return c.json({ success: false, error: 'businessType must be a sector key or null' }, 400);
+  }
+  if (businessType && !(await getSector(c.env, businessType))) {
+    return c.json({ success: false, error: `Unknown business: ${businessType}` }, 404);
+  }
+  await setDefaultBusiness(c.env, businessType || null);
+  return c.json({ success: true, data: { selected: businessType || null } });
+});
 
 // GET /admin/sectors — list all sectors from DB
 adminRouter.get('/sectors', withAdminKey, async (c) => {
