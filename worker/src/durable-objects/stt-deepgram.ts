@@ -26,9 +26,9 @@
 
 export interface SttOptions {
   apiKey: string;
-  /** Deepgram model. Default 'nova-2'. Try 'nova-3' for lower finalization latency. */
+  /** Deepgram model. Default 'nova-3'. */
   model?: string;
-  /** 'multi' (default) for multilingual; 'en' is faster if the deployment is English-only. */
+  /** 'en' (default); set 'multi' for multilingual. */
   language?: string;
   debug?: boolean;
 }
@@ -57,7 +57,7 @@ export async function createDeepgramSTT(
   onTranscript: (text: string) => void,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
-  const { apiKey, model = 'nova-2', language = 'multi', debug = false } = opts;
+  const { apiKey, model = 'nova-3', language = 'en', debug = false } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
   const resp = await fetch(dgUrl(model, language), {

@@ -5,7 +5,7 @@ import type { Env } from './types';
 
 // Haiku is chosen for voice latency. Override per environment with the
 // ANTHROPIC_MODEL var instead of editing call sites.
-export const DEFAULT_AGENT_MODEL = 'claude-haiku-4-5-20251001';
+export const DEFAULT_AGENT_MODEL = 'claude-haiku-5-5';
 
 // Hard ceiling on the agentic tool loop per turn — bounds latency and spend.
 export const MAX_TOOL_ROUNDS = 5;
