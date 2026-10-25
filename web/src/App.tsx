@@ -4,9 +4,10 @@ import VoiceTest from './pages/VoiceTest';
 import WhatsApp from './pages/WhatsApp';
 import Calls from './pages/Calls';
 import Settings from './pages/Settings';
+import Calendar from './pages/Calendar';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 
-const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Settings', 'Overview'] as const;
+const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Calendar', 'Settings', 'Overview'] as const;
 type Tab = typeof TABS[number];
 
 const BASE = import.meta.env.VITE_API_URL
@@ -14,8 +15,21 @@ const BASE = import.meta.env.VITE_API_URL
 
 interface SectorOption { key: string; name: string }
 
+// Calendar OAuth sends the browser back here with
+// ?calendar=connected|error&business=<key>[&reason=…]. Read it once, then
+// clear it from the address bar so a reload doesn't repeat the message.
+function takeCalendarRedirect(): { business: string; ok: boolean; reason?: string } | null {
+  const q = new URLSearchParams(window.location.search);
+  const result = q.get('calendar');
+  const business = q.get('business');
+  if (!result || !business) return null;
+  window.history.replaceState(null, '', window.location.pathname);
+  return { business, ok: result === 'connected', reason: q.get('reason') ?? undefined };
+}
+const calendarRedirect = takeCalendarRedirect();
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>('Voice Test');
+  const [tab, setTab] = useState<Tab>(calendarRedirect ? 'Calendar' : 'Voice Test');
   const [sector, setSector] = useState<string>('');
   const [sectors, setSectors] = useState<SectorOption[]>([]);
   const [adminKey, setAdminKey] = useState<string>(loadAdminKey);
@@ -28,7 +42,8 @@ export default function App() {
       .then(json => {
         if (json.success && json.data.length) {
           setSectors(json.data);
-          setSector((json.data.find((s: SectorOption) => s.key === 'advanced_vtech') ?? json.data[0]).key);
+          const preferred = calendarRedirect?.business ?? 'advanced_vtech';
+          setSector((json.data.find((s: SectorOption) => s.key === preferred) ?? json.data[0]).key);
         }
       })
       .catch(() => {});
@@ -89,6 +104,15 @@ export default function App() {
         {tab === 'Voice Test' && <VoiceTest sector={sector} base={BASE} />}
         {tab === 'Calls' && <Calls base={BASE} adminKey={adminKey} />}
         {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} adminKey={adminKey} />}
+        {tab === 'Calendar' && sector && (
+          <Calendar
+            key={sector}
+            sector={sector}
+            base={BASE}
+            adminKey={adminKey}
+            oauthResult={calendarRedirect?.business === sector ? calendarRedirect : null}
+          />
+        )}
         {tab === 'Settings' && <Settings base={BASE} adminKey={adminKey} sectors={sectors} />}
         {tab === 'Overview' && <Overview />}
       </main>

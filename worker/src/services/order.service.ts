@@ -17,6 +17,8 @@ function mapRow(r: typeof ordersTable.$inferSelect): Order {
     paymentMethod: r.paymentMethod,
     trackingNumber: r.trackingNumber,
     scheduledAt: r.scheduledAt,
+    calendarEventId: r.calendarEventId,
+    calendarSync: r.calendarSync,
     createdAt: (r.createdAt as Date).toISOString(),
     updatedAt: (r.updatedAt as Date).toISOString(),
   };
@@ -76,6 +78,8 @@ export async function placeOrder(
     paymentMethod,
     trackingNumber: null,
     scheduledAt: scheduledAt ?? null,
+    calendarEventId: null,
+    calendarSync: null,
     shippingLine1: shippingAddress?.line1,
     shippingCity: shippingAddress?.city,
     shippingState: shippingAddress?.state,

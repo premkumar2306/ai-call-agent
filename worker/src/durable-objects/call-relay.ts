@@ -4,6 +4,7 @@ import { buildDefaultTwilioSession } from '../middleware';
 import { runTurn } from '../services/turn.service';
 import { getSector } from '../services/sector.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
+import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
 import { createCallCache, type CallCache } from '../services/call-context';
 import { createDeepgramSTT, type Stt } from './stt-deepgram';
@@ -323,7 +324,7 @@ export class CallRelay extends DurableObject<Env> {
           if (this.currentAbort === greetAbort) { this.currentAbort = undefined; this.busy = false; }
         });
 
-      // Prefetch the booked-slot set in parallel with the greeting/caller's
+      // Prefetch the booked-slot set (and the calendar's busy times) in parallel with the greeting/caller's
       // first utterance, so the first check_availability call in the call
       // (frequently the very first tool call) doesn't pay a D1 round trip.
       // Not applicable to health_nav (no service-booking model).
@@ -331,6 +332,9 @@ export class CallRelay extends DurableObject<Env> {
         getBookedDatetimes(this.env, businessType)
           .then(s => { this.cache.bookedDatetimes = s; })
           .catch(e => console.error('[bookedDatetimes prefetch]', e?.message || e));
+        getCalendarBusy(this.env, businessType)
+          .then(b => { if (b) this.cache.calendarBusy = b; })
+          .catch(e => console.error('[calendarBusy prefetch]', e?.message || e));
       }
 
     } else if (msg.event === 'media') {

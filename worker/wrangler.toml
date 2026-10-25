@@ -65,3 +65,7 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_VERIFY_TOKEN       (arbitrary string you pick, enter in Meta webhook config)
 # WA_PHONE_NUMBER_ID    (found in Meta for Developers → WhatsApp → Phone Numbers)
 # WA_ACCESS_TOKEN       (permanent system user token with whatsapp_business_messaging scope)
+#
+# Calendar integration (optional — see README "Calendar integration"):
+# CALENDAR_TOKEN_KEY    (random; encrypts stored calendar refresh tokens)
+# GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   (OAuth client, redirect URI <worker>/oauth/google/callback)
