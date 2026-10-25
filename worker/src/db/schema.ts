@@ -62,6 +62,8 @@ export const orders = sqliteTable('orders', {
   paymentMethod:    text('payment_method').notNull(),
   trackingNumber:   text('tracking_number'),
   scheduledAt:      text('scheduled_at'),               // ISO datetime for service bookings
+  calendarEventId:  text('calendar_event_id'),          // event in the business's connected calendar
+  calendarSync:     text('calendar_sync'),              // null (not connected) | synced | failed
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -79,6 +81,23 @@ export const orders = sqliteTable('orders', {
   // lookup). See issue #7.
   index('idx_orders_business_type_scheduled').on(t.businessType, t.scheduledAt),
 ]);
+
+// One external calendar per business. Only Google today; `provider` leaves
+// room for Microsoft without a schema change.
+export const calendarConnections = sqliteTable('calendar_connections', {
+  businessType:    text('business_type').primaryKey(),
+  provider:        text('provider').notNull(),              // google
+  accountEmail:    text('account_email'),
+  calendarId:      text('calendar_id').notNull().default('primary'),
+  calendarName:    text('calendar_name'),
+  refreshTokenEnc: text('refresh_token_enc').notNull(),     // AES-GCM, see calendar-crypto.ts
+  checkBusy:       integer('check_busy', { mode: 'boolean' }).notNull().default(true),
+  writeEvents:     integer('write_events', { mode: 'boolean' }).notNull().default(true),
+  status:          text('status').notNull().default('active'), // active | reauth_required
+  lastError:       text('last_error'),
+  createdAt:       integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt:       integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+});
 
 export const customers = sqliteTable('customers', {
   idHashed:         text('id_hashed').primaryKey(),

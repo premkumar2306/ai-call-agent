@@ -63,6 +63,8 @@ export interface Order {
   paymentMethod: string;
   trackingNumber?: string | null;
   scheduledAt?: string | null;   // ISO datetime for bookings
+  calendarEventId?: string | null; // "<provider>|<calendarId>|<eventId>" in the business's calendar
+  calendarSync?: string | null;    // null (no calendar) | synced | failed
   createdAt: string;
   updatedAt: string;
 }
@@ -125,4 +127,10 @@ export interface Env {
   WA_ACCESS_TOKEN?: string;          // Permanent system-user access token
   WA_DEFAULT_BUSINESS_TYPE?: string; // Sector for this WhatsApp number (default: 'advanced_vtech')
   WA_PHONE_NUMBER_MAP?: string;      // Optional JSON: {"<id>":"dental","<id2>":"auto_shop"}
+  // External calendars (services/calendar/). CALENDAR_TOKEN_KEY encrypts
+  // stored refresh tokens and is required for any provider; each provider
+  // then needs its own OAuth client. All secrets.
+  CALENDAR_TOKEN_KEY?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 }

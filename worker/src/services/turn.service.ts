@@ -363,6 +363,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
           sectorMeta,
           cache,
           (label) => console.log(`[${tag}] ⏱ tool:${tb.name}:${label}: ${Date.now() - toolT0}ms`),
+          background,
         );
         lap(`tool:${tb.name} total`);
         return { tb, result };

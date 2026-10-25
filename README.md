@@ -194,6 +194,32 @@ wrangler secret put CARTESIA_API_KEY
 # WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN
 ```
 
+### Calendar integration (optional)
+
+Each business can connect its own calendar from the admin UI's **Calendar** tab.
+Mogi then skips times that are busy in that calendar and adds every booking to it
+as an event (deleted again on cancel). D1 stays the source of truth: if the calendar
+is unreachable, bookings still go through and the tab shows the error.
+
+One-time setup per deployment:
+
+1. Google Cloud console → APIs & Services: enable the **Google Calendar API**, configure
+   the OAuth consent screen, and create an **OAuth client ID** (type *Web application*)
+   with the authorized redirect URI `https://<worker-host>/oauth/google/callback`.
+   Until the app is verified by Google, add each business's Google account as a test user.
+2. Set the secrets:
+
+   ```bash
+   cd worker
+   openssl rand -base64 32 | wrangler secret put CALENDAR_TOKEN_KEY  # encrypts stored tokens; rotating it disconnects every calendar
+   wrangler secret put GOOGLE_CLIENT_ID
+   wrangler secret put GOOGLE_CLIENT_SECRET
+   ```
+
+Providers are adapters in `worker/src/services/calendar/`: implement
+`CalendarProvider` (`types.ts`) in a new file and register it in `PROVIDERS`
+(`index.ts`). Routes, storage, the admin UI and the booking flow need no changes.
+
 ### Database schema change
 
 1. Edit `worker/src/db/schema.ts`
@@ -225,6 +251,7 @@ admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requi
 | `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: Deepgram STT → `runTurn()` → Cartesia TTS |
 | `worker/src/services/turn.service.ts` | Voice agent loop (streaming, prompt caching) |
 | `worker/src/services/tool-router.service.ts` | AI tool definitions (search, availability, booking) |
+| `worker/src/services/calendar/` | Per-business calendar integration: provider adapters (`google.ts`), connection storage, busy-time and event sync |
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |

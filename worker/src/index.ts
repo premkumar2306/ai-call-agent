@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { requestId } from 'hono/request-id';
-import type { Env } from './types';
 import { getSectors } from './services/sector.service';
 import type { HonoEnv } from './middleware';
 import { authRouter } from './routes/auth';
@@ -12,28 +11,16 @@ import { mogiRouter } from './routes/mogi';
 import { twilioRouter } from './routes/twilio';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
+import { calendarAdminRouter, oauthRouter } from './routes/calendar';
+import { isAllowedOrigin } from './utils/origins';
 
 export { CallRelay } from './durable-objects/call-relay';
 
 type AppEnv = HonoEnv & { Variables: { requestId: string } };
 const app = new Hono<AppEnv>();
 
-// Admin UI origins. Both Pages project names are allowed because the
-// project was renamed avery → mogi; extra origins (custom domains) come from
-// the comma-separated ALLOWED_ORIGINS var. Auth is header-based (no cookies),
-// so localhost stays allowed for local UI development against any API.
-const PAGES_PROJECTS = ['mogi-admin', 'avery-admin'];
-
-export function isAllowedOrigin(origin: string, env: Pick<Env, 'ALLOWED_ORIGINS'>): boolean {
-  for (const project of PAGES_PROJECTS) {
-    // Production origin, or a preview deployment (<hash>.<project>.pages.dev).
-    if (origin === `https://${project}.pages.dev`) return true;
-    if (origin.startsWith('https://') && origin.endsWith(`.${project}.pages.dev`)) return true;
-  }
-  const extra = (env.ALLOWED_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
-  if (extra.includes(origin)) return true;
-  return /^http:\/\/localhost:\d+$/.test(origin);
-}
+// Re-exported for tests (test/security.test.ts).
+export { isAllowedOrigin };
 
 app.use('*', requestId());
 // Skipped on the media-stream upgrade: its 101 response comes straight from
@@ -55,7 +42,9 @@ app.route('/catalog',  catalogRouter);
 app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);
 app.route('/twilio',   twilioRouter);
+app.route('/admin/calendar', calendarAdminRouter);
 app.route('/admin',    adminRouter);
+app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────

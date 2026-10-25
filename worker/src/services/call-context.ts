@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { SectorMeta, Product, Order } from '../types';
 import type { Turn } from './turn.service';
+import type { BusyInterval } from './calendar';
 
 // Per-call in-memory cache. CallRelay (the Durable Object that lives for the
 // whole phone call) holds one of these on `this` and passes it into every
@@ -26,6 +27,9 @@ export interface CallCache {
   // next 14 days. Prefetched at call start; kept in sync by book_appointment
   // / cancel_booking so check_availability never needs a D1 round trip.
   bookedDatetimes: Set<string> | null;
+  // Busy times from the business's connected calendar over the same window
+  // ([] if none is connected). Prefetched at call start; null until loaded.
+  calendarBusy: BusyInterval[] | null;
 }
 
 export function createCallCache(): CallCache {
@@ -37,5 +41,6 @@ export function createCallCache(): CallCache {
     orders: null,
     ordersLoaded: false,
     bookedDatetimes: null,
+    calendarBusy: null,
   };
 }

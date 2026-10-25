@@ -21,3 +21,9 @@ RESEND_API_KEY=
 EMAIL_FROM=Mogi <mogi@yourstore.example.com>
 TWILIO_AUTH_TOKEN=
 TWILIO_WEBHOOK_URL=
+
+# Calendar integration (optional). Google OAuth client redirect URI for
+# local dev: http://localhost:8787/oauth/google/callback
+CALENDAR_TOKEN_KEY=dev-calendar-token-key
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=

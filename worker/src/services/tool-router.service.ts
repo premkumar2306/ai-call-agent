@@ -7,9 +7,20 @@ import { isAmbiguousServiceIntent } from './voice-guard.service';
 import { getDb } from '../db/client';
 import { orders as ordersTable } from '../db/schema';
 import type { CallCache } from './call-context';
+import {
+  getCalendarBusy, overlapsBusy, bookingInterval, isSlotFreeInCalendar,
+  syncBookingToCalendar, removeBookingFromCalendar, type BusyInterval,
+} from './calendar';
 
 /** Optional per-tool-call timing hook: fn(label) logs elapsed ms since the tool started. */
 type ToolLap = (label: string) => void;
+
+/**
+ * Optional sink for work that must not delay the reply (calendar event
+ * writes) — HTTP routes pass ctx.waitUntil, CallRelay a floating promise.
+ * Without one the work is awaited inline.
+ */
+type Background = (p: Promise<unknown>) => void;
 
 const CART_TTL = 3600; // 1 hour
 
@@ -96,6 +107,7 @@ async function getAvailableSlots(
   meta: SectorMeta | null | undefined,
   durationMinutes = 60,
   bookedDatetimes?: Set<string>,
+  calendarBusy?: BusyInterval[] | null,
 ): Promise<Array<{ date: string; time: string; datetime: string; label: string }>> {
   const rawSlots: Array<{ date: string; time: string; datetime: string; label: string }> = [];
   const now = new Date();
@@ -132,7 +144,17 @@ async function getAvailableSlots(
   // and keeps it in sync — see CallCache), reuse it instead of a D1 round
   // trip; otherwise fetch fresh (stateless callers, or no cache yet).
   const booked = bookedDatetimes ?? await getBookedDatetimes(env, businessType);
-  return rawSlots.filter(s => !booked.has(s.datetime.slice(0, 16))).slice(0, 12);
+  // Then anything the business's connected calendar says is busy, over the
+  // appointment's full length (not just its start time).
+  const busy = calendarBusy ?? [];
+  return rawSlots
+    .filter(s => !booked.has(s.datetime.slice(0, 16)))
+    .filter(s => {
+      if (!busy.length) return true;
+      const { start, end } = bookingInterval(s.datetime, durationMinutes, meta?.timezone);
+      return !overlapsBusy(start.getTime(), end.getTime(), busy);
+    })
+    .slice(0, 12);
 }
 
 function formatHours(meta: SectorMeta | null | undefined): string {
@@ -159,8 +181,13 @@ export async function executeTool(
   sectorMeta?: SectorMeta | null,
   cache?: CallCache,
   lap?: ToolLap,
+  background?: Background,
 ): Promise<ToolResult> {
   const { businessType, account } = token;
+  const defer = async (p: Promise<unknown>) => {
+    const safe = p.catch(err => console.error(`[tool:${toolName}] background error`, err?.message || err));
+    if (background) background(safe); else await safe;
+  };
 
   try {
     switch (toolName) {
@@ -243,17 +270,25 @@ export async function executeTool(
         const serviceId = args.service_id as string | undefined;
         let duration = 60;
         let serviceName = '';
+        // Calendar busy times are fetched alongside the product lookup.
+        // CallRelay prefetches them at call start too; null means not
+        // loaded yet (or the calendar was unreachable — retried next time).
+        const busyP = cache?.calendarBusy
+          ? Promise.resolve(cache.calendarBusy)
+          : getCalendarBusy(env, businessType).then(b => { if (cache && b) cache.calendarBusy = b; return b; });
         if (serviceId) {
           const p = await getProductById(env, serviceId);
           lap?.('getProductById');
           if (p?.durationMinutes) duration = p.durationMinutes;
           if (p?.name) serviceName = p.name;
         }
+        const calendarBusy = await busyP;
+        lap?.('calendarBusy');
         // getAvailableSlots' internal D1 lookup (getBookedDatetimes) is
         // skipped entirely when the call already has a prefetched, kept-in-
         // sync booked-slot set (CallRelay prefetches one at call start —
         // see CallCache) — this tool becomes pure CPU in that case.
-        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined);
+        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy);
         lap?.('getAvailableSlots');
         if (slots.length === 0) {
           return { success: true, data: { slots: [] }, spoken_response: "We don't have any openings in the next 2 weeks. Please call us directly." };
@@ -328,16 +363,41 @@ export async function executeTool(
       // ── Booking / Order ───────────────────────────────────────────
       case 'book_appointment':
       case 'place_order': {
-        const order = await placeOrder(
-          env,
-          token.sub,
-          businessType,
-          args.product_id as string,
-          args.payment_method as string,
-          args.shipping_address as any,
-          args.scheduled_at as string | undefined
-        );
+        const scheduledAt = args.scheduled_at as string | undefined;
+        // Re-check the slot against the business's calendar (something may
+        // have been added since check_availability). Runs in parallel with
+        // the D1 insert so the common, free case adds no latency; if the
+        // calendar says busy, the just-created booking is cancelled again.
+        const durationP = getProductById(env, args.product_id as string).then(p => p?.durationMinutes ?? 60).catch(() => 60);
+        const slotFreeP = scheduledAt
+          ? durationP.then(d => {
+              const { start, end } = bookingInterval(scheduledAt, d, sectorMeta?.timezone);
+              return isSlotFreeInCalendar(env, businessType, start, end);
+            })
+          : Promise.resolve(true);
+        const [order, slotFree] = await Promise.all([
+          placeOrder(
+            env,
+            token.sub,
+            businessType,
+            args.product_id as string,
+            args.payment_method as string,
+            args.shipping_address as any,
+            scheduledAt
+          ),
+          slotFreeP,
+        ]);
         lap?.('placeOrder');
+        if (!slotFree) {
+          await cancelOrder(env, order.id, token.sub);
+          // Stale busy times got us here — refetch on the next availability check.
+          if (cache) cache.calendarBusy = null;
+          return { success: false, error: 'SLOT_TAKEN', spoken_response: TOOL_ERROR_MESSAGES.SLOT_TAKEN };
+        }
+        if (order.scheduledAt) {
+          const duration = await durationP;
+          await defer(syncBookingToCalendar(env, order, sectorMeta, duration));
+        }
         // Clear from cart. The customer already heard the booking confirmed
         // by the time this write happens — cart bookkeeping doesn't need to
         // block the response, so fire it and move on.
@@ -412,6 +472,7 @@ export async function executeTool(
         if (!orderId) return { success: false, spoken_response: "I need to know which booking to cancel. Let me pull up your recent bookings first." };
         const order = await cancelOrder(env, orderId, token.sub);
         lap?.('cancelOrder');
+        await defer(removeBookingFromCalendar(env, order));
         // Stale cached order list / booked-slot entry — same reasoning as
         // book_appointment above.
         if (cache) {

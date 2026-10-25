@@ -112,7 +112,8 @@ mogiRouter.post('/tool-call', withMogiSecret, withSession, async (c) => {
   if (!tool_name) return c.json({ success: false, error: 'tool_name required' }, 400);
 
   const sm = await getSector(c.env, c.get('session').businessType);
-  const result = await executeTool(tool_name, args, c.get('session'), c.env, sm);
+  const result = await executeTool(tool_name, args, c.get('session'), c.env, sm, undefined, undefined,
+    (p) => c.executionCtx.waitUntil(p));
   return c.json({ success: true, data: result });
 });
 
@@ -205,7 +206,8 @@ RULES — follow exactly every single turn:
         const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
         const toolResults = await Promise.all(toolBlocks.map(async (tb) => {
           console.log(`voice-turn tool: ${tb.name}`);
-          const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, c.env, sectorMeta);
+          const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, c.env, sectorMeta, undefined, undefined,
+            (p) => c.executionCtx.waitUntil(p));
           toolCallLog.push({ name: tb.name, input: tb.input, result: result.data ?? { message: result.spoken_response } });
           return { type: 'tool_result' as const, tool_use_id: tb.id, content: JSON.stringify(result.data ?? { message: result.spoken_response }) };
         }));
