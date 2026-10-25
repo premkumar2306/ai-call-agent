@@ -126,7 +126,7 @@ function resolveBusinessType(phoneNumberId: string, env: Env): string {
       if (map[phoneNumberId]) return map[phoneNumberId];
     } catch { /* ignore malformed JSON */ }
   }
-  return env.WA_DEFAULT_BUSINESS_TYPE ?? 'dental';
+  return env.WA_DEFAULT_BUSINESS_TYPE ?? 'advanced_vtech';
 }
 
 // ── Opt-out detection ──────────────────────────────────────────────────────────

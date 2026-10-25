@@ -123,6 +123,6 @@ export interface Env {
   WA_VERIFY_TOKEN?: string;          // Arbitrary token used in Meta webhook registration
   WA_PHONE_NUMBER_ID?: string;       // Default Meta phone number ID
   WA_ACCESS_TOKEN?: string;          // Permanent system-user access token
-  WA_DEFAULT_BUSINESS_TYPE?: string; // Sector for this WhatsApp number (default: 'dental')
+  WA_DEFAULT_BUSINESS_TYPE?: string; // Sector for this WhatsApp number (default: 'advanced_vtech')
   WA_PHONE_NUMBER_MAP?: string;      // Optional JSON: {"<id>":"dental","<id2>":"auto_shop"}
 }

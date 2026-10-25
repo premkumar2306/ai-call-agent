@@ -27,7 +27,7 @@ export default function App() {
       .then(json => {
         if (json.success && json.data.length) {
           setSectors(json.data);
-          setSector(json.data[0].key);
+          setSector((json.data.find((s: SectorOption) => s.key === 'advanced_vtech') ?? json.data[0]).key);
         }
       })
       .catch(() => {});
