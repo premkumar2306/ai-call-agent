@@ -1,0 +1,31 @@
+name: Synthetic call
+
+# Twice a week, have Twilio ring the production line, ask a question, and
+# verify the assistant heard and answered. See scripts/synthetic-call.mjs.
+on:
+  schedule:
+    - cron: '0 15 * * 1,4'   # Mondays and Thursdays, 15:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Place call and verify
+        run: node scripts/synthetic-call.mjs
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          SYNTHETIC_FROM_NUMBER: ${{ secrets.SYNTHETIC_FROM_NUMBER }}
+          SYNTHETIC_TO_NUMBER: ${{ secrets.SYNTHETIC_TO_NUMBER }}
+          ADMIN_KEY: ${{ secrets.SYNTHETIC_ADMIN_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          WORKER_URL: ${{ vars.WORKER_URL }}
