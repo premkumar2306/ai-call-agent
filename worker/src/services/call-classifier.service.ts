@@ -117,6 +117,8 @@ export async function classifyCall(
   const p1 = await client.messages.create({
     model,
     max_tokens: 20,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
     system: PASS1_SYSTEM,
     messages: [{ role: 'user', content: `TRANSCRIPT:\n"""\n${truncated}\n"""` }],
   });
@@ -127,6 +129,8 @@ export async function classifyCall(
   const p2 = await client.messages.create({
     model,
     max_tokens: 400,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
     system: buildPass2System(category),
     messages: [{ role: 'user', content: `TRANSCRIPT:\n"""\n${truncated}\n"""` }],
   });

@@ -194,6 +194,8 @@ RULES — follow exactly every single turn:
       const response = await anthropic.messages.create({
         model: agentModel(c.env),
         max_tokens: 400,
+        thinking: { type: 'disabled' },
+        output_config: { effort: 'low' },
         system: systemPrompt,
         tools,
         messages,

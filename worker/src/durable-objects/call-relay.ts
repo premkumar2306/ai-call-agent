@@ -108,11 +108,11 @@ export class CallRelay extends DurableObject<Env> {
   //
   // `reason` is 'vad' (Deepgram's SpeechStarted — earliest) or 'interim' (the
   // first interim transcript — later, but it took real recognised words to
-  // get there). Set VOICE_BARGE_IN_ON_VAD=0 to wait for 'interim' on lines
-  // where raw VAD proves too trigger-happy.
+  // get there). Raw VAD is off by default (line noise/echo cut the greeting
+  // off mid-sentence); set VOICE_BARGE_IN_ON_VAD=1 to opt in.
   private handleSpeechStart(reason: 'vad' | 'interim') {
     if (!this.busy) return;
-    if (reason === 'vad' && /^(0|false)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '')) return;
+    if (reason === 'vad' && !/^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '')) return;
     if (Date.now() - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) return;
     console.log(`[barge-in] speech-start (${reason}) — stopping TTS`);
     this.bargeIn();
@@ -203,7 +203,15 @@ export class CallRelay extends DurableObject<Env> {
 
     try {
       await runTurn(this.env, this.session, this.callSid, text, onChunk, this.cache)
-        .catch(e => { if (e.name !== 'AbortError') console.error('[turn]', e.message); });
+        .catch(e => {
+          if (e.name === 'AbortError') return;
+          console.error('[turn]', e.message);
+          // Don't leave the caller in dead silence when the turn fails
+          // (e.g. LLM billing/outage) before anything was spoken.
+          if (!firstChunkLogged && !signal.aborted) {
+            onChunk("Sorry, I'm having trouble right now. Please try again in a moment.");
+          }
+        });
 
       await chunkChain;
       if (!signal.aborted && this.twWs && this.twWs.readyState === WebSocket.OPEN) {

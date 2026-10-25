@@ -398,6 +398,8 @@ RULES:
       const response = await anthropic.messages.create({
         model: agentModel(env),
         max_tokens: 600,
+        thinking: { type: 'disabled' },
+        output_config: { effort: 'low' },
         system: systemPrompt,
         tools,
         messages,
