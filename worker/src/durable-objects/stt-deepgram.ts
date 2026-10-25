@@ -17,7 +17,7 @@
 //
 // On finalization: `endpointing` (silence-based) drives speech_final, and
 // utterance_end_ms drives UtteranceEnd (word-timing-based). With the values
-// below speech_final normally wins — endpointing is 200ms where
+// below speech_final normally wins — endpointing is 400ms (default) where
 // utterance_end_ms cannot go below 1000ms — so UtteranceEnd is a *fallback*
 // for utterances where Deepgram never emits speech_final, not a latency win
 // in the common case. (The commit that introduced it claimed otherwise; the
@@ -30,14 +30,32 @@ export interface SttOptions {
   model?: string;
   /** 'en' (default); set 'multi' for multilingual. */
   language?: string;
+  /**
+   * Silence (ms) Deepgram waits before declaring end-of-speech. Longer is more
+   * robust to background noise and mid-sentence pauses, at the cost of that
+   * much extra reply latency. Default 400.
+   */
+  endpointingMs?: number;
+  /**
+   * Finalized transcripts whose Deepgram confidence is below this are dropped
+   * as noise / background speech rather than answered. Default 0.5; 0 disables.
+   */
+  minConfidence?: number;
+  /**
+   * An interim transcript only counts as the caller interrupting once it has
+   * this many words, so a cough or a stray word from the background doesn't
+   * cut the assistant off. The finalized transcript is still a barge-in
+   * backstop. Default 3.
+   */
+  bargeInMinWords?: number;
   debug?: boolean;
 }
 
-function dgUrl(model: string, language: string): string {
+function dgUrl(model: string, language: string, endpointingMs: number): string {
   return 'https://api.deepgram.com/v1/listen?' + new URLSearchParams({
     model, language,
     encoding: 'mulaw', sample_rate: '8000', channels: '1',
-    endpointing: '200', interim_results: 'true', utterance_end_ms: '1000',
+    endpointing: String(endpointingMs), interim_results: 'true', utterance_end_ms: '1000',
     smart_format: 'true',
     // Emits SpeechStarted as soon as voice activity is detected, which beats
     // even the first interim Results message. Drives barge-in.
@@ -57,10 +75,13 @@ export async function createDeepgramSTT(
   onTranscript: (text: string) => void,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
-  const { apiKey, model = 'nova-3', language = 'en', debug = false } = opts;
+  const {
+    apiKey, model = 'nova-3', language = 'en', debug = false,
+    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 3,
+  } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
-  const resp = await fetch(dgUrl(model, language), {
+  const resp = await fetch(dgUrl(model, language, endpointingMs), {
     headers: { Upgrade: 'websocket', Authorization: `Token ${apiKey}` },
   });
   const ws = resp.webSocket;
@@ -85,6 +106,7 @@ export async function createDeepgramSTT(
   // `utteranceStart` from going stale: it's reset in lockstep with
   // `lastText`/`finalized` instead of drifting across utterance boundaries.
   let lastText = '';
+  let lastConfidence = 1;
   let utteranceStart = 0;
   let finalized = false;
   // Barge-in fires at most once per utterance. SpeechStarted and the first
@@ -99,9 +121,17 @@ export async function createDeepgramSTT(
     onSpeechStart?.(reason);
   };
 
-  const finalize = (text: string, reason: 'speech_final' | 'utterance_end') => {
+  const finalize = (text: string, reason: 'speech_final' | 'utterance_end', confidence: number) => {
     if (!text || finalized) return;
     finalized = true;
+    if (confidence < minConfidence) {
+      // Most likely background noise or a voice that isn't the caller's.
+      console.log(`[dg stt] dropped low-confidence transcript (${confidence.toFixed(2)} < ${minConfidence}): "${text}"`);
+      lastText = '';
+      utteranceStart = 0;
+      speechAnnounced = false;
+      return;
+    }
     const ms = utteranceStart ? Date.now() - utteranceStart : -1;
     console.log(`[dg stt] ⏱ transcript-finalized (${reason}): ${ms}ms — "${text}"`);
     lastText = '';
@@ -122,6 +152,8 @@ export async function createDeepgramSTT(
 
       if (msg.type === 'Results') {
         const text = msg.channel?.alternatives?.[0]?.transcript?.trim();
+        const confidence = typeof msg.channel?.alternatives?.[0]?.confidence === 'number'
+          ? msg.channel.alternatives[0].confidence as number : 1;
         if (debug) {
           console.log(`[dg stt] Results is_final=${!!msg.is_final} speech_final=${!!msg.speech_final} text="${text ?? ''}"`);
         }
@@ -132,9 +164,10 @@ export async function createDeepgramSTT(
             // (lastText empty) or just finalized one (finalized true).
             if (!lastText || finalized) utteranceStart = Date.now();
             lastText = text;
+            lastConfidence = confidence;
             finalized = false;
-            // Backstop for barge-in if vad_events is unavailable or missed.
-            announceSpeech('interim');
+            // Barge-in once there are enough words to be a real interruption.
+            if (text.split(/\s+/).length >= bargeInMinWords) announceSpeech('interim');
           } else if (!finalized) {
             // is_final but not (yet) speech_final, and we haven't already
             // finalized this utterance — keep lastText fresh as a fallback
@@ -143,19 +176,20 @@ export async function createDeepgramSTT(
             // transcript. speech_final (checked below) is Deepgram's actual
             // end-of-utterance signal.
             lastText = text;
+            lastConfidence = confidence;
           }
           // If finalized is already true, this is a trailing confirmation
           // Results message for an utterance UtteranceEnd already closed —
           // ignore it for state purposes so we don't double-fire.
         }
-        if (msg.speech_final && text && !finalized) finalize(text, 'speech_final');
+        if (msg.speech_final && text && !finalized) finalize(text, 'speech_final', confidence);
         return;
       }
 
       if (msg.type === 'UtteranceEnd') {
         if (debug) console.log(`[dg stt] UtteranceEnd lastText="${lastText}" finalized=${finalized}`);
         if (lastText) {
-          finalize(lastText, 'utterance_end');
+          finalize(lastText, 'utterance_end', lastConfidence);
         } else {
           // Speech was detected but produced no transcript (noise, a cough, a
           // word Deepgram couldn't place). finalize() never runs, so reset the

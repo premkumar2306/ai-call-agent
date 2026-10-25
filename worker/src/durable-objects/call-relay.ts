@@ -76,6 +76,9 @@ export class CallRelay extends DurableObject<Env> {
         apiKey: this.env.DEEPGRAM_API_KEY ?? '',
         model: this.env.DG_MODEL,
         language: this.env.DG_LANGUAGE,
+        endpointingMs: numEnv(this.env.DG_ENDPOINTING_MS),
+        minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
+        bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
       (text) => { this.handleTranscript(text); },
@@ -356,6 +359,11 @@ export class CallRelay extends DurableObject<Env> {
   async webSocketError(_ws: WebSocket, error: unknown) {
     console.error('[twilio ws]', (error as any)?.message || error);
   }
+}
+
+function numEnv(v: string | undefined): number | undefined {
+  const n = v === undefined || v === '' ? NaN : Number(v);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 function base64ToBytes(b64: string): Uint8Array {

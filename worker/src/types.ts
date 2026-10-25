@@ -95,6 +95,10 @@ export interface Env {
   // UtteranceEnd messages + which signal triggered finalize()). Off by
   // default to avoid flooding wrangler tail.
   DG_DEBUG?: string;
+  // Noise-robustness knobs for the phone STT (see SttOptions in stt-deepgram.ts).
+  DG_ENDPOINTING_MS?: string;
+  DG_MIN_CONFIDENCE?: string;
+  DG_BARGE_IN_MIN_WORDS?: string;
   // Deepgram model / language. Defaults 'nova-2' and 'multi'. Exposed as env
   // so 'nova-3' (lower finalization latency) and 'en' (faster than the
   // multilingual model on an English-only deployment) can be A/B'd against
