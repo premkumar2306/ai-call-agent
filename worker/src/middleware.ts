@@ -2,6 +2,7 @@ import { Context, Next } from 'hono';
 import { jwtVerify } from 'jose';
 import type { Env, SessionPayload } from './types';
 import { timingSafeEqual, tokenSecretKey } from './config';
+import { getDefaultBusiness } from './services/line-config';
 
 export type HonoEnv = {
   Bindings: Env;
@@ -74,8 +75,12 @@ export async function withTwilioSession(c: Context<HonoEnv>, next: Next) {
     return await next();
   }
 
-  // No token — ?businessType= query param overrides the env var default
-  const session = buildDefaultTwilioSession(c.env, c.req.query('businessType'));
+  // No token — the business picked in the admin UI wins, then the
+  // ?businessType= query param, then the env var default.
+  const session = buildDefaultTwilioSession(
+    c.env,
+    (await getDefaultBusiness(c.env)) ?? c.req.query('businessType'),
+  );
   if (session) {
     c.set('session', session);
     return await next();

@@ -3,9 +3,10 @@ import Dashboard from './pages/Dashboard';
 import VoiceTest from './pages/VoiceTest';
 import WhatsApp from './pages/WhatsApp';
 import Calls from './pages/Calls';
+import Settings from './pages/Settings';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 
-const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Overview'] as const;
+const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Settings', 'Overview'] as const;
 type Tab = typeof TABS[number];
 
 const BASE = import.meta.env.VITE_API_URL
@@ -88,6 +89,7 @@ export default function App() {
         {tab === 'Voice Test' && <VoiceTest sector={sector} base={BASE} />}
         {tab === 'Calls' && <Calls base={BASE} adminKey={adminKey} />}
         {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} adminKey={adminKey} />}
+        {tab === 'Settings' && <Settings base={BASE} adminKey={adminKey} sectors={sectors} />}
         {tab === 'Overview' && <Overview />}
       </main>
     </div>
