@@ -93,6 +93,7 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     address:      body.address,
     phone:        body.phone,
     website:      body.website,
+    about:        typeof body.about === 'string' ? body.about.slice(0, 4000) : undefined,
   });
   return c.json({ success: true, data: { key: body.key, name: body.name } });
 });

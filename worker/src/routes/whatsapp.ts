@@ -43,12 +43,10 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { HonoEnv } from '../middleware';
 import { getSector } from '../services/sector.service';
 import { getOrders } from '../services/order.service';
-import { executeTool, getToolDefinitions } from '../services/tool-router.service';
+import { executeTool } from '../services/tool-router.service';
+import { getProducts } from '../services/catalog.service';
+import { agentTools, buildSystemPrompt } from '../services/turn.service';
 import { saveTranscript } from '../services/transcript.service';
-import {
-  getUnclearServiceEscalationResponse,
-  shouldEscalateUnclearService,
-} from '../services/voice-guard.service';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
 import { getDefaultBusiness } from '../services/line-config';import type { Env, SessionPayload } from '../types';
 import {
@@ -328,65 +326,25 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
       account,
     };
 
-    // 14–16. History, recent orders and sector metadata are independent —
+    // 14–16. History, orders, sector metadata and catalog are independent —
     // fetch them in one wave.
-    const [history, recentOrders, sectorMeta] = await Promise.all([
+    const [history, orders, sectorMeta, products] = await Promise.all([
       loadWaHistory(env, phoneHash, businessType),
-      getOrders(env, phoneHash, businessType)
-        .then(orders => orders.slice(0, 3).map(o => `${o.productName} (${o.status})`))
-        .catch(() => [] as string[]),
+      getOrders(env, phoneHash, businessType).catch(() => []),
       getSector(env, businessType),
+      getProducts(env, businessType).catch(() => []),
     ]);
-    const bizName = sectorMeta?.name ?? businessType;
-    const credit = (account.store_credit_cents / 100).toFixed(2);
 
-    // 17. Voice-guard check
-    if (shouldEscalateUnclearService(history, utterance)) {
-      const escalationReply = getUnclearServiceEscalationResponse(bizName);
-      const updatedHistory: Turn[] = [
-        ...history,
-        { role: 'user', content: utterance },
-        { role: 'assistant', content: escalationReply },
-      ];
-      await saveWaHistory(env, phoneHash, businessType, updatedHistory);
-      await saveTranscript(env, { callSid: `wa:${phoneHash.slice(0, 8)}`, customerIdHashed: phoneHash, businessType, turns: updatedHistory })
-        .catch(err => console.error('wa transcript error', err.message));
-      await sendWaReply(env, message.from, escalationReply).catch(() => {});
-      return;
-    }
+    // 17. System prompt — same rules and business profile as the phone
+    // agent, chat-formatted.
+    const systemPrompt: Anthropic.TextBlockParam[] = [
+      ...buildSystemPrompt({ businessType, sectorMeta, products, session, orders, channel: 'chat' }),
+      { type: 'text', text: 'OPT-OUT: if the customer says "stop" or "unsubscribe", acknowledge it politely. (Handled before you see it; this is a backstop.)' },
+    ];
 
-    // 18. Build system prompt
-    const systemPrompt =
-`You are Mogi, a warm and friendly scheduling assistant for ${bizName}, on WhatsApp.
-
-Customer: ${account.tier} tier | $${credit} store credit
-Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}
-
-CHANNEL: WhatsApp text chat. You may write 2–4 sentences. Use *bold* for service names and prices.
-Do NOT use markdown headers or long bullet lists. Be warm, concise, and helpful.
-PRICES: Always use $ (dollars). Never ₹ or other symbols.
-HONESTY: If asked whether you are a bot or AI, always say yes — you are Mogi, an AI assistant.
-
-RULES:
-1. NEVER guess prices, times, or service names — always call a tool first.
-2. If customer has a specific need → call search_services immediately.
-3. BOOKING FLOW (one step at a time, never skip):
-   Step A — customer mentions need → call search_services → share the top match name and price warmly.
-   Step B — customer says yes/interested → call check_availability(service_id=<id from search>) → offer 2–3 slots.
-   Step C — customer picks a slot → call book_appointment(product_id, scheduled_at, payment_method=CREDIT_CARD) immediately.
-4. AFTER BOOKING: call get_upsells once, offer casually, then wrap up warmly.
-5. NO LOOPS: Never repeat a question already answered.
-6. CANCEL: "cancel" → call cancel_booking.
-7. OPT-OUT: If customer says "stop" or "unsubscribe", acknowledge it politely.
-   (The system handles opt-out before this prompt, so this is a safety backstop.)`;
-
-    // 19. Agentic loop
+    // 18. Agentic loop
     const anthropic = createAnthropic(env);
-    const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta).map(t => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.parameters as Anthropic.Tool['input_schema'],
-    }));
+    const tools = agentTools(businessType, sectorMeta);
 
     const messages: Anthropic.MessageParam[] = [
       ...history.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
@@ -410,15 +368,22 @@ RULES:
         const toolResults = await Promise.all(toolBlocks.map(async (tb) => {
           console.log(`[wa:${phoneHash.slice(-8)}] tool: ${tb.name}`);
           const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, env, sectorMeta);
-          return { type: 'tool_result' as const, tool_use_id: tb.id, content: JSON.stringify(result.data ?? { message: result.spoken_response }) };
+          const payload = (result.data ?? { message: result.spoken_response }) as Record<string, unknown>;
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: tb.id,
+            content: JSON.stringify({ ...payload, ok: result.success, _spoken_hint: result.spoken_response }),
+            ...(result.success ? {} : { is_error: true }),
+          };
         }));
         messages.push({ role: 'assistant', content: response.content });
         messages.push({ role: 'user', content: toolResults });
         continue;
       }
 
-      const textBlock = response.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
-      replyText = textBlock?.text?.trim() ?? "Sorry, I had trouble with that. Please try again.";
+      replyText = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map(b => b.text.trim()).filter(Boolean).join(' ') || "Sorry, I had trouble with that. Please try again.";
       break;
     }
 

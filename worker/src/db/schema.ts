@@ -11,6 +11,7 @@ export const sectors = sqliteTable('sectors', {
   address:      text('address'),
   phone:        text('phone'),
   website:      text('website'),
+  about:        text('about'),
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),

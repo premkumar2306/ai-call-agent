@@ -3,7 +3,7 @@ import type { SessionPayload, Env, SectorMeta } from '../types';
 import { getProducts, getProductById, searchProducts } from './catalog.service';
 import { placeOrder, getOrders, getOrder, cancelOrder } from './order.service';
 import { scoreProducts } from './recommendations.service';
-import { isAmbiguousServiceIntent } from './voice-guard.service';
+import { formatPrice } from './business-profile';
 import { getDb } from '../db/client';
 import { orders as ordersTable } from '../db/schema';
 import type { CallCache } from './call-context';
@@ -38,9 +38,9 @@ async function setCart(env: Env, key: string, cart: { productId: string; quantit
 
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 
-export function parseHoursRange(range: string): { openH: number; closeH: number } | null {
+export function parseHoursRange(range: string): { openH: number; openM: number; closeH: number; closeM: number } | null {
   // e.g. "8am–7pm" or "7:30am–6pm"
-  const m = range.match(/^(\d+)(?::(\d+))?(am|pm)[–-](\d+)(?::(\d+))?(am|pm)$/i);
+  const m = range.trim().match(/^(\d+)(?::(\d+))?\s*(am|pm)\s*[–-]\s*(\d+)(?::(\d+))?\s*(am|pm)$/i);
   if (!m) return null;
   let openH = parseInt(m[1]);
   const openAP = m[3].toLowerCase();
@@ -50,7 +50,7 @@ export function parseHoursRange(range: string): { openH: number; closeH: number 
   if (openAP === 'am' && openH === 12) openH = 0;
   if (closeAP === 'pm' && closeH !== 12) closeH += 12;
   if (closeAP === 'am' && closeH === 12) closeH = 0;
-  return { openH, closeH };
+  return { openH, openM: parseInt(m[2] ?? '0'), closeH, closeM: parseInt(m[5] ?? '0') };
 }
 
 /**
@@ -101,40 +101,83 @@ export function localDay(date: Date, timeZone: string | undefined): { ymd: strin
   return { ymd: `${get('year')}-${get('month')}-${get('day')}`, dayKey };
 }
 
-async function getAvailableSlots(
+// Minutes since local midnight in the business's timezone.
+export function localMinutes(date: Date, timeZone: string | undefined): number {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || 'UTC', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(date);
+  } catch {
+    return localMinutes(date, 'UTC');
+  }
+  const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value ?? '0', 10);
+  return get('hour') * 60 + get('minute');
+}
+
+export interface Slot { date: string; time: string; datetime: string; label: string; minutes: number }
+
+// "9:00 AM" from minutes since midnight.
+function clockLabel(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+// Spoken label for a business-local "YYYY-MM-DDTHH:MM[:SS]" — formatted from
+// the string itself, never via Date parsing (the Worker clock is UTC, the
+// string is wall-clock time in the business's zone).
+export function formatSlotLabel(datetime: string, todayYmd?: string, tomorrowYmd?: string): string {
+  const ymd = datetime.slice(0, 10);
+  const mins = parseInt(datetime.slice(11, 13), 10) * 60 + parseInt(datetime.slice(14, 16), 10);
+  const day = ymd === todayYmd ? 'today'
+    : ymd === tomorrowYmd ? 'tomorrow'
+    : new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return `${day} at ${clockLabel(mins)}`;
+}
+
+// Earliest a same-day slot may start, so nobody is offered "today at 2"
+// at 1:55.
+const SAME_DAY_LEAD_MIN = 60;
+export const AVAILABILITY_DAYS = 14;
+
+export async function getAvailableSlots(
   env: Env,
   businessType: string,
   meta: SectorMeta | null | undefined,
   durationMinutes = 60,
   bookedDatetimes?: Set<string>,
   calendarBusy?: BusyInterval[] | null,
-): Promise<Array<{ date: string; time: string; datetime: string; label: string }>> {
-  const rawSlots: Array<{ date: string; time: string; datetime: string; label: string }> = [];
-  const now = new Date();
-  const stepH = Math.max(1, Math.ceil(durationMinutes / 60));
-  const durationH = durationMinutes / 60;
+  now: Date = new Date(),
+): Promise<Slot[]> {
+  const rawSlots: Slot[] = [];
+  // Appointments start on the hour/half hour and are spaced by their own
+  // length (rounded up to the hour), as before.
+  const stepMin = Math.max(60, Math.ceil(durationMinutes / 60) * 60);
+  const today = localDay(now, meta?.timezone).ymd;
+  const tomorrow = localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd;
+  const nowMin = localMinutes(now, meta?.timezone);
 
-  for (let dayOffset = 1; dayOffset <= 14 && rawSlots.length < 20; dayOffset++) {
+  for (let dayOffset = 0; dayOffset <= AVAILABILITY_DAYS; dayOffset++) {
     const { ymd: dateStr, dayKey } = localDay(new Date(now.getTime() + dayOffset * 86_400_000), meta?.timezone);
-    // Noon UTC on the local date: safe to format as a label in any zone.
-    const labelDate = new Date(`${dateStr}T12:00:00Z`);
     const hoursStr = meta?.hours[dayKey];
     if (!hoursStr) continue;
 
     const parsed = parseHoursRange(hoursStr);
     if (!parsed) continue;
+    const openMin = Math.ceil((parsed.openH * 60 + parsed.openM) / 30) * 30;
+    const closeMin = parsed.closeH * 60 + parsed.closeM;
 
-    for (let h = parsed.openH; h + durationH <= parsed.closeH; h += stepH) {
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
-      const timeLabel = `${h12}:00 ${ampm}`;
-      const hPad = String(h).padStart(2, '0');
-      const dateLabel = labelDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+    for (let m = openMin; m + durationMinutes <= closeMin; m += stepMin) {
+      if (dateStr === today && m < nowMin + SAME_DAY_LEAD_MIN) continue;
+      const datetime = `${dateStr}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00`;
       rawSlots.push({
         date: dateStr,
-        time: timeLabel,
-        datetime: `${dateStr}T${hPad}:00:00`,
-        label: `${dateLabel} at ${timeLabel}`,
+        time: clockLabel(m),
+        datetime,
+        label: formatSlotLabel(datetime, today, tomorrow),
+        minutes: m,
       });
     }
   }
@@ -153,8 +196,60 @@ async function getAvailableSlots(
       if (!busy.length) return true;
       const { start, end } = bookingInterval(s.datetime, durationMinutes, meta?.timezone);
       return !overlapsBusy(start.getTime(), end.getTime(), busy);
-    })
-    .slice(0, 12);
+    });
+}
+
+const TIME_OF_DAY: Record<string, [number, number]> = {
+  morning: [0, 12 * 60],
+  afternoon: [12 * 60, 17 * 60],
+  evening: [17 * 60, 24 * 60],
+};
+
+/**
+ * Narrows the open slots to what the caller asked for and picks the few to
+ * say out loud. A preferred date shows that day's times; with no preference
+ * the first opening on each of the next few days is offered. When the
+ * preference can't be met the nearest alternatives are returned instead,
+ * flagged so the reply can say so rather than silently offering other days.
+ */
+export function pickSlots(
+  slots: Slot[],
+  opts: { preferredDate?: string; timeOfDay?: string; count?: number },
+): { shown: Slot[]; matchedPreference: boolean } {
+  const count = opts.count ?? 3;
+  const range = opts.timeOfDay ? TIME_OF_DAY[opts.timeOfDay.toLowerCase()] : undefined;
+  const inRange = (s: Slot) => !range || (s.minutes >= range[0] && s.minutes < range[1]);
+  const spread = (list: Slot[]) => {
+    const out: Slot[] = [];
+    const seen = new Set<string>();
+    for (const s of list) {
+      if (!seen.has(s.date)) { seen.add(s.date); out.push(s); }
+      if (out.length === count) break;
+    }
+    return out;
+  };
+
+  const preferred = opts.preferredDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.preferredDate) ? opts.preferredDate : undefined;
+  if (preferred) {
+    const sameDay = slots.filter(s => s.date === preferred);
+    const fitting = sameDay.filter(inRange);
+    if (fitting.length) return { shown: fitting.slice(0, count), matchedPreference: true };
+    if (sameDay.length) return { shown: sameDay.slice(0, count), matchedPreference: false };
+    const after = slots.filter(s => s.date > preferred);
+    return { shown: spread(after.length ? after : slots), matchedPreference: false };
+  }
+  if (range) {
+    const fitting = slots.filter(inRange);
+    if (fitting.length) return { shown: spread(fitting), matchedPreference: true };
+    return { shown: spread(slots), matchedPreference: false };
+  }
+  return { shown: spread(slots), matchedPreference: true };
+}
+
+// Prefers the call's cached catalog over a KV/D1 round trip.
+async function lookupProduct(env: Env, cache: CallCache | undefined, id: string | undefined) {
+  if (!id) return null;
+  return cache?.productsAll?.find(p => p.id === id) ?? await getProductById(env, id);
 }
 
 function formatHours(meta: SectorMeta | null | undefined): string {
@@ -206,15 +301,8 @@ export async function executeTool(
       case 'search_services':
       case 'search_products': {
         const query = (args.query as string | undefined)?.trim() ?? '';
-        if (isAmbiguousServiceIntent(query)) {
-          return {
-            success: true,
-            data: { products: [], matchType: 'ambiguous_intent', query },
-            spoken_response: "I can help with a specific service, but I need to know what kind of work your car needs.",
-          };
-        }
-
-        const category = args.category as string | undefined;
+        const rawCategory = args.category as string | undefined;
+        const category = rawCategory && rawCategory !== 'ALL' ? rawCategory : undefined;
         // Reuse the call's cached full product list when there's no category
         // filter — avoids a KV round trip on every search_services call in a
         // multi-turn call (e.g. after a clarifying question).
@@ -229,23 +317,25 @@ export async function executeTool(
         const results = query ? searchProducts(all, query) : all;
         const top5 = results.slice(0, 5);
         if (top5.length === 0) {
+          // Hand the model the real menu so it can suggest the closest
+          // service instead of dead-ending the caller.
           return {
             success: true,
-            data: { products: [], matchType: 'no_match', query },
+            data: { products: [], matchType: 'no_match', query, all_services: all.map(p => p.name) },
             spoken_response: "I couldn't match that to a listed service.",
           };
         }
         // Include IDs in data so Claude can use them immediately for check_availability / book_appointment
         const topResult = top5[0];
-        const price = topResult.priceCents === 0 ? 'free' : `$${(topResult.priceCents / 100).toFixed(0)}`;
+        const price = formatPrice(topResult);
         const duration = topResult.durationMinutes ? `, about ${topResult.durationMinutes} minutes` : '';
         const spoken = top5.length === 1
-          ? `I found ${topResult.name} for ${price}${duration}. Want me to check availability?`
-          : `Top match: ${topResult.name} for ${price}. I also have ${top5.slice(1, 3).map(p => p.name).join(' and ')}. Which interests you?`;
+          ? `We have ${topResult.name} — ${price}${duration}. Want me to find you a time?`
+          : `The closest match is ${topResult.name} — ${price}. We also have ${top5.slice(1, 3).map(p => p.name).join(' and ')}. Which one sounds right?`;
         return {
           success: true,
           data: {
-            products: top5.map(p => ({ id: p.id, name: p.name, priceCents: p.priceCents, durationMinutes: p.durationMinutes, category: p.category })),
+            products: top5.map(p => ({ id: p.id, name: p.name, price: formatPrice(p), durationMinutes: p.durationMinutes, category: p.category, description: p.description })),
             matchType: 'match',
             query,
           },
@@ -255,13 +345,12 @@ export async function executeTool(
 
       case 'get_service_detail':
       case 'get_product_detail': {
-        const p = await getProductById(env, args.product_id as string);
+        const p = await lookupProduct(env, cache, args.product_id as string);
         if (!p) return { success: false, spoken_response: "I couldn't find that service." };
-        const price = p.priceCents === 0 ? 'Free' : `$${(p.priceCents / 100).toFixed(0)}`;
         const duration = p.durationMinutes ? ` Takes about ${p.durationMinutes} minutes.` : '';
         return {
           success: true, data: p,
-          spoken_response: `${p.name} — ${price}.${duration} ${p.description.slice(0, 120)}.`,
+          spoken_response: `${p.name} — ${formatPrice(p)}.${duration} ${p.description}`,
         };
       }
 
@@ -277,8 +366,8 @@ export async function executeTool(
           ? Promise.resolve(cache.calendarBusy)
           : getCalendarBusy(env, businessType).then(b => { if (cache && b) cache.calendarBusy = b; return b; });
         if (serviceId) {
-          const p = await getProductById(env, serviceId);
-          lap?.('getProductById');
+          const p = await lookupProduct(env, cache, serviceId);
+          lap?.('lookupProduct');
           if (p?.durationMinutes) duration = p.durationMinutes;
           if (p?.name) serviceName = p.name;
         }
@@ -291,18 +380,34 @@ export async function executeTool(
         const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy);
         lap?.('getAvailableSlots');
         if (slots.length === 0) {
-          return { success: true, data: { slots: [] }, spoken_response: "We don't have any openings in the next 2 weeks. Please call us directly." };
+          return { success: true, data: { slots: [] }, spoken_response: `We don't have any openings in the next ${AVAILABILITY_DAYS} days. Please call us directly.` };
         }
-        // Pick 3 slots spread across different days for a natural voice response
-        const shown: typeof slots = [];
-        const seenDays = new Set<string>();
-        for (const s of slots) {
-          if (!seenDays.has(s.date)) { seenDays.add(s.date); shown.push(s); }
-          if (shown.length === 3) break;
-        }
+        const preferredDate = args.preferred_date as string | undefined;
+        const timeOfDay = args.time_of_day as string | undefined;
+        const { shown, matchedPreference } = pickSlots(slots, { preferredDate, timeOfDay });
         const spokenFor = serviceName ? ` for ${serviceName}` : '';
-        const spoken = `I have openings${spokenFor}: ${shown.map(s => s.label).join(', ')}. Which works for you?`;
-        return { success: true, data: { slots: slots.slice(0, 12) }, spoken_response: spoken };
+        const asked = preferredDate || timeOfDay;
+        const lead = asked && !matchedPreference
+          ? `That time is booked up, but the nearest openings${spokenFor} are`
+          : `I have openings${spokenFor}`;
+        const spoken = `${lead} ${joinOr(shown.map(s => s.label))}. Which works for you?`;
+        // `datetime` is what book_appointment needs — offered slots first so
+        // the model books exactly what the caller heard.
+        const strip = ({ minutes: _m, ...rest }: Slot) => rest;
+        // Everything else open on the day(s) being discussed comes first, so
+        // "anything earlier?" can be answered from this result instead of
+        // the model guessing that what it offered was all there is.
+        const focusDays = new Set(preferredDate ? [preferredDate] : shown.map(s => s.date));
+        const notShown = slots.filter(s => !shown.includes(s));
+        const rest = [
+          ...notShown.filter(s => focusDays.has(s.date)),
+          ...notShown.filter(s => !focusDays.has(s.date)),
+        ].slice(0, 15);
+        return {
+          success: true,
+          data: { offered: shown.map(strip), other_open_slots: rest.map(strip), matched_preference: matchedPreference, service_id: serviceId },
+          spoken_response: spoken,
+        };
       }
 
       case 'get_business_hours': {
@@ -317,13 +422,13 @@ export async function executeTool(
 
       // ── Upsell / Recommendations ─────────────────────────────────
       case 'get_upsells': {
-        const p = await getProductById(env, args.product_id as string);
+        const p = await lookupProduct(env, cache, args.product_id as string);
         if (!p?.upsellProductId) {
           return { success: true, data: { upsells: [] }, spoken_response: "No add-ons available for that one." };
         }
-        const upsell = await getProductById(env, p.upsellProductId);
+        const upsell = await lookupProduct(env, cache, p.upsellProductId);
         if (!upsell) return { success: true, data: { upsells: [] }, spoken_response: "No add-ons right now." };
-        const price = upsell.priceCents === 0 ? 'Free' : `$${(upsell.priceCents / 100).toFixed(0)}`;
+        const price = formatPrice(upsell);
         return {
           success: true,
           data: { upsells: [upsell] },
@@ -353,7 +458,7 @@ export async function executeTool(
           cart.push({ productId: args.product_id as string, quantity: (args.quantity as number) || 1 });
         }
         await setCart(env, key, cart);
-        const p = await getProductById(env, args.product_id as string);
+        const p = await lookupProduct(env, cache, args.product_id as string);
         return {
           success: true, data: { cart },
           spoken_response: `Added ${p?.name ?? 'item'} to your cart. Ready to confirm?`,
@@ -364,11 +469,23 @@ export async function executeTool(
       case 'book_appointment':
       case 'place_order': {
         const scheduledAt = args.scheduled_at as string | undefined;
+        const product = await lookupProduct(env, cache, args.product_id as string);
+        if (!product) return { success: false, error: 'NOT_FOUND', spoken_response: TOOL_ERROR_MESSAGES.NOT_FOUND };
+        if (product.fulfillmentType === 'SERVICE_BOOKING' && !scheduledAt) {
+          return { success: false, error: 'INVALID_SCHEDULE', spoken_response: "Which day and time would you like? I can check what's open." };
+        }
+        // The model sometimes books a time it never offered ("2:15", or a
+        // Sunday). Reject anything outside opening hours or already past
+        // before it reaches the DB, so the reply can steer back to real slots.
+        if (scheduledAt) {
+          const problem = checkWithinHours(scheduledAt, product.durationMinutes ?? 60, sectorMeta);
+          if (problem) return { success: false, error: problem, spoken_response: TOOL_ERROR_MESSAGES[problem] };
+        }
         // Re-check the slot against the business's calendar (something may
         // have been added since check_availability). Runs in parallel with
         // the D1 insert so the common, free case adds no latency; if the
         // calendar says busy, the just-created booking is cancelled again.
-        const durationP = getProductById(env, args.product_id as string).then(p => p?.durationMinutes ?? 60).catch(() => 60);
+        const durationP = Promise.resolve(product.durationMinutes ?? 60);
         const slotFreeP = scheduledAt
           ? durationP.then(d => {
               const { start, end } = bookingInterval(scheduledAt, d, sectorMeta?.timezone);
@@ -381,7 +498,7 @@ export async function executeTool(
             token.sub,
             businessType,
             args.product_id as string,
-            args.payment_method as string,
+            (args.payment_method as string | undefined) ?? 'CREDIT_CARD',
             args.shipping_address as any,
             scheduledAt
           ),
@@ -419,13 +536,13 @@ export async function executeTool(
           }
         }
 
-        const scheduledPart = order.scheduledAt
-          ? ` Your appointment is confirmed for ${new Date(order.scheduledAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`
-          : '';
-        const msg = order.status === 'COMPLETE'
-          ? `Done!${scheduledPart} ${order.productName} is confirmed. Reference: ${order.id.slice(0, 8)}.`
-          : `Booked!${scheduledPart} ${order.productName}. Reference: ${order.id.slice(0, 8)}.`;
-        return { success: true, data: order, spoken_response: msg };
+        const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
+        const msg = `You're all set — ${order.productName}${when}.`;
+        return {
+          success: true,
+          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product) },
+          spoken_response: msg,
+        };
       }
 
       // ── Booking management ────────────────────────────────────────
@@ -434,7 +551,7 @@ export async function executeTool(
         const order = await getOrder(env, args.order_id as string, token.sub);
         if (!order) return { success: false, spoken_response: "I couldn't find that booking." };
         const scheduled = order.scheduledAt
-          ? ` Scheduled for ${new Date(order.scheduledAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}.`
+          ? ` Scheduled for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}.`
           : '';
         let spoken = `Booking ${order.id.slice(0, 8)} — ${order.productName} is ${order.status}.${scheduled}`;
         if (order.trackingNumber) spoken += ` Tracking: ${order.trackingNumber}.`;
@@ -448,8 +565,18 @@ export async function executeTool(
         if (orders.length === 0) {
           return { success: true, data: { orders: [] }, spoken_response: "You don't have any bookings yet." };
         }
-        const spoken = `You have ${orders.length} booking${orders.length > 1 ? 's' : ''}: ${orders.slice(0, 3).map(o => `${o.productName} (${o.status})`).join(', ')}.`;
-        return { success: true, data: { orders }, spoken_response: spoken };
+        const upcoming = orders.filter(o => o.status !== 'CANCELLED');
+        if (upcoming.length === 0) {
+          return { success: true, data: { orders: [] }, spoken_response: "You don't have any active bookings." };
+        }
+        const describe = (o: typeof orders[number]) =>
+          `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt, ...todayTomorrow(sectorMeta))}` : ''}`;
+        const spoken = `You have ${upcoming.length} booking${upcoming.length > 1 ? 's' : ''}: ${upcoming.slice(0, 3).map(describe).join(', and ')}.`;
+        return {
+          success: true,
+          data: { orders: upcoming.slice(0, 10).map(o => ({ id: o.id, service: o.productName, scheduled_at: o.scheduledAt, status: o.status })) },
+          spoken_response: spoken,
+        };
       }
 
       case 'cancel_booking':
@@ -482,7 +609,12 @@ export async function executeTool(
             cache.bookedDatetimes.delete(order.scheduledAt.slice(0, 16));
           }
         }
-        return { success: true, data: order, spoken_response: `Done — your ${order.productName} appointment has been cancelled.` };
+        const when = order.scheduledAt ? ` on ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
+        return {
+          success: true,
+          data: { id: order.id, service: order.productName, scheduled_at: order.scheduledAt, status: order.status },
+          spoken_response: `Done — your ${order.productName} appointment${when} is cancelled.`,
+        };
       }
 
       default:
@@ -505,7 +637,36 @@ const TOOL_ERROR_MESSAGES: Record<string, string> = {
   INVALID_STATUS: "That booking can't be changed anymore.",
   INVALID_SCHEDULE: "I need a valid upcoming date and time for that booking.",
   SLOT_TAKEN: "Sorry, that time was just taken. Want me to check other openings?",
+  OUTSIDE_HOURS: "We're not open then. Want me to find the nearest opening?",
+  PAST_TIME: "That time has already passed. Want me to find the next opening?",
 };
+
+function todayTomorrow(meta: SectorMeta | null | undefined): [string, string] {
+  const now = new Date();
+  return [localDay(now, meta?.timezone).ymd, localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd];
+}
+
+function joinOr(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')}, or ${items[items.length - 1]}`;
+}
+
+/** Null if `scheduledAt` (business-local wall clock) fits the opening hours and hasn't passed. */
+export function checkWithinHours(
+  scheduledAt: string, durationMinutes: number, meta: SectorMeta | null | undefined, now: Date = new Date(),
+): 'OUTSIDE_HOURS' | 'PAST_TIME' | null {
+  if (!meta || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(scheduledAt)) return null;
+  const ymd = scheduledAt.slice(0, 10);
+  const mins = parseInt(scheduledAt.slice(11, 13), 10) * 60 + parseInt(scheduledAt.slice(14, 16), 10);
+  const today = localDay(now, meta.timezone).ymd;
+  if (ymd < today || (ymd === today && mins < localMinutes(now, meta.timezone))) return 'PAST_TIME';
+  const dayKey = DAY_NAMES[new Date(`${ymd}T12:00:00Z`).getUTCDay()];
+  const parsed = meta.hours[dayKey] ? parseHoursRange(meta.hours[dayKey]!) : null;
+  if (!parsed) return 'OUTSIDE_HOURS';
+  const open = parsed.openH * 60 + parsed.openM;
+  const close = parsed.closeH * 60 + parsed.closeM;
+  return mins >= open && mins + durationMinutes <= close ? null : 'OUTSIDE_HOURS';
+}
 
 // ── Tool definitions — sector-agnostic, voice-optimised ───────────────────
 // Each sector populates the category enum from its SECTORS metadata.
@@ -550,8 +711,9 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
       parameters: {
         type: 'object',
         properties: {
-          service_id:     { type: 'string', description: 'Optional: service ID to match slot length to appointment duration.' },
-          preferred_date: { type: 'string', description: 'Optional ISO date the customer prefers, e.g. "2026-04-15".' },
+          service_id:     { type: 'string', description: 'The [id] of the service being booked, so slots match its length.' },
+          preferred_date: { type: 'string', description: 'YYYY-MM-DD, only if the customer named a day ("tomorrow", "Friday"). Resolve it with the dates in the system prompt.' },
+          time_of_day:    { type: 'string', enum: ['morning', 'afternoon', 'evening'], description: 'Only if the customer said a part of the day.' },
         },
         required: [],
       },
@@ -581,16 +743,16 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
     },
     {
       name: 'book_appointment',
-      description: `Book a ${isService ? 'service appointment' : 'service or order'}. Always confirm the service name, price, and time before calling. Ask for a shipping address only for physical items.`,
+      description: `Book a ${isService ? 'service appointment' : 'service or order'} once the customer has chosen a service and one of the times check_availability returned. Ask for a shipping address only for physical items.`,
       parameters: {
         type: 'object',
         properties: {
           product_id:      { type: 'string' },
-          payment_method:  { type: 'string', enum: ['CREDIT_CARD', 'DEBIT_CARD', 'STORE_CREDIT', 'INVOICE'] },
-          scheduled_at:    { type: 'string', description: 'ISO datetime for the appointment, e.g. "2026-04-15T09:00:00". Required for SERVICE_BOOKING.' },
+          payment_method:  { type: 'string', enum: ['CREDIT_CARD', 'DEBIT_CARD', 'STORE_CREDIT', 'INVOICE'], description: 'Defaults to CREDIT_CARD (paid at the shop).' },
+          scheduled_at:    { type: 'string', description: 'The exact `datetime` of the chosen slot from check_availability, e.g. "2026-04-15T09:00:00".' },
           shipping_address: { type: 'object', description: 'Required only for physical items: { line1, city, state, zip }.' },
         },
-        required: ['product_id', 'payment_method'],
+        required: ['product_id'],
       },
     },
     {

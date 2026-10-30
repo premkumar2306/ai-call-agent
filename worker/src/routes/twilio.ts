@@ -3,8 +3,9 @@ import type { HonoEnv } from '../middleware';
 import { withTwilioSession } from '../middleware';
 import { runTurn, loadHistory } from '../services/turn.service';
 import { classifyCall } from '../services/call-classifier.service';
-import { isProduction, timingSafeEqual } from '../config';
+import { customerHashSalt, isProduction, timingSafeEqual } from '../config';
 import { signStreamToken } from '../utils/stream-token';
+import { hashId } from '../utils/identity';
 
 const twilioRouter = new Hono<HonoEnv>();
 
@@ -83,7 +84,17 @@ twilioRouter.post('/inbound', requireTwilioSig('/twilio/inbound'), withTwilioSes
   // (query strings on <Stream url> aren't reliably forwarded by Twilio's real client,
   // but our own synthetic test harness relies on it).
   const streamUrl  = `wss://${host}/twilio/stream?businessType=${encodeURIComponent(businessType)}`;
-  const streamToken = await signStreamToken(c.env, businessType);
+  // Every caller used to share TWILIO_DEFAULT_CUSTOMER_HASH, so one caller
+  // could hear — and cancel — another's bookings. Key them by their own
+  // number instead (digits only — the same key WhatsApp hashes, so a
+  // customer is one identity across both); a withheld number gets a
+  // per-call identity.
+  const body = await c.req.parseBody();
+  const from = typeof body.From === 'string' ? body.From.trim() : '';
+  const callSid = typeof body.CallSid === 'string' ? body.CallSid : crypto.randomUUID();
+  const callerKey = /^\+?\d{7,15}$/.test(from) ? from.replace(/\D/g, '') : `call:${callSid}`;
+  const callerHash = await hashId(callerKey, customerHashSalt(c.env));
+  const streamToken = await signStreamToken(c.env, businessType, callerHash);
   return c.text(
     `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${xml(streamUrl)}">` +
     `<Parameter name="businessType" value="${xml(businessType)}"/>` +
@@ -119,8 +130,9 @@ twilioRouter.post('/turn', requireTwilioSig('/twilio/turn'), withTwilioSession, 
   }
 
   try {
-    const { spokenResponse } = await runTurn(c.env, session, callSid, utterance, undefined, undefined,
-      (p) => c.executionCtx.waitUntil(p));
+    const { spokenResponse } = await runTurn(c.env, session, callSid, utterance, {
+      background: (p) => c.executionCtx.waitUntil(p),
+    });
     return c.text(twiml(spokenResponse, turnUrl), 200, TEXT_XML);
   } catch (err: any) {
     console.error(`[${callSid.slice(-8)}] error:`, err.message);

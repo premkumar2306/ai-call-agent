@@ -8,11 +8,9 @@ import { getSectorGreeting } from '../services/recommendations.service';
 import { executeTool, getToolDefinitions } from '../services/tool-router.service';
 import { emailTranscript } from '../services/email.service';
 import { saveTranscript, getTranscripts } from '../services/transcript.service';
-import {
-  getUnclearServiceEscalationResponse,
-  shouldEscalateUnclearService,
-} from '../services/voice-guard.service';
-import { agentModel, createAnthropic, HTTP_TIMEOUT_MS, MAX_TOOL_ROUNDS } from '../config';
+import { getProducts } from '../services/catalog.service';
+import { agentTools, buildSystemPrompt } from '../services/turn.service';
+import { createAnthropic, HTTP_TIMEOUT_MS, MAX_TOOL_ROUNDS, voiceModel } from '../config';
 import { CARTESIA_VERSION, DEFAULT_CARTESIA_MODEL, DEFAULT_VOICE_ID } from '../durable-objects/tts-cartesia';
 
 const mogiRouter = new Hono<HonoEnv>();
@@ -120,7 +118,7 @@ mogiRouter.post('/tool-call', withMogiSecret, withSession, async (c) => {
 // POST /mogi/voice-turn — JWT only, 30 turns / 60 s per customer to cap Anthropic spend
 mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), async (c) => {
   const session = c.get('session');
-  const { businessType, account, sub } = session;
+  const { businessType, sub } = session;
   const body = await c.req.json().catch(() => ({}));
 
   const utterance = typeof body.utterance === 'string' ? body.utterance.trim() : '';
@@ -133,53 +131,15 @@ mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), a
     return c.json({ success: false, error: `history must be at most ${MAX_HISTORY_TURNS} user/assistant text turns` }, 400);
   }
 
-  const recentOrders = await getOrders(c.env, sub, businessType)
-    .then(orders => orders.slice(0, 3).map(o => `${o.productName} (${o.status})`))
-    .catch(() => [] as string[]);
-
-  const sectorMeta = await getSector(c.env, businessType);
-  const credit = (account.store_credit_cents / 100).toFixed(2);
-  const bizName = sectorMeta?.name ?? businessType;
-
-  if (shouldEscalateUnclearService(rawHistory, utterance)) {
-    const spokenResponse = getUnclearServiceEscalationResponse(bizName);
-    const updatedHistory = [
-      ...rawHistory,
-      { role: 'user' as const, content: utterance },
-      { role: 'assistant' as const, content: spokenResponse },
-    ];
-    c.executionCtx.waitUntil(saveTranscript(c.env, { customerIdHashed: sub, businessType, turns: updatedHistory })
-      .catch(err => console.error('transcript save error', err.message)));
-    return c.json({ success: true, data: { spoken_response: spokenResponse, history: updatedHistory, tool_calls: [] } });
-  }
-
-  const systemPrompt = `You are Mogi, a warm and friendly scheduling assistant for ${bizName}, on a live call. You sound like a real, helpful person — not a robot.
-Customer: ${account.tier} tier | $${credit} store credit
-Previous bookings: ${recentOrders.length > 0 ? recentOrders.join(', ') : 'none'}
-
-TONE: Conversational and natural. Short, warm sentences. Never stiff or formal.
-PRICES: Always use $ (dollars), never ₹ or other symbols. Say prices naturally ("it's $175" not "மதிப்பு $175").
-
-RULES — follow exactly every single turn:
-1. VOICE ONLY: max 2 sentences, no lists, no markdown.
-2. NEVER guess prices, service names, or times — always call a tool first.
-3. If the customer gives a specific service need, call search_services immediately.
-4. If the customer is vague or unsure, ask one short service-clarifying question once. If they stay vague after that, say: "I'm not sure which fits best — please call ${bizName} directly and we'll sort it out!"
-5. If search_services returns matchType=ambiguous_intent, ask one short clarification once. If it returns matchType=no_match after a clarification attempt, escalate warmly instead of repeating the same question.
-6. BOOKING FLOW (one step at a time, never skip):
-   Step A — customer mentions need → call search_services → share the top match name and price warmly ("Great news — we have X for $Y!").
-   Step B — customer says yes/interested → call check_availability(service_id=<id from search>) → offer 2–3 slots naturally ("I've got Tuesday at 10 or Wednesday at 2 — which works for you?").
-   Step C — customer picks a slot → call book_appointment(product_id, scheduled_at, payment_method=CREDIT_CARD) immediately. Do NOT ask "shall I book?" — just book it.
-7. AFTER BOOKING: call get_upsells once, offer it casually. Then wrap up warmly.
-8. NO LOOPS: Never repeat a question the customer already answered. Don't rephrase the same service question.
-9. Hours → get_business_hours. Past bookings → list_bookings.
-10. CANCEL: "cancel" → call cancel_booking(product_name=<what they mentioned>). COMPLETE status = confirmed appointment, not delivered — it IS cancellable. Never say it can't be cancelled without calling cancel_booking first.`;
-
-  const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta).map(t => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.parameters as Anthropic.Tool['input_schema'],
-  }));
+  // Same prompt and toolset as the phone agent, so the browser tester
+  // behaves like a real call.
+  const [orders, sectorMeta, products] = await Promise.all([
+    getOrders(c.env, sub, businessType).catch(() => []),
+    getSector(c.env, businessType),
+    getProducts(c.env, businessType).catch(() => []),
+  ]);
+  const systemPrompt = buildSystemPrompt({ businessType, sectorMeta, products, session, orders, channel: 'voice' });
+  const tools = agentTools(businessType, sectorMeta);
 
   const messages: Anthropic.MessageParam[] = [
     ...rawHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
@@ -193,7 +153,7 @@ RULES — follow exactly every single turn:
   try {
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
       const response = await anthropic.messages.create({
-        model: agentModel(c.env),
+        model: voiceModel(c.env),
         max_tokens: 400,
         thinking: { type: 'disabled' },
         output_config: { effort: 'low' },
@@ -209,7 +169,13 @@ RULES — follow exactly every single turn:
           const result = await executeTool(tb.name, tb.input as Record<string, unknown>, session, c.env, sectorMeta, undefined, undefined,
             (p) => c.executionCtx.waitUntil(p));
           toolCallLog.push({ name: tb.name, input: tb.input, result: result.data ?? { message: result.spoken_response } });
-          return { type: 'tool_result' as const, tool_use_id: tb.id, content: JSON.stringify(result.data ?? { message: result.spoken_response }) };
+          const payload = (result.data ?? { message: result.spoken_response }) as Record<string, unknown>;
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: tb.id,
+            content: JSON.stringify({ ...payload, ok: result.success, _spoken_hint: result.spoken_response }),
+            ...(result.success ? {} : { is_error: true }),
+          };
         }));
 
         messages.push({ role: 'assistant', content: response.content });
@@ -217,8 +183,9 @@ RULES — follow exactly every single turn:
         continue;
       }
 
-      const textBlock = response.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
-      spokenResponse = textBlock?.text?.trim() ?? "Sorry, I had trouble with that.";
+      spokenResponse = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map(b => b.text.trim()).filter(Boolean).join(' ') || "Sorry, I had trouble with that.";
       break;
     }
 

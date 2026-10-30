@@ -80,7 +80,9 @@ describe('isOptOut', () => {
 describe('stream token', () => {
   it('round-trips and binds businessType', async () => {
     const tok = await signStreamToken(env(), 'dental');
-    expect(await verifyStreamToken(env(), tok)).toBe('dental');
+    expect(await verifyStreamToken(env(), tok)).toEqual({ businessType: 'dental', callerHash: undefined });
+    const withCaller = await signStreamToken(env(), 'dental', 'abc123');
+    expect(await verifyStreamToken(env(), withCaller)).toEqual({ businessType: 'dental', callerHash: 'abc123' });
   });
   it('rejects a token signed with another secret or a forged string', async () => {
     const tok = await signStreamToken(env({ TOKEN_SECRET: 'y'.repeat(32) }), 'dental');
