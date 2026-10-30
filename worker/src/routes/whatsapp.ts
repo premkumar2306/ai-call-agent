@@ -344,7 +344,7 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
 
     // 18. Agentic loop
     const anthropic = createAnthropic(env);
-    const tools = agentTools(businessType, sectorMeta);
+    const tools = agentTools(businessType, sectorMeta, products.length);
 
     const messages: Anthropic.MessageParam[] = [
       ...history.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),

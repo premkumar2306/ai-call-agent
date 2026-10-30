@@ -104,6 +104,7 @@ export interface Env {
   DG_ENDPOINTING_MS?: string;
   DG_MIN_CONFIDENCE?: string;
   DG_BARGE_IN_MIN_WORDS?: string;
+  DG_INCOMPLETE_HOLD_MS?: string;
   // Deepgram model / language. Defaults 'nova-3' and 'en' (stt-deepgram.ts);
   // exposed as env so they can be A/B'd against live calls without a code change.
   DG_MODEL?: string;

@@ -48,7 +48,8 @@ const { createCallCache } = await import('../src/services/call-context');
 const { buildBusinessProfile, describeLocalNow, formatPrice } = await import('../src/services/business-profile');
 const { searchProducts } = await import('../src/services/catalog.service');
 const { getAvailableSlots, pickSlots, checkWithinHours, formatSlotLabel } = await import('../src/services/tool-router.service');
-const { isBackchannel } = await import('../src/durable-objects/stt-deepgram');
+const { isBackchannel, looksIncomplete } = await import('../src/durable-objects/stt-deepgram');
+const { agentTools } = await import('../src/services/turn.service');
 const { joinUtterances } = await import('../src/durable-objects/call-relay');
 
 // ── Fixtures (mirrors the advanced_vtech seed) ──────────────────────────────
@@ -289,6 +290,21 @@ describe('turn-taking helpers', () => {
   it('treats listener feedback as backchannel, real answers as speech', () => {
     for (const t of ['uh huh', 'Mm-hmm.', 'okay', 'yeah got it', 'Right.']) expect(isBackchannel(t)).toBe(true);
     for (const t of ['okay book it', 'no', 'yeah tuesday works', 'what about Saturday', '']) expect(isBackchannel(t)).toBe(false);
+  });
+
+  it('holds fragments from the 2026-10-30 call, answers finished sentences', () => {
+    for (const t of ['Oh, I forgot. I also wanna change my', 'Okay. I wanna I wanna change', 'just', 'just...', 'I need an oil change and'])
+      expect(looksIncomplete(t)).toBe(true);
+    for (const t of ['I wanna book an appointment for break change.', 'Full break on all four.', '09:30.', 'Yeah.', 'What time do you close?', 'the cooling and oil.'])
+      expect(looksIncomplete(t)).toBe(false);
+  });
+
+  it('drops catalog search tools when the whole catalog is in the prompt', () => {
+    const names = (n: number) => agentTools('advanced_vtech', META, n).map(t => t.name);
+    expect(names(16)).not.toContain('search_services');
+    expect(names(16)).toContain('check_availability');
+    expect(names(0)).toContain('search_services');
+    expect(names(500)).toContain('search_services');
   });
 
   it('joins a split utterance', () => {

@@ -132,6 +132,7 @@ export class CallRelay extends DurableObject<Env> {
         endpointingMs: numEnv(this.env.DG_ENDPOINTING_MS),
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
+        incompleteHoldMs: numEnv(this.env.DG_INCOMPLETE_HOLD_MS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
       (text) => { this.handleTranscript(text); },
@@ -187,11 +188,14 @@ export class CallRelay extends DurableObject<Env> {
     if (!this.session || !this.twWs) return;
 
     // "Uh huh" / "okay" while the assistant is mid-reply is the caller
-    // listening, not taking the turn — unless what they're hearing asked
-    // them something, in which case "yeah" is the answer.
+    // listening, not taking the turn — unless what they've heard so far
+    // asked them something, in which case "yeah" is the answer. Only played
+    // audio and the chunk playing now count: a question still queued behind
+    // it hasn't been asked yet.
     if (this.agentActive && isBackchannel(text)) {
-      const asked = this.active?.chunks.some(c => !c.filler && c.text.includes('?'));
-      if (!asked || this.pendingMarks.size === 0) {
+      const playing = this.pendingMarks.values().next().value as SpokenChunk | undefined;
+      const asked = this.active?.chunks.some(c => !c.filler && (c.played || c === playing) && c.text.includes('?'));
+      if (!asked) {
         console.log(`[turn] ignoring backchannel while agent active: "${text}"`);
         return;
       }
