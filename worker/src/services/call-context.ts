@@ -20,7 +20,13 @@ export interface CallCache {
   // search_services / get_recommendations.
   productsAll: Product[] | null;
   toolDefs: Anthropic.Tool[] | null;
+  // Rules + business profile, built on the first turn (see runTurn).
+  systemStable: string | null;
+  // Plain-text transcript of the call.
   history: Turn[];
+  // The model-side conversation, tool_use/tool_result blocks included —
+  // what each turn actually sends. See turn.service.ts.
+  messages: Anthropic.MessageParam[];
   orders: Order[] | null;
   ordersLoaded: boolean;
   // "YYYY-MM-DDTHH:MM" keys of confirmed (non-cancelled) bookings within the
@@ -37,7 +43,9 @@ export function createCallCache(): CallCache {
     sectorMeta: null,
     productsAll: null,
     toolDefs: null,
+    systemStable: null,
     history: [],
+    messages: [],
     orders: null,
     ordersLoaded: false,
     bookedDatetimes: null,

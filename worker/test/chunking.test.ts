@@ -120,8 +120,8 @@ describe('canSpeakToolResultDirectly', () => {
   });
 
   it('speaks availability directly only when there are slots', () => {
-    expect(canSpeakToolResultDirectly('check_availability', ok({ slots: [{}] }))).toBe(true);
-    expect(canSpeakToolResultDirectly('check_availability', ok({ slots: [] }))).toBe(false);
+    expect(canSpeakToolResultDirectly('check_availability', ok({ offered: [{}] }))).toBe(true);
+    expect(canSpeakToolResultDirectly('check_availability', ok({ offered: [] }))).toBe(false);
   });
 
   it('speaks search directly only on a clean match', () => {

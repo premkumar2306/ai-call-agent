@@ -15,6 +15,9 @@ export interface SectorMeta {
   address?: string;
   phone?: string;
   website?: string;
+  // Free-text facts the agent may quote (warranty, certifications, payment
+  // options, parking, languages spoken…). Shown verbatim in the prompt.
+  about?: string;
 }
 
 export interface WeeklyHours {
@@ -101,15 +104,13 @@ export interface Env {
   DG_ENDPOINTING_MS?: string;
   DG_MIN_CONFIDENCE?: string;
   DG_BARGE_IN_MIN_WORDS?: string;
-  // Deepgram model / language. Defaults 'nova-2' and 'multi'. Exposed as env
-  // so 'nova-3' (lower finalization latency) and 'en' (faster than the
-  // multilingual model on an English-only deployment) can be A/B'd against
-  // live calls without a code change.
+  // Deepgram model / language. Defaults 'nova-3' and 'en' (stt-deepgram.ts);
+  // exposed as env so they can be A/B'd against live calls without a code change.
   DG_MODEL?: string;
   DG_LANGUAGE?: string;
-  // Set to '0'/'false' to make barge-in wait for the first interim transcript
-  // instead of Deepgram's VAD SpeechStarted event. Slower to react, but takes
-  // recognised words rather than any voice activity.
+  // Set to '1'/'true' to barge in on Deepgram's VAD SpeechStarted event
+  // instead of waiting for recognised words. Off by default: line noise and
+  // echo cut replies off.
   VOICE_BARGE_IN_ON_VAD?: string;
   // Set to '0'/'false' to disable speaking a self-sufficient tool result
   // directly and always round-trip it through Claude for paraphrasing.

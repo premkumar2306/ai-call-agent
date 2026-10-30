@@ -17,6 +17,7 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     address:    row.address ?? undefined,
     phone:      row.phone ?? undefined,
     website:    row.website ?? undefined,
+    about:      row.about ?? undefined,
   };
 }
 
@@ -48,6 +49,7 @@ export async function upsertSector(env: Env, key: string, data: {
   address?: string;
   phone?: string;
   website?: string;
+  about?: string;
 }): Promise<void> {
   const db = getDb(env.DB);
   const now = new Date();
@@ -62,6 +64,7 @@ export async function upsertSector(env: Env, key: string, data: {
     address:    data.address,
     phone:      data.phone,
     website:    data.website,
+    about:      data.about,
     isActive:   true,
     createdAt:  now,
     updatedAt:  now,
@@ -77,6 +80,7 @@ export async function upsertSector(env: Env, key: string, data: {
       address:    data.address,
       phone:      data.phone,
       website:    data.website,
+      about:      data.about,
       isActive:   true,
       updatedAt:  now,
     },

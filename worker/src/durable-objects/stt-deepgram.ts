@@ -44,8 +44,8 @@ export interface SttOptions {
   /**
    * An interim transcript only counts as the caller interrupting once it has
    * this many words, so a cough or a stray word from the background doesn't
-   * cut the assistant off. The finalized transcript is still a barge-in
-   * backstop. Default 3.
+   * cut the assistant off. Pure acknowledgements ("uh huh", "okay") never
+   * count. The finalized transcript is still a barge-in backstop. Default 2.
    */
   bargeInMinWords?: number;
   debug?: boolean;
@@ -65,6 +65,17 @@ function dgUrl(model: string, language: string, endpointingMs: number): string {
 
 export type SpeechStartReason = 'vad' | 'interim';
 
+// Listener feedback that shouldn't stop the assistant mid-sentence.
+const BACKCHANNEL_WORDS = new Set([
+  'uh', 'huh', 'uhhuh', 'um', 'mm', 'mhm', 'mmhmm', 'hmm', 'ok', 'okay', 'right', 'yeah', 'yep', 'yup',
+  'sure', 'alright', 'got', 'it', 'i', 'see', 'cool', 'great', 'nice', 'oh',
+]);
+
+export function isBackchannel(text: string): boolean {
+  const words = text.toLowerCase().replace(/[^a-z\s-]/g, '').replace(/-/g, '').split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 3 && words.every(w => BACKCHANNEL_WORDS.has(w));
+}
+
 export interface Stt {
   sendAudio(buf: ArrayBuffer): void;
   close(): void;
@@ -77,7 +88,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 3,
+    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 2,
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -166,8 +177,9 @@ export async function createDeepgramSTT(
             lastText = text;
             lastConfidence = confidence;
             finalized = false;
-            // Barge-in once there are enough words to be a real interruption.
-            if (text.split(/\s+/).length >= bargeInMinWords) announceSpeech('interim');
+            // Barge-in once there are enough words to be a real interruption
+            // — and not just the caller saying "mm-hmm" while listening.
+            if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text)) announceSpeech('interim');
           } else if (!finalized) {
             // is_final but not (yet) speech_final, and we haven't already
             // finalized this utterance — keep lastText fresh as a fallback

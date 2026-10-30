@@ -54,7 +54,7 @@ agent loop (`runTurn()`) → Cartesia TTS streamed back to the caller, with barg
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (see `.nvmrc`; vitest fails to start on Node 21)
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/): `npm install -g wrangler`
 - Cloudflare account (free tier works)
 - Anthropic API key
@@ -276,11 +276,30 @@ what ships.
 | Var | Default | Effect |
 |-----|---------|--------|
 | `VOICE_MODEL` | `claude-haiku-5-5` | Overrides the model used on live calls only (`DEFAULT_VOICE_MODEL` in `src/config.ts`). `ANTHROPIC_MODEL` covers the other agent surfaces. |
-| `DG_MODEL` | `nova-2` | Deepgram model. Try `nova-3` for lower finalization latency. |
-| `DG_LANGUAGE` | `multi` | Set to `en` on an English-only deployment — faster than the multilingual model. |
-| `VOICE_BARGE_IN_ON_VAD` | on | Set `0` to make barge-in wait for the first interim transcript instead of Deepgram's VAD event. Slower to react, but needs recognised words rather than any voice activity. |
+| `DG_MODEL` | `nova-3` | Deepgram model. |
+| `DG_LANGUAGE` | `en` | Set to `multi` for multilingual callers (slower). |
+| `DG_ENDPOINTING_MS` | `400` | Silence before an utterance is considered finished. A pause mid-sentence that ends an utterance early is safe: the next fragment is merged into it (see below). |
+| `DG_BARGE_IN_MIN_WORDS` | `2` | Recognised words (excluding "uh huh"/"okay"-style backchannels) before the caller's speech cuts the assistant off. |
+| `VOICE_BARGE_IN_ON_VAD` | off | Set `1` to barge in on Deepgram's raw voice-activity event instead of recognised words. Faster, but line noise and echo cut replies off. |
 | `VOICE_DIRECT_TOOL_REPLY` | on | Set `0` to always round-trip a tool result through Claude for paraphrasing instead of speaking the tool's own response. Costs one extra model call per tool turn. |
 | `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
+
+### How a call turn works
+
+- **Grounding.** The system prompt carries a business profile built from D1 — address, phone, website,
+  weekly hours, the optional `sectors.about` free text, and every active product with its id, price and
+  duration — plus the business-local date and a weekday → date map. Information questions are answered
+  with no tool call; tools are only for live data (availability, booking, the caller's bookings).
+  Fill in `about` via `POST /admin/sectors` for anything else callers ask (warranty, payment, parking…).
+- **Memory.** Each turn sends the model's full message history, including tool calls and results, so it
+  keeps the service ids and exact slot datetimes it found. (`call:{sid}` in KV keeps the plain transcript.)
+- **Barge-in.** Every audio chunk is followed by a Twilio `mark`; the assistant counts as speaking until
+  Twilio reports playback reached the last mark, not merely until audio was sent. When the caller cuts in,
+  history records only what they actually heard, ending in `[caller interrupted]`.
+- **Split utterances.** Turns run one at a time. If the caller keeps talking before hearing any reply, the
+  running turn is abandoned and their words are merged into the next utterance.
+- **Caller identity.** `/twilio/inbound` hashes the caller's number (same key as WhatsApp) into the stream
+  token; callers no longer share `TWILIO_DEFAULT_CUSTOMER_HASH`. Withheld numbers get a per-call identity.
 
 Watch the `⏱` lines in `npx wrangler tail`: `transcript-finalized` (STT),
 `anthropic#N first-token`, `direct-tool-reply` (when the second model call is

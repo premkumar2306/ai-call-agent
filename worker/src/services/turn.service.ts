@@ -4,16 +4,22 @@ import { createAnthropic, MAX_TOOL_ROUNDS, voiceModel } from '../config';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
-import { executeTool, getToolDefinitions, type ToolResult } from './tool-router.service';
+import { executeTool, getToolDefinitions, formatSlotLabel, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
+import { buildBusinessProfile, describeLocalNow } from './business-profile';
 import type { CallCache } from './call-context';
-import {
-  getUnclearServiceEscalationResponse,
-  shouldEscalateUnclearService,
-} from './voice-guard.service';
+import type { Order, Product, SectorMeta } from '../types';
 
 // ── Call history stored in CART KV (1-hour TTL per call) ─────────────────────
-// Key: `call:{CallSid}`  Value: JSON array of { role, content }
+// Two views of the same conversation:
+//   `call:{CallSid}`     — Turn[]: plain user/assistant text. The transcript,
+//                          and what /twilio/status classifies at call end.
+//   `callmsgs:{CallSid}` — the model's own message list, tool_use and
+//                          tool_result blocks included. This is what the
+//                          next turn sends, so the model still knows the
+//                          service id it found and the exact slot datetimes
+//                          it offered. Keeping only the spoken text (as this
+//                          used to) made it re-search and re-ask every turn.
 
 export type Turn = { role: 'user' | 'assistant'; content: string };
 
@@ -26,6 +32,15 @@ export async function saveHistory(env: Env, callSid: string, history: Turn[]): P
   await env.CART.put(`call:${callSid}`, JSON.stringify(history), { expirationTtl: 3600 });
 }
 
+async function loadMessages(env: Env, callSid: string): Promise<Anthropic.MessageParam[]> {
+  const raw = await env.CART.get(`callmsgs:${callSid}`);
+  return raw ? JSON.parse(raw) : [];
+}
+
+async function saveMessages(env: Env, callSid: string, messages: Anthropic.MessageParam[]): Promise<void> {
+  await env.CART.put(`callmsgs:${callSid}`, JSON.stringify(messages), { expirationTtl: 3600 });
+}
+
 // Schedules durability-only work (history/transcript writes) that must not
 // block the spoken reply. HTTP routes pass ctx.waitUntil so the isolate isn't
 // torn down before the write lands; the CallRelay DO lives for the whole call
@@ -36,6 +51,14 @@ const floating: Background = (p) => { void p; };
 export interface TurnResult {
   spokenResponse: string;
   history: Turn[];
+  /** The turn was cut short by `signal` (caller barge-in). */
+  interrupted: boolean;
+  /**
+   * False only when an interrupted turn left nothing worth remembering — no
+   * audio heard, no tool run. The caller should then fold this utterance
+   * into the next one rather than drop it.
+   */
+  committed: boolean;
 }
 
 // Called with each chunk of the model's text as soon as it's ready (before
@@ -127,7 +150,7 @@ export function canSpeakToolResultDirectly(toolName: string, result: ToolResult)
     case 'get_business_hours':
       return true;
     case 'check_availability':
-      return Array.isArray(d?.slots) && d.slots.length > 0;
+      return Array.isArray(d?.offered) && d.offered.length > 0;
     case 'search_services':
     case 'search_products':
       return d?.matchType === 'match';
@@ -148,16 +171,174 @@ export function extractCompleteSentences(buffer: string): { chunks: string[]; re
   return { chunks, rest };
 }
 
+// What the phone agent may call. The profile in the system prompt answers
+// every "what / how much / where / when are you open" question, so the
+// voice toolset is only live data. Fewer tools also means fewer wrong picks
+// from a small fast model.
+const VOICE_TOOLS = new Set([
+  'search_services', 'get_service_detail', 'check_availability', 'book_appointment',
+  'list_bookings', 'get_booking_status', 'cancel_booking',
+]);
+
+/** Tool definitions for the agent surfaces, last one marked as a cache breakpoint. */
+export function agentTools(businessType: string, sectorMeta: SectorMeta | null): Anthropic.Tool[] {
+  const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta)
+    .filter(t => VOICE_TOOLS.has(t.name))
+    .map(t => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool['input_schema'],
+    }));
+  if (tools.length) tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: 'ephemeral' } };
+  return tools;
+}
+
+// Keeps the request bounded on very long calls. Trimmed only at a caller
+// utterance so a tool_use is never separated from its tool_result.
+const MAX_MESSAGES = 40;
+
+export function trimMessages(messages: Anthropic.MessageParam[], max = MAX_MESSAGES): Anthropic.MessageParam[] {
+  if (messages.length <= max) return messages;
+  const isUtterance = (m: Anthropic.MessageParam) =>
+    m.role === 'user' && (typeof m.content === 'string' || m.content.every(b => b.type === 'text'));
+  // Latest caller utterance that still leaves at most `max` messages; if the
+  // tail is one long tool chain, back up to the utterance that started it
+  // (slightly over budget beats an orphaned tool_result, which the API rejects).
+  for (let i = messages.length - max; i < messages.length; i++) {
+    if (isUtterance(messages[i])) return messages.slice(i);
+  }
+  for (let i = messages.length - max - 1; i > 0; i--) {
+    if (isUtterance(messages[i])) return messages.slice(i);
+  }
+  return messages;
+}
+
+// Marks the last block of the last message as a cache breakpoint on a copy,
+// so each request reuses everything the previous one already processed.
+// Stored history never carries the marker (breakpoints are capped at 4).
+function withCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  if (!messages.length) return messages;
+  const last = messages[messages.length - 1];
+  const blocks: any[] = typeof last.content === 'string'
+    ? [{ type: 'text', text: last.content }]
+    : last.content.map(b => ({ ...b }));
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
+  return [...messages.slice(0, -1), { role: last.role, content: blocks }];
+}
+
+export const INTERRUPTED_MARK = '[caller interrupted]';
+
+export type Channel = 'voice' | 'chat';
+
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice'): string {
+  const style = channel === 'voice'
+    ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
+- One or two short sentences (under 35 words), then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
+- Plain spoken English: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
+- At most one question per reply. Don't read out booking reference numbers unless asked.`
+    : `WRITING (WhatsApp / web chat):
+- Two to four short sentences. You may use *bold* for service names and prices. No headers or long bullet lists.
+- At most one question per reply.`;
+  const who = channel === 'voice' ? 'caller' : 'customer';
+
+  const shared = `${style}
+
+USING WHAT YOU KNOW:
+- The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
+- If the profile doesn't cover something, say you don't have that detail and offer the business phone number. Never invent facts, prices or policies.
+- Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
+- Tool results carry a "_spoken_hint": a ready-made sentence for that result. Lightly paraphrase it unless the conversation needs something different.
+
+CONVERSATION:
+- Use what the ${who} already told you. Never ask for something they already said, and never ask the same question twice in a row — if you didn't understand, say what you did catch and ask something narrower.
+- ${channel === 'voice' ? 'Speech recognition makes mistakes. If words look garbled, make your best guess from context and confirm it in a few words.' : 'Typos happen. Make your best guess from context and confirm it briefly.'}
+- A reply of yours ending in "${INTERRUPTED_MARK}" was cut off — the ${who} only heard the part before it. Respond to what they said; don't restart the whole reply.
+- If asked, you are an AI assistant — never claim to be human. If they want a person, give the business phone number.`;
+
+  if (businessType === 'health_nav') {
+    return `You are Mogi, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
+
+${shared}
+
+HEALTH:
+- Never guess coverage, claim outcomes or authorization decisions — use search_services.
+- Urgent clinical or emergency concerns: skip pleasantries and act immediately.
+- Confirm the member's date of birth or member ID before discussing specific coverage.`;
+  }
+
+  return `You are Mogi, the friendly ${channel === 'voice' ? 'receptionist' : 'assistant'} for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}.
+
+${shared}
+
+BOOKING (live data — always use the tools, one step at a time):
+1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brake pads, warning light → diagnostic). If it's genuinely unclear, suggest the free inspection or estimate when the profile has one.
+2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below) and time_of_day if they mentioned them. Offer the times it returns.
+3. When they pick a time, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Then confirm the service, day and time.
+4. Only book times check_availability returned. If they ask for another time, check availability for it.
+5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.
+- Existing appointments: list_bookings; to cancel, cancel_booking.`;
+}
+
+function describeCaller(session: SessionPayload, orders: Order[] | null | undefined, meta: SectorMeta | null): string {
+  const lines: string[] = [];
+  const { account } = session;
+  if (account.tier !== 'BASIC' || account.store_credit_cents > 0) {
+    lines.push(`Customer: ${account.tier} tier, $${(account.store_credit_cents / 100).toFixed(2)} store credit.`);
+  }
+  const active = (orders ?? []).filter(o => o.status !== 'CANCELLED').slice(0, 3);
+  lines.push(`Customer's bookings: ${active.length
+    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt)}` : ''} (${o.status.toLowerCase()})`).join('; ')
+    : 'none'}.`);
+  lines.push(describeLocalNow(new Date(), meta?.timezone));
+  return lines.join('\n');
+}
+
+/**
+ * The full system prompt for any agent surface: rules + business profile
+ * (stable — cache it) and the caller/date block (changes per call).
+ */
+export function buildSystemPrompt(opts: {
+  businessType: string;
+  sectorMeta: SectorMeta | null;
+  products: Product[];
+  session: SessionPayload;
+  orders: Order[] | null | undefined;
+  channel?: Channel;
+  stable?: string;
+}): Anthropic.TextBlockParam[] {
+  const bizName = opts.sectorMeta?.name ?? opts.businessType;
+  const stable = opts.stable
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel)}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+  return [
+    { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },
+  ];
+}
+
+export interface RunTurnOptions {
+  onChunk?: OnChunk;
+  /** Call-lifetime cache (CallRelay). Without one, history round-trips through KV. */
+  cache?: CallCache;
+  background?: Background;
+  /** Aborted when the caller barges in; stops the model stream and any further tool rounds. */
+  signal?: AbortSignal;
+  /**
+   * For an interrupted turn: the part of the reply the caller actually heard
+   * (CallRelay tracks this from Twilio playback marks). Defaults to
+   * everything emitted, which over-reports on a phone line.
+   */
+  heardText?: () => string;
+}
+
 export async function runTurn(
   env: Env,
   session: SessionPayload,
   callSid: string,
   utterance: string,
-  onChunk?: OnChunk,
-  cache?: CallCache,
-  background: Background = floating,
+  opts: RunTurnOptions = {},
 ): Promise<TurnResult> {
-  const { businessType, account, sub } = session;
+  const { onChunk, cache, background = floating, signal } = opts;
+  const { businessType, sub } = session;
   const tag = callSid.slice(-8);
   const t0 = Date.now();
   const lap = (label: string) => console.log(`[${tag}] ⏱ ${label}: ${Date.now() - t0}ms`);
@@ -165,12 +346,12 @@ export async function runTurn(
   console.log(`[${tag}] ${businessType}: "${utterance.slice(0, 80)}"`);
 
   // ── Load call history ───────────────────────────────────────────────────
-  // When a call-lifetime `cache` is supplied (the CallRelay Durable Object),
-  // history lives in memory for the whole call and this is a plain array
-  // read. Callers without one (e.g. the stateless /twilio/turn TwiML route,
-  // which gets one HTTP request per turn with no persistent memory) fall
-  // back to the KV-backed load, same as before.
-  const history = cache ? cache.history : await loadHistory(env, callSid);
+  // With a call-lifetime `cache` (the CallRelay Durable Object) history
+  // lives in memory for the whole call. Stateless callers (/twilio/turn)
+  // fall back to KV.
+  const [history, priorMessages] = cache
+    ? [cache.history, cache.messages]
+    : await Promise.all([loadHistory(env, callSid), loadMessages(env, callSid)]);
   lap('loadHistory');
 
   // ── Build context — orders, products, sector metadata ───────────────────
@@ -196,99 +377,37 @@ export async function runTurn(
     if (needSector && sectorResult.status === 'fulfilled') cache.sectorMeta = sectorResult.value as any;
   }
 
-  const recentOrders = ordersResult.status === 'fulfilled'
-    ? (ordersResult.value as any[]).slice(0, 3).map((o: any) => `${o.productName} (${o.status})`) : [];
-
+  const orders = ordersResult.status === 'fulfilled' ? ordersResult.value as Order[] : [];
+  const products = productsResult.status === 'fulfilled' ? productsResult.value as Product[] : [];
   const sectorMeta = sectorResult.status === 'fulfilled' && sectorResult.value
-    ? (sectorResult.value as any)
+    ? (sectorResult.value as SectorMeta)
     : (cache?.sectorMeta ?? null);
-  const bizName = sectorMeta?.name ?? businessType;
-
-  if (shouldEscalateUnclearService(history, utterance)) {
-    const spokenResponse = getUnclearServiceEscalationResponse(bizName);
-    onChunk?.(spokenResponse);
-    const updatedHistory: Turn[] = [
-      ...history,
-      { role: 'user', content: utterance },
-      { role: 'assistant', content: spokenResponse },
-    ];
-    if (cache) cache.history = updatedHistory;
-    persistTurn(env, callSid, sub, businessType, updatedHistory, background, !cache);
-    return { spokenResponse, history: updatedHistory };
+  // System prompt: rules + business profile are identical for every turn of
+  // every call to this business, so they sit behind a cache breakpoint. The
+  // caller/date block after it changes per call. Built once per call.
+  const systemPrompt = buildSystemPrompt({
+    businessType, sectorMeta, products, session, orders, stable: cache?.systemStable ?? undefined,
+  });
+  // Don't pin a profile built from a failed lookup for the whole call.
+  if (cache && !cache.systemStable && sectorMeta && productsResult.status === 'fulfilled') {
+    cache.systemStable = systemPrompt[0].text;
   }
 
-  // System prompt is split so the prompt-cacheable, per-turn-invariant rules
-  // (which also don't change across calls to the same business) sit in a
-  // separate block from the volatile per-customer facts (tier, store
-  // credit, recent bookings) that do change turn to turn. A cache_control
-  // breakpoint on the stable block lets Anthropic reuse it turn-to-turn
-  // (and call-to-call) instead of reprocessing it every time. Check
-  // `usage.cache_read_input_tokens` in the logs below to confirm this is
-  // actually landing. This prompt is ~1.8K tokens, which cleared nothing on
-  // Haiku 4.5 (4096-token minimum cacheable prefix — the breakpoints were
-  // silently inert) but is comfortably over Haiku 5.5's 512-token minimum.
-  const stableRules = businessType === 'health_nav'
-    ? `You are Mogi, a health plan member services specialist for ${bizName}, on a live phone call. You are empathetic, knowledgeable about insurance, and speak like a real person — warm and clear, never robotic.
-
-VOICE RULES:
-1. Max 2 sentences per turn. Natural speech, no lists, no markdown.
-2. Never guess coverage, claim outcomes, or auth decisions — call search_services first.
-3. For urgent clinical or emergency concerns: skip pleasantries, act immediately.
-4. To discuss specific coverage details, first confirm the member's date of birth or member ID.`
-    : `You are Mogi, a warm and friendly scheduling assistant for ${bizName}, on a live phone call. You sound like a real, helpful person — not a robot.
-
-TONE: Conversational and natural. Short, warm sentences. Never stiff or formal.
-PRICES: Always use $ (dollars), never ₹ or other symbols. Say prices naturally ("it's $175").
-
-RULES — follow exactly every single turn:
-1. VOICE ONLY: max 2 sentences, no lists, no markdown.
-2. NEVER guess prices, service names, or times — always call a tool first.
-3. If the customer gives a specific service need, call search_services immediately.
-4. If the customer is vague or unsure, ask one short service-clarifying question once. If they stay vague after that, say: "I'm not sure which fits best — please call ${bizName} directly and we'll sort it out!"
-5. If search_services returns matchType=ambiguous_intent, ask one short clarification once. If it returns matchType=no_match after a clarification attempt, escalate warmly instead of repeating.
-6. BOOKING FLOW (one step at a time, never skip):
-   Step A — customer mentions need → call search_services → share the top match name and price warmly ("Great news — we have X for $Y!").
-   Step B — customer says yes/interested → call check_availability(service_id=<id from search>) → offer 2–3 slots naturally ("I've got Tuesday at 10 or Wednesday at 2 — which works for you?").
-   Step C — customer picks a slot → call book_appointment(product_id, scheduled_at, payment_method=CREDIT_CARD) immediately. Do NOT ask "shall I book?" — just book it.
-7. AFTER BOOKING: call get_upsells once, offer it casually. Then wrap up warmly.
-8. NO LOOPS: Never repeat a question the customer already answered.
-9. Hours → get_business_hours. Past bookings → list_bookings.
-10. CANCEL: "cancel" → call cancel_booking(product_name=<what they mentioned>). COMPLETE = confirmed appointment, not delivered — it IS cancellable. Never say it can't be cancelled without calling cancel_booking first.
-11. A tool result's JSON may include a "_spoken_hint" field — a ready-made sentence for that result. Prefer lightly paraphrasing it over composing from scratch, unless the conversation needs something different.`;
-
-  const volatileFacts = businessType === 'health_nav'
-    ? ''
-    : `Customer: ${account.tier} tier | $${(account.store_credit_cents / 100).toFixed(2)} store credit
-Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
-
-  const systemPrompt: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: stableRules, cache_control: { type: 'ephemeral' } },
-    ...(volatileFacts ? [{ type: 'text' as const, text: volatileFacts }] : []),
-  ];
-
-  // ── Assemble messages: full history + new utterance ─────────────────────
-  const messages: Anthropic.MessageParam[] = [
-    ...history.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
-    { role: 'user', content: utterance },
-  ];
-
-  // Tool defs are byte-identical for every turn of a call (same business,
-  // same sectorMeta) — cache them on the call instead of rebuilding ~11
-  // template-literal objects every turn, and mark the last one as a cache
-  // breakpoint so Anthropic can reuse the `tools` prefix across turns too.
+  // Tool defs are byte-identical for every turn of a call — cache them.
   let tools = cache?.toolDefs;
   if (!tools) {
-    tools = getToolDefinitions(businessType, sectorMeta).map(t => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.parameters as Anthropic.Tool['input_schema'],
-    }));
-    if (tools.length) tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: 'ephemeral' } };
+    tools = agentTools(businessType, sectorMeta);
     if (cache) cache.toolDefs = tools;
   }
 
   // ── Agentic loop ─────────────────────────────────────────────────────────
+  // `turnMessages` is this turn's slice of the conversation: the utterance,
+  // then each completed tool_use/tool_result pair. It's committed to
+  // history at the end — whole, or as far as it got before a barge-in.
+  const turnMessages: Anthropic.MessageParam[] = [{ role: 'user', content: utterance }];
   let spokenResponse = '';
+  let finalText = '';
+  let interrupted = false;
   const anthropic = createAnthropic(env);
   const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '');
 
@@ -298,6 +417,7 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
   let emittedAny = false;
 
   const emit = (chunk: string) => {
+    if (signal?.aborted) return;
     spokenResponse = spokenResponse ? `${spokenResponse} ${chunk}` : chunk;
     emittedAny = true;
     // Deliberately not awaited — see the OnChunk doc comment.
@@ -318,42 +438,52 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
     return remainder;
   };
 
-  for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
-    const stream = anthropic.messages.stream({
-      model: voiceModel(env),
-      max_tokens: 400,
-      thinking: { type: 'disabled' },
-      output_config: { effort: 'low' },
-      system: systemPrompt,
-      tools,
-      messages,
-    });
+  try {
+    for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
+      if (signal?.aborted) { interrupted = true; break; }
+      const stream = anthropic.messages.stream({
+        model: voiceModel(env),
+        max_tokens: 400,
+        thinking: { type: 'disabled' },
+        output_config: { effort: 'low' },
+        system: systemPrompt,
+        tools,
+        messages: withCacheBreakpoint(trimMessages([...priorMessages, ...turnMessages])),
+      }, { signal });
 
-    let buffer = '';
-    let firstTokenLapped = false;
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
-        buffer = drain(buffer + event.delta.text);
+      let buffer = '';
+      let roundText = '';
+      let firstTokenLapped = false;
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
+          roundText += event.delta.text;
+          buffer = drain(buffer + event.delta.text);
+        }
       }
-    }
 
-    const response = await stream.finalMessage();
-    lap(`anthropic#${i} (${response.stop_reason})`);
-    const usage = response.usage as any;
-    if (usage) {
-      lap(`anthropic#${i} usage (in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0})`);
-    }
+      const response = await stream.finalMessage();
+      lap(`anthropic#${i} (${response.stop_reason})`);
+      const usage = response.usage as any;
+      if (usage) {
+        lap(`anthropic#${i} usage (in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0})`);
+      }
 
-    // Flush any trailing text that didn't end on sentence punctuation
-    // (e.g. the model's chatter right before a tool_use block).
-    const trailing = buffer.trim();
-    if (trailing) emit(trailing);
+      // Flush any trailing text that didn't end on sentence punctuation
+      // (e.g. the model's chatter right before a tool_use block).
+      const trailing = buffer.trim();
+      if (trailing) emit(trailing);
 
-    if (response.stop_reason === 'tool_use') {
+      if (response.stop_reason !== 'tool_use') {
+        finalText = roundText.trim();
+        break;
+      }
+
       const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
+      // Tools are never aborted midway: a booking that reached D1 must be
+      // recorded in history even if the caller talked over the reply.
       const executed = await Promise.all(toolBlocks.map(async (tb) => {
-        console.log(`[${tag}] tool: ${tb.name}`);
+        console.log(`[${tag}] tool: ${tb.name} ${JSON.stringify(tb.input).slice(0, 200)}`);
         const toolT0 = Date.now();
         const result = await executeTool(
           tb.name,
@@ -370,83 +500,111 @@ Previous bookings: ${recentOrders.length ? recentOrders.join(', ') : 'none'}`;
       }));
       lap(`tools#${i} (${toolBlocks.map(t => t.name).join(',')})`);
 
+      const toolResults = executed.map(({ tb, result }): Anthropic.ToolResultBlockParam => {
+        // The tool's hand-written voice-shaped response rides along as a
+        // phrasing hint (rule: prefer paraphrasing _spoken_hint).
+        const payload = (result.data ?? { message: result.spoken_response }) as Record<string, unknown>;
+        return {
+          type: 'tool_result',
+          tool_use_id: tb.id,
+          content: JSON.stringify({ ...payload, ok: result.success, _spoken_hint: result.spoken_response }),
+          ...(result.success ? {} : { is_error: true }),
+        };
+      });
+      turnMessages.push({ role: 'assistant', content: response.content });
+      turnMessages.push({ role: 'user', content: toolResults });
+
+      if (signal?.aborted) { interrupted = true; break; }
+
       // Shortcut: a single tool whose own spoken_response already answers the
       // caller. Speak it and end the turn rather than spending a second
-      // Claude call to restate it. The model never sees this tool result —
-      // the spoken text lands in history below, so the next turn reads it as
-      // something the assistant simply said.
+      // model call to restate it. The tool_use/tool_result pair is still
+      // committed to history, so the next turn sees the ids and slot
+      // datetimes behind what was said.
       if (directToolReply && executed.length === 1
           && canSpeakToolResultDirectly(executed[0].tb.name, executed[0].result)) {
         emit(executed[0].result.spoken_response);
+        finalText = executed[0].result.spoken_response;
         lap(`direct-tool-reply:${executed[0].tb.name} (skipped anthropic#${i + 1})`);
         break;
       }
-
-      const toolResults = executed.map(({ tb, result }) => {
-        // §3a — feed the tool's own hand-written voice-shaped response back
-        // to the model as a phrasing hint (see stableRules rule 11) instead
-        // of discarding it. Doesn't save a round trip, but gives call #2 a
-        // ready-made sentence to paraphrase rather than compose from
-        // scratch, which should make it shorter and faster.
-        const payload = (result.data ?? { message: result.spoken_response }) as Record<string, unknown>;
-        const toolResult: Anthropic.ToolResultBlockParam = {
-          type: 'tool_result',
-          tool_use_id: tb.id,
-          content: JSON.stringify({ ...payload, _spoken_hint: result.spoken_response }),
-        };
-        return toolResult;
-      });
-      messages.push({ role: 'assistant', content: response.content });
-      // Cache breakpoint after the tool results: this turn's messages array
-      // (history + utterance + assistant tool_use + tool_result) is the
-      // exact prefix call #2 sees, so marking it lets call #2 reuse
-      // everything call #1 already processed instead of reprocessing it.
-      if (toolResults.length) toolResults[toolResults.length - 1] = {
-        ...toolResults[toolResults.length - 1],
-        cache_control: { type: 'ephemeral' },
-      };
-      messages.push({ role: 'user', content: toolResults });
-      continue;
     }
-
-    break;
+  } catch (err: any) {
+    if (signal?.aborted || err?.name === 'AbortError' || err?.constructor?.name === 'APIUserAbortError') {
+      interrupted = true;
+    } else {
+      // An LLM outage mid-call must still leave a consistent history and a
+      // spoken reply, not dead air.
+      console.error(`[${tag}] turn error`, err?.message || err);
+      if (!emittedAny) emit("Sorry, I'm having trouble on my end. Could you say that again?");
+      finalText = finalText || spokenResponse;
+    }
   }
   lap('runTurn total');
 
-  if (!spokenResponse) {
-    spokenResponse = "I'm having trouble right now. Please try again.";
-    onChunk?.(spokenResponse);
+  // ── Commit to history ─────────────────────────────────────────────────────
+  let assistantText: string;
+  if (interrupted) {
+    const heard = (opts.heardText ? opts.heardText() : spokenResponse).trim();
+    const ranTools = turnMessages.length > 1;
+    if (!heard && !ranTools) {
+      console.log(`[${tag}] interrupted before anything was heard — not committed`);
+      return { spokenResponse: '', history, interrupted: true, committed: false };
+    }
+    assistantText = heard ? `${heard} ${INTERRUPTED_MARK}` : INTERRUPTED_MARK;
+  } else {
+    if (!spokenResponse) emit("Sorry, I'm having trouble right now. Could you say that again?");
+    assistantText = finalText || spokenResponse;
   }
 
-  // ── Persist updated history ───────────────────────────────────────────────
+  const updatedMessages = trimMessages([...priorMessages, ...turnMessages, { role: 'assistant', content: assistantText }]);
   const updatedHistory: Turn[] = [
     ...history,
     { role: 'user', content: utterance },
-    { role: 'assistant', content: spokenResponse },
+    { role: 'assistant', content: interrupted ? assistantText : spokenResponse },
   ];
-  if (cache) cache.history = updatedHistory;
-  persistTurn(env, callSid, sub, businessType, updatedHistory, background, !cache);
+  if (cache) {
+    cache.history = updatedHistory;
+    cache.messages = updatedMessages;
+  }
+  persistTurn(env, callSid, sub, businessType, updatedHistory, updatedMessages, background, !cache);
 
-  return { spokenResponse, history: updatedHistory };
+  return { spokenResponse, history: updatedHistory, interrupted, committed: true };
 }
 
 // The answer is already spoken by the time this runs (onChunk delivery
 // happens first), so awaiting it would only delay the caller. KV write-behind
-// is durability-only — the in-memory `cache.history` is what subsequent turns
-// of a live call actually read.
+// is durability-only — the in-memory cache is what subsequent turns of a
+// live call actually read.
 function persistTurn(
   env: Env, callSid: string, customerIdHashed: string, businessType: string,
-  turns: Turn[], background: Background, writeTranscript: boolean,
+  turns: Turn[], messages: Anthropic.MessageParam[], background: Background, stateless: boolean,
 ) {
   background(saveHistory(env, callSid, turns).catch(err => console.error('saveHistory error', err.message)));
   // saveTranscript is a SELECT-then-UPDATE against D1 that rewrites the whole
-  // (growing) turns array. On a live call that is per-turn work on the Durable
-  // Object's single thread, running alongside the next turn, for no benefit:
-  // CallRelay flushes the transcript once when the call ends, and the KV
-  // saveHistory above is the durability backstop in between (it's also what
-  // /twilio/status reads for end-of-call classification). Stateless callers
-  // have no end-of-call hook, so they keep the per-turn write.
-  if (!writeTranscript) return;
+  // (growing) turns array. CallRelay flushes the transcript once when the
+  // call ends, so only stateless callers (no end-of-call hook) write it, and
+  // only they need the model-side message list back from KV next turn.
+  if (!stateless) return;
+  background(saveMessages(env, callSid, messages).catch(err => console.error('saveMessages error', err.message)));
   background(saveTranscript(env, { callSid, customerIdHashed, businessType, turns })
     .catch(err => console.error('transcript error', err.message)));
+}
+
+/**
+ * The caller barged in on a reply that had already been committed in full
+ * (the model was done; the audio was still playing). Rewrite that reply in
+ * history to what they actually heard, so the next turn doesn't assume they
+ * got information they never did.
+ */
+export function amendInterruptedReply(cache: CallCache, heard: string): void {
+  const text = heard.trim() ? `${heard.trim()} ${INTERRUPTED_MARK}` : INTERRUPTED_MARK;
+  const lastMsg = cache.messages[cache.messages.length - 1];
+  if (lastMsg?.role === 'assistant' && typeof lastMsg.content === 'string' && !lastMsg.content.endsWith(INTERRUPTED_MARK)) {
+    cache.messages = [...cache.messages.slice(0, -1), { role: 'assistant', content: text }];
+  }
+  const lastTurn = cache.history[cache.history.length - 1];
+  if (lastTurn?.role === 'assistant' && !lastTurn.content.endsWith(INTERRUPTED_MARK)) {
+    cache.history = [...cache.history.slice(0, -1), { role: 'assistant', content: text }];
+  }
 }

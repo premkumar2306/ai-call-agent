@@ -67,11 +67,74 @@ export async function getProductById(env: Env, id: string): Promise<Product | nu
   return product;
 }
 
+// Words that carry no signal about *which* service a caller wants.
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'my', 'me', 'i', 'im', 'is', 'are', 'was', 'be', 'to', 'for', 'of', 'on', 'in', 'at', 'it',
+  'and', 'or', 'do', 'does', 'you', 'your', 'have', 'has', 'need', 'needs', 'want', 'get', 'got', 'can',
+  'could', 'would', 'like', 'some', 'any', 'how', 'much', 'what', 'whats', 'with', 'this', 'that', 'there',
+  'please', 'about', 'service', 'services', 'car', 'vehicle', 'just', 'its', 'cost', 'price',
+]);
+
+// Caller phrasing → catalog vocabulary. Callers describe symptoms ("squeaky
+// brakes", "AC blowing warm"); catalogs list services ("Brake Pad
+// Replacement", "A/C Inspection & Recharge").
+const SYNONYMS: Record<string, string[]> = {
+  squeak: ['brake'], squeal: ['brake'], grind: ['brake'], pad: ['brake'], rotor: ['brake'],
+  ac: ['a/c', 'air', 'recharge'], aircon: ['a/c'], heat: ['heating'], heater: ['heating'], cold: ['a/c'], warm: ['a/c'],
+  light: ['diagnostic', 'warning'], warning: ['diagnostic'], engine: ['diagnostic', 'engine'], code: ['diagnostic'],
+  pull: ['alignment'], pulling: ['alignment'], drift: ['alignment'], vibration: ['balancing', 'suspension'],
+  bumpy: ['suspension'], shock: ['suspension'], strut: ['suspension'], clunk: ['suspension'],
+  tire: ['tire'], tyre: ['tire'], flat: ['tire'], rotation: ['rotate'],
+  checkup: ['inspection'], check: ['inspection'], inspect: ['inspection'], estimate: ['estimate', 'inspection'],
+  quote: ['estimate'], general: ['inspection'], spark: ['tune'], plug: ['tune'], tuneup: ['tune'],
+  fleet: ['fleet'], truck: ['fleet'], van: ['fleet'], battery: ['battery', 'electrical'],
+  cleaning: ['cleaning'], teeth: ['dental', 'cleaning'], tooth: ['dental'], whiten: ['whitening'],
+};
+
+function stem(w: string): string {
+  if (w.length > 4 && w.endsWith('ing')) return w.slice(0, -3);
+  if (w.length > 3 && w.endsWith('es') && !w.endsWith('ses')) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  return w;
+}
+
+function tokens(s: string): string[] {
+  return s.toLowerCase().replace(/a\/c/g, 'ac').split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/**
+ * Ranks products by how well they match a free-form caller query. Every
+ * query word (after stopwords, with light stemming and symptom synonyms)
+ * scores against the name (3), category (2) and description (1); the whole
+ * query appearing verbatim scores a bonus. Products with no hit are dropped.
+ */
 export function searchProducts(products: Product[], query: string): Product[] {
-  const q = query.toLowerCase();
-  return products.filter(p =>
-    p.name.toLowerCase().includes(q) ||
-    p.description.toLowerCase().includes(q) ||
-    p.category.toLowerCase().includes(q)
-  );
+  const q = query.toLowerCase().trim();
+  if (!q) return products;
+  const terms = new Set<string>();
+  for (const t of tokens(q)) {
+    if (STOPWORDS.has(t)) continue;
+    const s = stem(t);
+    terms.add(s);
+    for (const syn of SYNONYMS[s] ?? SYNONYMS[t] ?? []) terms.add(stem(syn.replace('/', '')));
+  }
+  if (!terms.size) return [];
+
+  const scored = products.map(p => {
+    const name = new Set(tokens(p.name).map(stem));
+    const cat = new Set(tokens(p.category).map(stem));
+    const desc = new Set(tokens(p.description).map(stem));
+    let score = 0;
+    for (const t of terms) {
+      if (name.has(t)) score += 3;
+      else if (cat.has(t)) score += 2;
+      else if (desc.has(t)) score += 1;
+    }
+    if (p.name.toLowerCase().includes(q)) score += 5;
+    return { p, score };
+  });
+  return scored
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(s => s.p);
 }

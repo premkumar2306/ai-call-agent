@@ -3,7 +3,6 @@ import { extractCompleteSentences } from '../src/services/turn.service';
 import { parseHoursRange, localDay } from '../src/services/tool-router.service';
 import { validateScheduledAt } from '../src/services/order.service';
 import { sanitizeHistory } from '../src/routes/mogi';
-import { shouldEscalateUnclearService } from '../src/services/voice-guard.service';
 import { scoreProducts } from '../src/services/recommendations.service';
 import type { Product } from '../src/types';
 
@@ -18,8 +17,9 @@ describe('extractCompleteSentences', () => {
 
 describe('parseHoursRange', () => {
   it('parses en dash and hyphen ranges', () => {
-    expect(parseHoursRange('8am–6pm')).toEqual({ openH: 8, closeH: 18 });
-    expect(parseHoursRange('7:30am-12pm')).toEqual({ openH: 7, closeH: 12 });
+    expect(parseHoursRange('8am–6pm')).toEqual({ openH: 8, openM: 0, closeH: 18, closeM: 0 });
+    expect(parseHoursRange('7:30am-12pm')).toEqual({ openH: 7, openM: 30, closeH: 12, closeM: 0 });
+    expect(parseHoursRange('9am – 5:30pm')).toEqual({ openH: 9, openM: 0, closeH: 17, closeM: 30 });
     expect(parseHoursRange('closed')).toBeNull();
   });
 });
@@ -60,13 +60,6 @@ describe('sanitizeHistory', () => {
     expect(sanitizeHistory(Array(41).fill({ role: 'user', content: 'x' }))).toBeNull();
     expect(sanitizeHistory([{ role: 'user', content: 'x'.repeat(4001) }])).toBeNull();
     expect(sanitizeHistory('nope')).toBeNull();
-  });
-});
-
-describe('shouldEscalateUnclearService', () => {
-  it('escalates only after a clarification was already asked', () => {
-    expect(shouldEscalateUnclearService([], "I'm not sure")).toBe(false);
-    expect(shouldEscalateUnclearService([{ role: 'assistant', content: 'What specific service do you need?' }], "I'm not sure")).toBe(true);
   });
 });
 

@@ -11,21 +11,32 @@ import { tokenSecretKey } from '../config';
 const PURPOSE = 'twilio-stream';
 const TTL_SECONDS = 300; // only has to survive Twilio's connect, not the call
 
-export async function signStreamToken(env: Env, businessType: string): Promise<string> {
+export interface StreamClaims {
+  businessType: string;
+  // HMAC of the caller's number (or of the CallSid when caller ID is
+  // withheld) — the caller's identity for bookings and history. Carried in
+  // the token because the media stream itself never sees the From number.
+  callerHash?: string;
+}
+
+export async function signStreamToken(env: Env, businessType: string, callerHash?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ purpose: PURPOSE, businessType })
+  return new SignJWT({ purpose: PURPOSE, businessType, ...(callerHash ? { callerHash } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt(now)
     .setExpirationTime(now + TTL_SECONDS)
     .sign(tokenSecretKey(env));
 }
 
-/** Returns the businessType the token was issued for, or null if invalid. */
-export async function verifyStreamToken(env: Env, token: string): Promise<string | null> {
+/** Returns the claims the token was issued with, or null if invalid. */
+export async function verifyStreamToken(env: Env, token: string): Promise<StreamClaims | null> {
   try {
     const { payload } = await jwtVerify(token, tokenSecretKey(env), { algorithms: ['HS256'] });
     if (payload.purpose !== PURPOSE || typeof payload.businessType !== 'string') return null;
-    return payload.businessType;
+    return {
+      businessType: payload.businessType,
+      callerHash: typeof payload.callerHash === 'string' ? payload.callerHash : undefined,
+    };
   } catch {
     return null;
   }
