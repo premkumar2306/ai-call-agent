@@ -38,16 +38,21 @@ import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesi
 //    change… for my Civic on Friday" reaches the model as one request.
 
 const FILLERS = ['One moment.', 'Let me check.', 'Just a second.'];
+const STILL_WORKING = ['Still checking, thanks for waiting.', 'Almost there.'];
 
 // Don't honour a barge-in within this long of the assistant starting to
 // speak. Guards against the leading edge of our own audio echoing back on a
 // speakerphone and instantly cutting off the reply we just began.
 const BARGE_IN_MIN_SPEAK_MS = 300;
 
-// Fallback only: if the model hasn't produced its first spoken chunk within
-// this window (a slow tool call before any text), say something so the
-// caller isn't met with dead air.
+// Dead-air watchdog: while a turn is still working and nothing is queued
+// or playing, say something after this much silence — before the first
+// chunk (FILLER_GRACE_MS), or in a gap later in the turn, e.g. after "Let me
+// check that." while a tool and the next model round run (GAP_FILLER_MS).
+// At most MAX_FILLERS per turn; runTurn's own timeout ends the wait.
 const FILLER_GRACE_MS = 1200;
+const GAP_FILLER_MS = 2000;
+const MAX_FILLERS = 3;
 
 interface SpokenChunk { text: string; played: boolean; filler: boolean }
 
@@ -266,11 +271,14 @@ export class CallRelay extends DurableObject<Env> {
     // audio stays strictly sequential and barge-in stops it cleanly.
     let chunkChain: Promise<void> = Promise.resolve();
     let firstChunkLogged = false;
+    // Chunks queued whose audio hasn't been handed to Twilio yet.
+    let unsent = 0;
 
     const queue = (textToSay: string, filler: boolean) => {
       if (signal.aborted) return;
       const chunk: SpokenChunk = { text: textToSay, played: false, filler };
       turn.chunks.push(chunk);
+      unsent++;
       const started = cartesiaStart(this.ttsConfig, textToSay, signal).catch((e) => {
         if (e?.name !== 'AbortError') console.error('[cartesia start]', e?.message || e);
         return null;
@@ -287,18 +295,31 @@ export class CallRelay extends DurableObject<Env> {
           await this.playChunk(turn, chunk, Promise.resolve(res));
         } catch (e: any) {
           if (e?.name !== 'AbortError') console.error('[tts chunk]', e?.message || e);
+        } finally {
+          unsent--;
         }
       });
     };
 
     let realChunkSeen = false;
-    const fillerTimer = setTimeout(() => {
-      if (!realChunkSeen && !signal.aborted) queue(FILLERS[Math.floor(Math.random() * FILLERS.length)], true);
-    }, FILLER_GRACE_MS);
+    let fillers = 0;
+    let quietSince = Date.now();
+    const watchdog = setInterval(() => {
+      if (signal.aborted) return;
+      const now = Date.now();
+      if (unsent > 0 || this.pendingMarks.size > 0) { quietSince = now; return; }
+      if (fillers >= MAX_FILLERS) return;
+      if (now - quietSince < (realChunkSeen || fillers ? GAP_FILLER_MS : FILLER_GRACE_MS)) return;
+      const pool = fillers === 0 && !realChunkSeen ? FILLERS : STILL_WORKING;
+      console.log(`[${tag}] dead air ${now - quietSince}ms — filler`);
+      queue(pool[fillers % pool.length], true);
+      fillers++;
+      quietSince = now;
+    }, 250);
 
     try {
       const result = await runTurn(this.env, this.session!, this.callSid, utterance, {
-        onChunk: (chunk) => { realChunkSeen = true; clearTimeout(fillerTimer); queue(chunk, false); },
+        onChunk: (chunk) => { realChunkSeen = true; queue(chunk, false); },
         cache: this.cache,
         signal,
         heardText: () => this.heardText(turn),
@@ -309,11 +330,12 @@ export class CallRelay extends DurableObject<Env> {
       } else if (!result.interrupted) {
         turn.committed = true;
       }
+      clearInterval(watchdog);
       await chunkChain;
     } catch (e: any) {
       if (e?.name !== 'AbortError') console.error('[turn]', e?.message || e);
     } finally {
-      clearTimeout(fillerTimer);
+      clearInterval(watchdog);
       this.endTurn(turn);
     }
   }
