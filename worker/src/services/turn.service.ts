@@ -230,6 +230,8 @@ function withCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthropic.Mess
   return [...messages.slice(0, -1), { role: last.role, content: blocks }];
 }
 
+const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/;
+
 export const INTERRUPTED_MARK = '[caller interrupted]';
 
 export type Channel = 'voice' | 'chat';
@@ -249,8 +251,10 @@ export function buildAgentRules(businessType: string, bizName: string, channel: 
 
 USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
-- If the profile doesn't cover something, say you don't have that detail and read out the phone number from the profile. Never invent facts, prices or policies.
+- If the profile doesn't cover something, say you can't confirm that from here and a service advisor can, and give the phone number from the profile as the service desk's direct line. Never invent facts, prices or policies.
+- Speak as the business ("we", "our shop"). Never mention "the profile", "my information" or "the list" to the caller.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
+- Before a tool call say nothing, or at most a few words ("Let me check."). Never think aloud, and never say a date as YYYY-MM-DD.
 - Tool results carry a "_spoken_hint": a ready-made sentence for that result. Lightly paraphrase it unless the conversation needs something different.
 
 CONVERSATION:
@@ -275,10 +279,11 @@ HEALTH:
 ${shared}
 
 BOOKING (live data — always use the tools, one step at a time):
-1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brake pads, warning light → diagnostic). If it's genuinely unclear, suggest the free inspection or estimate when the profile has one.
-2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below) and time_of_day if they mentioned them. Offer the times it returns.
+1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brakes, warning light → diagnostics). If it's genuinely unclear, suggest an inspection or diagnostic visit.
+2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns. If it says requested_open, book that requested_slot in the same turn — they already chose it.
 3. When they pick a time, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Then confirm the service, day and time.
 4. Only book times check_availability returned. If they ask for another time, check availability for it.
+- Adding a service to an appointment they already have (one visit, several jobs): call book_appointment for the new service with the existing booking's exact datetime from "Customer's bookings" — no availability check, never a different time.
 5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.
 - Existing appointments: list_bookings; to cancel, cancel_booking.`;
 }
@@ -291,7 +296,7 @@ function describeCaller(session: SessionPayload, orders: Order[] | null | undefi
   }
   const active = (orders ?? []).filter(o => o.status !== 'CANCELLED').slice(0, 3);
   lines.push(`Customer's bookings: ${active.length
-    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt)}` : ''} (${o.status.toLowerCase()})`).join('; ')
+    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt)} [${o.scheduledAt.slice(0, 16)}]` : ''} (${o.status.toLowerCase()})`).join('; ')
     : 'none'}.`);
   lines.push(describeLocalNow(new Date(), meta?.timezone));
   return lines.join('\n');
@@ -332,6 +337,8 @@ export interface RunTurnOptions {
    * everything emitted, which over-reports on a phone line.
    */
   heardText?: () => string;
+  /** Every timing checkpoint (label, ms since the turn started), for per-call latency metrics. */
+  onLap?: (label: string, ms: number) => void;
 }
 
 export async function runTurn(
@@ -345,7 +352,11 @@ export async function runTurn(
   const { businessType, sub } = session;
   const tag = callSid.slice(-8);
   const t0 = Date.now();
-  const lap = (label: string) => console.log(`[${tag}] ⏱ ${label}: ${Date.now() - t0}ms`);
+  const lap = (label: string) => {
+    const ms = Date.now() - t0;
+    console.log(`[${tag}] ⏱ ${label}: ${ms}ms`);
+    opts.onLap?.(label, ms);
+  };
 
   console.log(`[${tag}] ${businessType}: "${utterance.slice(0, 80)}"`);
 
@@ -426,6 +437,13 @@ export async function runTurn(
 
   const emit = (chunk: string) => {
     if (signal?.aborted) return;
+    // The model sometimes thinks aloud before a tool call ("Wednesday is
+    // 2026-11-04, and 10 o'clock is 10:00."). A raw ISO date is never meant
+    // for the caller, so a sentence carrying one is dropped.
+    if (ISO_DATE_RE.test(chunk)) {
+      console.log(`[${tag}] dropped reasoning chunk: "${chunk.slice(0, 80)}"`);
+      return;
+    }
     spokenResponse = spokenResponse ? `${spokenResponse} ${chunk}` : chunk;
     emittedAny = true;
     // Deliberately not awaited — see the OnChunk doc comment.

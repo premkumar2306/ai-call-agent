@@ -92,7 +92,9 @@ export async function placeOrder(
     // Single-statement conditional insert: SQLite runs it atomically, so two
     // callers racing for the same slot can't both succeed (a SELECT-then-
     // INSERT would leave a window between the two). Slot identity matches
-    // getBookedDatetimes(): business + minute-resolution start time.
+    // getBookedDatetimes(): business + minute-resolution start time. The
+    // same customer may stack different services on one start time — that's
+    // one visit with several jobs ("add a tune-up to my oil change").
     const nowSec = Math.floor(now.getTime() / 1000);
     const result = await db.run(sql`
       INSERT INTO orders (
@@ -109,6 +111,7 @@ export async function placeOrder(
         WHERE business_type = ${sector}
           AND status != 'CANCELLED'
           AND substr(scheduled_at, 1, 16) = substr(${scheduledAt}, 1, 16)
+          AND (customer_id_hashed != ${customerIdHashed} OR product_id = ${productId})
       )`);
     if (!result.meta.changes) {
       throw Object.assign(new Error('That time slot was just booked'), { code: 'SLOT_TAKEN' });

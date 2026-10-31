@@ -56,6 +56,21 @@ const MAX_FILLERS = 3;
 
 interface SpokenChunk { text: string; played: boolean; filler: boolean }
 
+// One caller turn's timing, saved with the transcript (transcripts.metrics).
+// All ms. `at` is when the final transcript arrived, from call start; laps are
+// runTurn checkpoints from the turn's start; firstAudio is when the first real
+// chunk's synthesized audio began streaming to Twilio.
+interface TurnMetric {
+  n: number;
+  at: number;
+  text: string;
+  queued: number;
+  laps: [string, number][];
+  firstAudio?: number;
+  fillers: number;
+  outcome: 'done' | 'interrupted' | 'dropped';
+}
+
 interface ActiveTurn {
   id: number;
   abort: AbortController;
@@ -93,6 +108,8 @@ export class CallRelay extends DurableObject<Env> {
   private transcriptGen = 0;
   // Utterance from an interrupted turn the caller never heard a reply to.
   private carryOver = '';
+  private callStartedAt = Date.now();
+  private metrics: TurnMetric[] = [];
 
   private get ttsConfig(): CartesiaConfig {
     return {
@@ -214,8 +231,9 @@ export class CallRelay extends DurableObject<Env> {
     }
 
     const gen = ++this.transcriptGen;
+    const receivedAt = Date.now();
     this.turnChain = this.turnChain
-      .then(() => this.runOneTurn(text, gen))
+      .then(() => this.runOneTurn(text, gen, receivedAt))
       .catch(e => console.error('[turn chain]', e?.message || e));
   }
 
@@ -251,7 +269,7 @@ export class CallRelay extends DurableObject<Env> {
     if (this.active === turn) this.turnInFlight = false;
   }
 
-  private async runOneTurn(text: string, gen: number): Promise<void> {
+  private async runOneTurn(text: string, gen: number, receivedAt = Date.now()): Promise<void> {
     // Newer speech arrived while this one was queued — fold it forward.
     if (gen !== this.transcriptGen) {
       this.carryOver = joinUtterances(this.carryOver, text);
@@ -264,6 +282,11 @@ export class CallRelay extends DurableObject<Env> {
     const { signal } = turn.abort;
     const tag = this.callSid.slice(-8);
     const t0 = Date.now();
+    const metric: TurnMetric = {
+      n: this.metrics.length + 1, at: receivedAt - this.callStartedAt, text: utterance.slice(0, 80),
+      queued: t0 - receivedAt, laps: [], fillers: 0, outcome: 'done',
+    };
+    if (this.metrics.length < 100) this.metrics.push(metric);
 
     // Chunks stream in from runTurn() as they become ready. Synthesis for a
     // chunk is kicked off the instant it arrives, so its TTFB overlaps with
@@ -290,7 +313,8 @@ export class CallRelay extends DurableObject<Env> {
           const res = await started;
           if (res && !firstChunkLogged && !filler && !signal.aborted) {
             firstChunkLogged = true;
-            console.log(`[${tag}] ⏱ first-chunk-spoken: ${Date.now() - t0}ms`);
+            metric.firstAudio = Date.now() - t0;
+            console.log(`[${tag}] ⏱ first-chunk-spoken: ${metric.firstAudio}ms`);
           }
           await this.playChunk(turn, chunk, Promise.resolve(res));
         } catch (e: any) {
@@ -314,6 +338,7 @@ export class CallRelay extends DurableObject<Env> {
       console.log(`[${tag}] dead air ${now - quietSince}ms — filler`);
       queue(pool[fillers % pool.length], true);
       fillers++;
+      metric.fillers = fillers;
       quietSince = now;
     }, 250);
 
@@ -323,7 +348,9 @@ export class CallRelay extends DurableObject<Env> {
         cache: this.cache,
         signal,
         heardText: () => this.heardText(turn),
+        onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
       });
+      metric.outcome = !result.committed ? 'dropped' : result.interrupted ? 'interrupted' : 'done';
       if (!result.committed) {
         // Caller heard nothing of the reply — keep their words for the next turn.
         this.carryOver = joinUtterances(utterance, this.carryOver);
@@ -351,6 +378,7 @@ export class CallRelay extends DurableObject<Env> {
         customerIdHashed: this.session.sub,
         businessType: this.session.businessType,
         turns: this.cache.history,
+        metrics: this.metrics,
       });
     } catch (e: any) {
       console.error('[transcript flush]', e?.message || e);
@@ -408,6 +436,7 @@ export class CallRelay extends DurableObject<Env> {
       }
 
     } else if (msg.event === 'start') {
+      this.callStartedAt = Date.now();
       this.callSid = msg.start.callSid;
       this.streamSid = msg.start.streamSid;
       console.log(`[call] ${this.callSid.slice(-8)}`);

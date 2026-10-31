@@ -16,9 +16,10 @@ export async function saveTranscript(
     turns: Turn[];
     callSid?: string;
     emailSentTo?: string;
+    metrics?: unknown[];
   }
 ): Promise<string> {
-  const { customerIdHashed, businessType, turns, callSid, emailSentTo } = params;
+  const { customerIdHashed, businessType, turns, callSid, emailSentTo, metrics } = params;
   const db = getDb(env.DB);
   const now = new Date();
 
@@ -32,6 +33,7 @@ export async function saveTranscript(
       await db.update(transcriptsTable)
         .set({
           turns,
+          ...(metrics ? { metrics } : {}),
           emailSentTo: emailSentTo ?? existing[0].emailSentTo ?? undefined,
           updatedAt: now,
         })
@@ -48,6 +50,7 @@ export async function saveTranscript(
     businessType,
     emailSentTo,
     turns,
+    metrics: metrics ?? null,
     createdAt: now,
     updatedAt: now,
   });
