@@ -139,7 +139,7 @@ mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), a
     getProducts(c.env, businessType).catch(() => []),
   ]);
   const systemPrompt = buildSystemPrompt({ businessType, sectorMeta, products, session, orders, channel: 'voice' });
-  const tools = agentTools(businessType, sectorMeta);
+  const tools = agentTools(businessType, sectorMeta, products.length);
 
   const messages: Anthropic.MessageParam[] = [
     ...rawHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),

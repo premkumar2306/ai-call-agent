@@ -48,6 +48,11 @@ export interface SttOptions {
    * count. The finalized transcript is still a barge-in backstop. Default 2.
    */
   bargeInMinWords?: number;
+  /**
+   * How long an incomplete-looking transcript (see looksIncomplete) waits for
+   * the caller to carry on before it's answered anyway. Default 900.
+   */
+  incompleteHoldMs?: number;
   debug?: boolean;
 }
 
@@ -64,6 +69,32 @@ function dgUrl(model: string, language: string, endpointingMs: number): string {
 }
 
 export type SpeechStartReason = 'vad' | 'interim';
+
+// Words a sentence doesn't end on. "I also wanna change my" is a caller
+// drawing breath, not a finished request.
+const DANGLING_WORDS = new Set([
+  'a', 'an', 'the', 'my', 'your', 'our', 'his', 'her', 'their', 'this', 'that', 'some',
+  'and', 'or', 'but', 'so', 'because', 'if', 'then', 'also', 'plus',
+  'to', 'for', 'of', 'with', 'on', 'at', 'in', 'from', 'about', 'like',
+  'i', "i'm", 'im', 'we', 'wanna', 'gonna', 'want', 'need', 'is', 'are', 'was', 'be', 'can', 'could', 'would',
+  'um', 'uh', 'er', 'just', 'maybe',
+]);
+
+/**
+ * True when a finalized transcript reads like the caller stopped mid-thought:
+ * no closing punctuation from smart_format, a trailing ellipsis, or a last
+ * word sentences don't end on. Such a transcript is held briefly for the
+ * rest of the sentence instead of being answered — answering a fragment is
+ * what makes the assistant and caller talk over each other.
+ */
+export function looksIncomplete(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/(\.\.\.|…)$/.test(t)) return true;
+  const last = t.toLowerCase().replace(/[^a-z'\s]/g, ' ').trim().split(/\s+/).pop() ?? '';
+  if (DANGLING_WORDS.has(last)) return true;
+  return !/[.?!]["')]?$/.test(t);
+}
 
 // Listener feedback that shouldn't stop the assistant mid-sentence.
 const BACKCHANNEL_WORDS = new Set([
@@ -88,7 +119,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 2,
+    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900,
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -132,6 +163,19 @@ export async function createDeepgramSTT(
     onSpeechStart?.(reason);
   };
 
+  // A fragment waiting for the rest of its sentence (see looksIncomplete).
+  let held = '';
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  const releaseHeld = () => {
+    holdTimer = undefined;
+    const text = held;
+    held = '';
+    if (text) {
+      console.log(`[dg stt] releasing held fragment after ${incompleteHoldMs}ms: "${text}"`);
+      onTranscript(text);
+    }
+  };
+
   const finalize = (text: string, reason: 'speech_final' | 'utterance_end', confidence: number) => {
     if (!text || finalized) return;
     finalized = true;
@@ -148,7 +192,17 @@ export async function createDeepgramSTT(
     lastText = '';
     utteranceStart = 0;
     speechAnnounced = false;
-    onTranscript(text);
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = undefined;
+    const combined = [held, text].filter(Boolean).join(' ');
+    if (incompleteHoldMs > 0 && looksIncomplete(combined)) {
+      held = combined;
+      holdTimer = setTimeout(releaseHeld, incompleteHoldMs);
+      if (debug) console.log(`[dg stt] holding incomplete "${combined}"`);
+      return;
+    }
+    held = '';
+    onTranscript(combined);
   };
 
   ws.addEventListener('message', (event: MessageEvent) => {
@@ -174,6 +228,9 @@ export async function createDeepgramSTT(
             // stamp a fresh utteranceStart if we're not already mid-utterance
             // (lastText empty) or just finalized one (finalized true).
             if (!lastText || finalized) utteranceStart = Date.now();
+            // The caller carried on — the held fragment will be joined to
+            // this utterance when it finalizes.
+            if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined; }
             lastText = text;
             lastConfidence = confidence;
             finalized = false;
@@ -221,6 +278,6 @@ export async function createDeepgramSTT(
 
   return {
     sendAudio: (buf: ArrayBuffer) => { if (isOpen) ws.send(buf); },
-    close: () => { isOpen = false; try { ws.close(); } catch {} },
+    close: () => { isOpen = false; if (holdTimer) clearTimeout(holdTimer); try { ws.close(); } catch {} },
   };
 }

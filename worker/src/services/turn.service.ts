@@ -6,7 +6,7 @@ import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
 import { executeTool, getToolDefinitions, formatSlotLabel, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
-import { buildBusinessProfile, describeLocalNow } from './business-profile';
+import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
 import type { CallCache } from './call-context';
 import type { Order, Product, SectorMeta } from '../types';
 
@@ -181,9 +181,13 @@ const VOICE_TOOLS = new Set([
 ]);
 
 /** Tool definitions for the agent surfaces, last one marked as a cache breakpoint. */
-export function agentTools(businessType: string, sectorMeta: SectorMeta | null): Anthropic.Tool[] {
+export function agentTools(businessType: string, sectorMeta: SectorMeta | null, productCount = 0): Anthropic.Tool[] {
+  // With the whole catalog in the prompt, searching it only adds a model
+  // round trip (and a pause the caller talks into) to reach the same answer.
+  const catalogInPrompt = productCount > 0 && productCount <= FULL_CATALOG_MAX;
   const tools: Anthropic.Tool[] = getToolDefinitions(businessType, sectorMeta)
     .filter(t => VOICE_TOOLS.has(t.name))
+    .filter(t => !(catalogInPrompt && (t.name === 'search_services' || t.name === 'get_service_detail')))
     .map(t => ({
       name: t.name,
       description: t.description,
@@ -245,7 +249,7 @@ export function buildAgentRules(businessType: string, bizName: string, channel: 
 
 USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
-- If the profile doesn't cover something, say you don't have that detail and offer the business phone number. Never invent facts, prices or policies.
+- If the profile doesn't cover something, say you don't have that detail and read out the phone number from the profile. Never invent facts, prices or policies.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
 - Tool results carry a "_spoken_hint": a ready-made sentence for that result. Lightly paraphrase it unless the conversation needs something different.
 
@@ -253,7 +257,7 @@ CONVERSATION:
 - Use what the ${who} already told you. Never ask for something they already said, and never ask the same question twice in a row — if you didn't understand, say what you did catch and ask something narrower.
 - ${channel === 'voice' ? 'Speech recognition makes mistakes. If words look garbled, make your best guess from context and confirm it in a few words.' : 'Typos happen. Make your best guess from context and confirm it briefly.'}
 - A reply of yours ending in "${INTERRUPTED_MARK}" was cut off — the ${who} only heard the part before it. Respond to what they said; don't restart the whole reply.
-- If asked, you are an AI assistant — never claim to be human. If they want a person, give the business phone number.`;
+- If asked, you are an AI assistant — never claim to be human. If they want a person, read out the phone number from the profile.`;
 
   if (businessType === 'health_nav') {
     return `You are Mogi, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
@@ -396,8 +400,8 @@ export async function runTurn(
   // Tool defs are byte-identical for every turn of a call — cache them.
   let tools = cache?.toolDefs;
   if (!tools) {
-    tools = agentTools(businessType, sectorMeta);
-    if (cache) cache.toolDefs = tools;
+    tools = agentTools(businessType, sectorMeta, products.length);
+    if (cache && productsResult.status === 'fulfilled') cache.toolDefs = tools;
   }
 
   // ── Agentic loop ─────────────────────────────────────────────────────────
