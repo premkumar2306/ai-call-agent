@@ -132,6 +132,8 @@ describe('business profile', () => {
   it('does not call a quote-on-request job free', () => {
     expect(formatPrice(PRODUCTS[0])).toBe('free');
     expect(formatPrice(PRODUCTS[5])).toBe('price quoted after inspection');
+    // Real Advanced VTech catalog has no prices — "quotes"/"quoted" must not read as free.
+    expect(formatPrice({ priceCents: 0, originalPriceCents: 0, name: 'Brake Repair', description: 'The shop quotes after inspecting the vehicle.' })).toBe('price quoted after inspection');
   });
 
   it('gives the model a weekday → date map in the business timezone', () => {
@@ -168,10 +170,17 @@ describe('availability', () => {
 
   it('offers today after a lead time, starts at the real opening minute, skips closed days', async () => {
     const s = await slots();
-    expect(s[0].datetime).toBe('2026-10-29T11:30:00');
-    expect(s[0].label).toBe('today at 11:30 AM');
+    expect(s[0].datetime).toBe('2026-10-29T11:00:00');
+    expect(s[0].label).toBe('today at 11:00 AM');
     expect(s.find(x => x.date === '2026-10-30')?.time).toBe('7:30 AM');
     expect(s.some(x => x.date === '2026-11-01')).toBe(false); // Sunday
+  });
+
+  it('reads out same-day times an hour apart but keeps the half hours bookable', async () => {
+    const all = await slots();
+    const { shown } = pickSlots(all, { preferredDate: '2026-11-02', timeOfDay: 'morning' });
+    expect(shown.map(s => s.time)).toEqual(['7:30 AM', '8:30 AM', '9:30 AM']);
+    expect(all.some(s => s.datetime === '2026-11-02T09:00:00')).toBe(true);
   });
 
   it('honours a preferred day and part of day', async () => {
@@ -286,6 +295,15 @@ describe('runTurn', () => {
     expect(chunks.at(-1)).toMatch(/taking longer/);
     expect(res.interrupted).toBe(false);
     expect(res.committed).toBe(true);
+  });
+
+  it('never speaks the model thinking aloud with raw ISO dates', async () => {
+    const cache = freshCache();
+    script = [{ text: "Wednesday is 2026-11-04, and 10 o'clock is 10:00. You're set for Wednesday at 10 AM." }];
+    const chunks: string[] = [];
+    await runTurn(env(), SESSION, 'CA9', 'oil change wednesday at 10', { cache, onChunk: c => { chunks.push(c); } });
+    expect(chunks.join(' ')).not.toMatch(/2026-11-04/);
+    expect(chunks.join(' ')).toMatch(/Wednesday at 10 AM/);
   });
 
   it('treats a caller abort during a stalled round as an interruption, not an error', async () => {

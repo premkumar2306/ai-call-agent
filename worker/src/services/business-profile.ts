@@ -25,7 +25,7 @@ const DAY_LABEL: Record<string, string> = {
 // A $0 price means two different things in the catalog: genuinely free
 // ("Free Vehicle Inspection") or not fixed ("Engine Replacement (Call for
 // Quote)", "Custom pricing"). Saying "free" for the second is a costly lie.
-const QUOTE_RE = /\b(quote|custom pricing|price varies|call for)\b/i;
+const QUOTE_RE = /\b(quote[sd]?|custom pricing|price varies|call for)\b/i;
 
 export function formatPrice(p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>): string {
   if (p.priceCents === 0) {

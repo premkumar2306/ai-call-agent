@@ -152,9 +152,9 @@ export async function getAvailableSlots(
   now: Date = new Date(),
 ): Promise<Slot[]> {
   const rawSlots: Slot[] = [];
-  // Appointments start on the hour/half hour and are spaced by their own
-  // length (rounded up to the hour), as before.
-  const stepMin = Math.max(60, Math.ceil(durationMinutes / 60) * 60);
+  // Any half hour inside opening hours is bookable, so "9 works" can be
+  // booked even when 8:30 and 9:30 were the times read out.
+  const stepMin = 30;
   const today = localDay(now, meta?.timezone).ymd;
   const tomorrow = localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd;
   const nowMin = localMinutes(now, meta?.timezone);
@@ -229,12 +229,23 @@ export function pickSlots(
     return out;
   };
 
+  // Same-day choices read out an hour apart (7:30, 8:30, 9:30), not three
+  // neighbouring half hours; the in-between times are still bookable.
+  const spaced = (list: Slot[]) => {
+    const out: Slot[] = [];
+    for (const s of list) {
+      if (!out.length || s.minutes >= out[out.length - 1].minutes + 60) out.push(s);
+      if (out.length === count) break;
+    }
+    return out;
+  };
+
   const preferred = opts.preferredDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.preferredDate) ? opts.preferredDate : undefined;
   if (preferred) {
     const sameDay = slots.filter(s => s.date === preferred);
     const fitting = sameDay.filter(inRange);
-    if (fitting.length) return { shown: fitting.slice(0, count), matchedPreference: true };
-    if (sameDay.length) return { shown: sameDay.slice(0, count), matchedPreference: false };
+    if (fitting.length) return { shown: spaced(fitting), matchedPreference: true };
+    if (sameDay.length) return { shown: spaced(sameDay), matchedPreference: false };
     const after = slots.filter(s => s.date > preferred);
     return { shown: spread(after.length ? after : slots), matchedPreference: false };
   }
@@ -384,6 +395,34 @@ export async function executeTool(
         }
         const preferredDate = args.preferred_date as string | undefined;
         const timeOfDay = args.time_of_day as string | undefined;
+        // An exact day and time ("Wednesday at 10"): if it's open, hand back
+        // just that slot so the model books it this turn instead of reading
+        // out three other times. If not, offer that day's nearest times.
+        const timeMatch = /^(\d{1,2}):(\d{2})/.exec(String(args.preferred_time ?? ''));
+        if (preferredDate && timeMatch) {
+          const wanted = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+          const exact = slots.find(s => s.date === preferredDate && s.minutes === wanted);
+          if (exact) {
+            const { minutes: _m, ...slot } = exact;
+            return {
+              success: true,
+              data: { requested_slot: slot, requested_open: true, service_id: serviceId },
+              spoken_response: `${exact.label} is open.`,
+            };
+          }
+          const sameDay = slots.filter(s => s.date === preferredDate)
+            .sort((a, b) => Math.abs(a.minutes - wanted) - Math.abs(b.minutes - wanted))
+            .slice(0, 3)
+            .sort((a, b) => a.minutes - b.minutes);
+          if (sameDay.length) {
+            const spokenFor = serviceName ? ` for ${serviceName}` : '';
+            return {
+              success: true,
+              data: { requested_open: false, offered: sameDay.map(({ minutes: _x, ...r }) => r), service_id: serviceId },
+              spoken_response: `That time isn't open, but the nearest openings${spokenFor} are ${joinOr(sameDay.map(s => s.label))}. Which works for you?`,
+            };
+          }
+        }
         const { shown, matchedPreference } = pickSlots(slots, { preferredDate, timeOfDay });
         const spokenFor = serviceName ? ` for ${serviceName}` : '';
         const asked = preferredDate || timeOfDay;
@@ -714,6 +753,7 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
           service_id:     { type: 'string', description: 'The [id] of the service being booked, so slots match its length.' },
           preferred_date: { type: 'string', description: 'YYYY-MM-DD, only if the customer named a day ("tomorrow", "Friday"). Resolve it with the dates in the system prompt.' },
           time_of_day:    { type: 'string', enum: ['morning', 'afternoon', 'evening'], description: 'Only if the customer said a part of the day.' },
+          preferred_time: { type: 'string', description: 'HH:MM 24-hour, only if the customer named an exact time ("at 10" → 10:00). Use with preferred_date.' },
         },
         required: [],
       },

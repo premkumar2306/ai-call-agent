@@ -115,6 +115,7 @@ export const transcripts = sqliteTable('transcripts', {
   businessType:     text('business_type').notNull(),
   emailSentTo:      text('email_sent_to'),
   turns:            text('turns', { mode: 'json' }).notNull().$type<Array<{ role: string; content: string }>>(),
+  metrics:          text('metrics', { mode: 'json' }).$type<unknown[]>(),
   createdAt:        integer('created_at', { mode: 'timestamp' }).notNull()
                       .$defaultFn(() => new Date()),
   updatedAt:        integer('updated_at', { mode: 'timestamp' }).notNull()
