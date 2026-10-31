@@ -54,6 +54,11 @@ const FILLER_GRACE_MS = 1200;
 const GAP_FILLER_MS = 2000;
 const MAX_FILLERS = 3;
 
+// Caller silence once the assistant has finished speaking: after this long
+// ask "Are you still there?", and after the same again say goodbye and hang
+// up, rather than holding an open line in dead air.
+const SILENCE_REPROMPT_MS = 8000;
+
 interface SpokenChunk { text: string; played: boolean; filler: boolean }
 
 // One caller turn's timing, saved with the transcript (transcripts.metrics).
@@ -109,6 +114,11 @@ export class CallRelay extends DurableObject<Env> {
   // Utterance from an interrupted turn the caller never heard a reply to.
   private carryOver = '';
   private callStartedAt = Date.now();
+  // Silence tracking (see SILENCE_REPROMPT_MS). quietSince is 0 until the
+  // stream starts, so the timer only runs on a live call.
+  private quietSince = 0;
+  private silencePrompts = 0;
+  private hangupWhenDone = false;
   private metrics: TurnMetric[] = [];
 
   private get ttsConfig(): CartesiaConfig {
@@ -199,6 +209,7 @@ export class CallRelay extends DurableObject<Env> {
   // noise and echo) or 'interim' (enough recognised words that aren't just
   // "mm-hmm"). VAD barge-in is off unless VOICE_BARGE_IN_ON_VAD=1.
   private handleSpeechStart(reason: 'vad' | 'interim') {
+    this.callerActive();
     if (!this.agentActive) return;
     if (reason === 'vad' && !/^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '')) return;
     if (Date.now() - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) return;
@@ -208,6 +219,7 @@ export class CallRelay extends DurableObject<Env> {
 
   private handleTranscript(text: string) {
     if (!this.session || !this.twWs) return;
+    this.callerActive();
 
     // "Uh huh" / "okay" while the assistant is mid-reply is the caller
     // listening, not taking the turn — unless what they've heard so far
@@ -385,6 +397,56 @@ export class CallRelay extends DurableObject<Env> {
     }
   }
 
+  private callerActive() {
+    if (this.quietSince) this.quietSince = Date.now();
+    this.silencePrompts = 0;
+    // They spoke during the goodbye — stay on the line.
+    this.hangupWhenDone = false;
+  }
+
+  // Runs on every inbound media frame (every 20 ms), so no timer is needed.
+  private checkSilence() {
+    if (!this.quietSince) return;
+    const now = Date.now();
+    if (this.agentActive) { this.quietSince = now; return; }
+    if (this.hangupWhenDone) {
+      // Goodbye has finished playing.
+      this.hangupWhenDone = false;
+      this.quietSince = 0;
+      console.log(`[call] ${this.callSid.slice(-8)} hanging up after caller silence`);
+      this.stt.close();
+      this.ctx.waitUntil(this.flushTranscript());
+      if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'caller silent');
+      return;
+    }
+    if (now - this.quietSince < (numEnv(this.env.VOICE_SILENCE_REPROMPT_MS) ?? SILENCE_REPROMPT_MS)) return;
+    this.quietSince = now;
+    if (this.silencePrompts++ === 0) {
+      this.speakCanned(['Are you still there?']);
+    } else {
+      const name = this.cache.sectorMeta?.name;
+      this.speakCanned([`I haven't heard anything, so I'll hang up now. Thanks for calling${name ? ` ${name}` : ''}. Goodbye!`]);
+      this.hangupWhenDone = true;
+    }
+  }
+
+  // Fixed lines that aren't part of the model's history (re-prompts). Spoken
+  // as a greeting-style turn, so the caller can talk over them.
+  private speakCanned(lines: string[]) {
+    const turn = this.startTurn(true);
+    const { signal } = turn.abort;
+    let chain = Promise.resolve();
+    for (const text of lines) {
+      const chunk: SpokenChunk = { text, played: false, filler: false };
+      turn.chunks.push(chunk);
+      const started = cartesiaStart(this.ttsConfig, text, signal).catch(() => null);
+      chain = chain.then(() => this.playChunk(turn, chunk, started));
+    }
+    chain
+      .catch(e => { if (e?.name !== 'AbortError') console.error('[canned]', e?.message || e); })
+      .finally(() => this.endTurn(turn));
+  }
+
   private greet(businessType: string | undefined, sectorPromise: Promise<{ name: string } | null>) {
     const capabilityHint = businessType === 'health_nav'
       ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
@@ -426,6 +488,7 @@ export class CallRelay extends DurableObject<Env> {
       // Always forward — even while the assistant speaks — so STT can detect barge-in.
       const bytes = base64ToBytes(msg.media.payload);
       this.stt.sendAudio(bytes.buffer as ArrayBuffer);
+      this.checkSilence();
 
     } else if (msg.event === 'mark') {
       // Twilio reached this point in playback.
@@ -472,6 +535,7 @@ export class CallRelay extends DurableObject<Env> {
       sectorPromise.then(m => { if (m) this.cache.sectorMeta = m; });
 
       this.greet(businessType, sectorPromise);
+      this.quietSince = Date.now();
 
       // Everything the first turn needs, fetched while the greeting plays:
       // catalog (for the business profile), the caller's account and
