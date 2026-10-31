@@ -113,6 +113,8 @@ export interface Env {
   // instead of waiting for recognised words. Off by default: line noise and
   // echo cut replies off.
   VOICE_BARGE_IN_ON_VAD?: string;
+  /** ms of caller silence (after the assistant finishes) before "Are you still there?"; again → goodbye + hang up. Default 8000. */
+  VOICE_SILENCE_REPROMPT_MS?: string;
   // Set to '0'/'false' to disable speaking a self-sufficient tool result
   // directly and always round-trip it through Claude for paraphrasing.
   VOICE_DIRECT_TOOL_REPLY?: string;
