@@ -10,13 +10,13 @@
     "deploy": "wrangler pages deploy dist --project-name avery-admin"
   },
   "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.4.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.8.0",
