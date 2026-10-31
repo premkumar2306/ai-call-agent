@@ -10,6 +10,9 @@ export const DEFAULT_AGENT_MODEL = 'claude-haiku-5-5';
 // Hard ceiling on the agentic tool loop per turn — bounds latency and spend.
 export const MAX_TOOL_ROUNDS = 5;
 
+// Per-attempt model timeout on a live call (one retry on top).
+export const VOICE_MODEL_TIMEOUT_MS = 6_000;
+
 export function agentModel(env: Env): string {
   return env.ANTHROPIC_MODEL || DEFAULT_AGENT_MODEL;
 }

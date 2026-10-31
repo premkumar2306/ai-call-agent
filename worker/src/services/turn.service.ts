@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
-import { createAnthropic, MAX_TOOL_ROUNDS, voiceModel } from '../config';
+import { createAnthropic, MAX_TOOL_ROUNDS, VOICE_MODEL_TIMEOUT_MS, voiceModel } from '../config';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
@@ -412,7 +412,11 @@ export async function runTurn(
   let spokenResponse = '';
   let finalText = '';
   let interrupted = false;
-  const anthropic = createAnthropic(env);
+  let stalled = false;
+  // A caller on hold hangs up in about ten seconds. The default 20s x 2
+  // attempts let one stalled round go silent for 40s; fail inside that
+  // window and apologise instead.
+  const anthropic = createAnthropic(env, { timeoutMs: VOICE_MODEL_TIMEOUT_MS, maxRetries: 1 });
   const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '');
 
   // Whether anything has been handed to TTS yet this turn. Governs whether
@@ -445,6 +449,18 @@ export async function runTurn(
   try {
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
       if (signal?.aborted) { interrupted = true; break; }
+      // The SDK timeout stops at response headers; a stream that stalls
+      // after that would hang the turn. Abort the round if no event arrives
+      // for VOICE_MODEL_TIMEOUT_MS (also covers a slow retry).
+      const round = new AbortController();
+      const onCallerAbort = () => round.abort();
+      signal?.addEventListener('abort', onCallerAbort, { once: true });
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+      const armStall = () => {
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => { stalled = true; round.abort(); }, VOICE_MODEL_TIMEOUT_MS);
+      };
+      armStall();
       const stream = anthropic.messages.stream({
         model: voiceModel(env),
         max_tokens: 400,
@@ -453,20 +469,26 @@ export async function runTurn(
         system: systemPrompt,
         tools,
         messages: withCacheBreakpoint(trimMessages([...priorMessages, ...turnMessages])),
-      }, { signal });
+      }, { signal: round.signal });
 
       let buffer = '';
       let roundText = '';
       let firstTokenLapped = false;
-      for await (const event of stream) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
-          roundText += event.delta.text;
-          buffer = drain(buffer + event.delta.text);
+      let response: Anthropic.Message;
+      try {
+        for await (const event of stream) {
+          armStall();
+          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
+            roundText += event.delta.text;
+            buffer = drain(buffer + event.delta.text);
+          }
         }
+        response = await stream.finalMessage();
+      } finally {
+        if (stallTimer) clearTimeout(stallTimer);
+        signal?.removeEventListener('abort', onCallerAbort);
       }
-
-      const response = await stream.finalMessage();
       lap(`anthropic#${i} (${response.stop_reason})`);
       const usage = response.usage as any;
       if (usage) {
@@ -534,13 +556,20 @@ export async function runTurn(
       }
     }
   } catch (err: any) {
-    if (signal?.aborted || err?.name === 'AbortError' || err?.constructor?.name === 'APIUserAbortError') {
+    if (signal?.aborted || (!stalled && (err?.name === 'AbortError' || err?.constructor?.name === 'APIUserAbortError'))) {
       interrupted = true;
     } else {
       // An LLM outage mid-call must still leave a consistent history and a
       // spoken reply, not dead air.
-      console.error(`[${tag}] turn error`, err?.message || err);
-      if (!emittedAny) emit("Sorry, I'm having trouble on my end. Could you say that again?");
+      console.error(`[${tag}] turn error`, stalled ? `model stalled > ${VOICE_MODEL_TIMEOUT_MS}ms` : err?.message || err);
+      // Also when only a preamble ("Let me check that for you.") went out
+      // before a tool round failed — otherwise the caller hears that and
+      // then nothing at all.
+      if (!finalText) {
+        emit(emittedAny
+          ? "Sorry, that's taking longer than it should. Could you say that again?"
+          : "Sorry, I'm having trouble on my end. Could you say that again?");
+      }
       finalText = finalText || spokenResponse;
     }
   }

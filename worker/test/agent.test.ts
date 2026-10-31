@@ -6,12 +6,13 @@ import type { Product, SectorMeta, SessionPayload } from '../src/types';
 // word) and an optional tool call. `abortAfter` aborts the given controller
 // once that many text deltas have been streamed — a barge-in mid-reply.
 
-type Step = { text?: string; tool?: { name: string; input: Record<string, unknown> }; abortAfter?: [AbortController, number] };
+type Step = { text?: string; tool?: { name: string; input: Record<string, unknown> }; abortAfter?: [AbortController, number]; hang?: boolean };
 let script: Step[] = [];
 let requests: any[] = [];
 
 vi.mock('../src/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/config')>()),
+  VOICE_MODEL_TIMEOUT_MS: 50,
   createAnthropic: () => ({
     messages: {
       stream(body: any, opts?: { signal?: AbortSignal }) {
@@ -31,6 +32,9 @@ vi.mock('../src/config', async (importOriginal) => ({
               yield { type: 'content_block_delta', delta: { type: 'text_delta', text } };
               n++;
               if (step.abortAfter && n === step.abortAfter[1]) step.abortAfter[0].abort();
+            }
+            if (step.hang) {
+              await new Promise<void>(resolve => opts?.signal?.addEventListener('abort', () => resolve(), { once: true }));
             }
             if (opts?.signal?.aborted) throw abortErr();
           },
@@ -266,6 +270,33 @@ describe('runTurn', () => {
     expect(chunks.join(' ')).toMatch(/trouble/);
     expect(res.committed).toBe(true);
     expect(cache.messages.map(m => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  // CA77419: "Let me check oil change times for you." then the next model
+  // round hung, and the caller sat through silence until they hung up.
+  it('apologises instead of going silent when a round stalls after a preamble', async () => {
+    const cache = freshCache();
+    script = [
+      { text: 'Let me check oil change times for you.', tool: { name: 'check_availability', input: { service_id: 'avtech-oil-syn' } } },
+      { hang: true },
+    ];
+    const chunks: string[] = [];
+    const res = await runTurn({ ...env(), VOICE_DIRECT_TOOL_REPLY: '0' }, SESSION, 'CA7', 'yeah book the oil change', { cache, onChunk: c => { chunks.push(c); } });
+    expect(chunks[0]).toBe('Let me check oil change times for you.');
+    expect(chunks.at(-1)).toMatch(/taking longer/);
+    expect(res.interrupted).toBe(false);
+    expect(res.committed).toBe(true);
+  });
+
+  it('treats a caller abort during a stalled round as an interruption, not an error', async () => {
+    const cache = freshCache();
+    const ac = new AbortController();
+    script = [{ hang: true }];
+    setTimeout(() => ac.abort(), 10);
+    const chunks: string[] = [];
+    const res = await runTurn(env(), SESSION, 'CA8', 'hello', { cache, signal: ac.signal, onChunk: c => { chunks.push(c); } });
+    expect(res.interrupted).toBe(true);
+    expect(chunks).toEqual([]);
   });
 });
 
