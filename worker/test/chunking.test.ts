@@ -130,9 +130,13 @@ describe('canSpeakToolResultDirectly', () => {
     expect(canSpeakToolResultDirectly('search_services', ok({ matchType: 'no_match' }))).toBe(false);
   });
 
-  it('round-trips state-changing and unknown tools through the model', () => {
-    expect(canSpeakToolResultDirectly('book_appointment', ok({ id: 'x' }))).toBe(false);
-    expect(canSpeakToolResultDirectly('cancel_booking', ok({ id: 'x' }))).toBe(false);
+  it('speaks successful confirmations directly — they already say everything', () => {
+    expect(canSpeakToolResultDirectly('book_appointment', ok({ id: 'x' }))).toBe(true);
+    expect(canSpeakToolResultDirectly('cancel_booking', ok({ id: 'x' }))).toBe(true);
+    expect(canSpeakToolResultDirectly('transfer_to_staff', ok({ transferring: true }))).toBe(true);
+  });
+
+  it('round-trips unknown tools through the model', () => {
     expect(canSpeakToolResultDirectly('get_upsells', ok({ upsells: [] }))).toBe(false);
   });
 

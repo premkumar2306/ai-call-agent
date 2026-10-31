@@ -5,7 +5,8 @@ import { placeOrder, getOrders, getOrder, cancelOrder } from './order.service';
 import { scoreProducts } from './recommendations.service';
 import { formatPrice } from './business-profile';
 import { getDb } from '../db/client';
-import { orders as ordersTable } from '../db/schema';
+import { orders as ordersTable, callMessages } from '../db/schema';
+import { notifyBooking, notifyMessage } from './notify.service';
 import type { CallCache } from './call-context';
 import {
   getCalendarBusy, overlapsBusy, bookingInterval, isSlotFreeInCalendar,
@@ -63,12 +64,22 @@ export function parseHoursRange(range: string): { openH: number; openM: number; 
  * ISO string, so lexical and chronological ordering agree and gte/lte work
  * directly on it.
  */
-export async function getBookedDatetimes(env: Env, businessType: string): Promise<Set<string>> {
+// Start minute ("YYYY-MM-DDTHH:MM") → customers with a visit starting then.
+export type BookedSlots = Map<string, Set<string>>;
+
+export function addBooked(booked: BookedSlots, scheduledAt: string, customer: string) {
+  const key = scheduledAt.slice(0, 16);
+  const set = booked.get(key) ?? new Set<string>();
+  set.add(customer);
+  booked.set(key, set);
+}
+
+export async function getBookedDatetimes(env: Env, businessType: string): Promise<BookedSlots> {
   const db = getDb(env.DB);
   const now = new Date().toISOString();
   const horizon = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
   const booked = await db
-    .select({ scheduledAt: ordersTable.scheduledAt })
+    .select({ scheduledAt: ordersTable.scheduledAt, customer: ordersTable.customerIdHashed })
     .from(ordersTable)
     .where(
       and(
@@ -78,8 +89,9 @@ export async function getBookedDatetimes(env: Env, businessType: string): Promis
         lte(ordersTable.scheduledAt, horizon),
       )
     );
-  // Normalise to "YYYY-MM-DDTHH:MM" for slot collision matching
-  return new Set(booked.map(r => r.scheduledAt!.slice(0, 16)));
+  const slots: BookedSlots = new Map();
+  for (const r of booked) addBooked(slots, r.scheduledAt!, r.customer);
+  return slots;
 }
 
 // Calendar date + weekday of `date` as seen in the business's timezone.
@@ -147,9 +159,10 @@ export async function getAvailableSlots(
   businessType: string,
   meta: SectorMeta | null | undefined,
   durationMinutes = 60,
-  bookedDatetimes?: Set<string>,
+  bookedDatetimes?: BookedSlots,
   calendarBusy?: BusyInterval[] | null,
   now: Date = new Date(),
+  forCustomer?: string,
 ): Promise<Slot[]> {
   const rawSlots: Slot[] = [];
   // Any half hour inside opening hours is bookable, so "9 works" can be
@@ -191,7 +204,13 @@ export async function getAvailableSlots(
   // appointment's full length (not just its start time).
   const busy = calendarBusy ?? [];
   return rawSlots
-    .filter(s => !booked.has(s.datetime.slice(0, 16)))
+    .filter(s => {
+      // Full when `capacity` other customers already start then; the
+      // caller's own visit never blocks them (they can stack services).
+      const who = booked.get(s.datetime.slice(0, 16));
+      const others = who ? who.size - (forCustomer && who.has(forCustomer) ? 1 : 0) : 0;
+      return others < (meta?.capacity ?? 1);
+    })
     .filter(s => {
       if (!busy.length) return true;
       const { start, end } = bookingInterval(s.datetime, durationMinutes, meta?.timezone);
@@ -388,7 +407,7 @@ export async function executeTool(
         // skipped entirely when the call already has a prefetched, kept-in-
         // sync booked-slot set (CallRelay prefetches one at call start —
         // see CallCache) — this tool becomes pure CPU in that case.
-        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy);
+        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy, new Date(), token.sub);
         lap?.('getAvailableSlots');
         if (slots.length === 0) {
           return { success: true, data: { slots: [] }, spoken_response: `We don't have any openings in the next ${AVAILABILITY_DAYS} days. Please call us directly.` };
@@ -513,6 +532,15 @@ export async function executeTool(
         if (product.fulfillmentType === 'SERVICE_BOOKING' && !scheduledAt) {
           return { success: false, error: 'INVALID_SCHEDULE', spoken_response: "Which day and time would you like? I can check what's open." };
         }
+        // The front desk needs to know who is coming and how to reach them.
+        const customerName = (args.customer_name as string | undefined)?.trim();
+        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? token.callerPhone;
+        if (product.fulfillmentType === 'SERVICE_BOOKING' && !customerName) {
+          return { success: false, error: 'DETAILS_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.DETAILS_REQUIRED };
+        }
+        if (product.fulfillmentType === 'SERVICE_BOOKING' && !callbackPhone) {
+          return { success: false, error: 'PHONE_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.PHONE_REQUIRED };
+        }
         // The model sometimes books a time it never offered ("2:15", or a
         // Sunday). Reject anything outside opening hours or already past
         // before it reaches the DB, so the reply can steer back to real slots.
@@ -539,7 +567,14 @@ export async function executeTool(
             args.product_id as string,
             (args.payment_method as string | undefined) ?? 'CREDIT_CARD',
             args.shipping_address as any,
-            scheduledAt
+            scheduledAt,
+            {
+              customerName,
+              vehicle: args.vehicle as string | undefined,
+              callbackPhone,
+              notes: args.notes as string | undefined,
+              capacity: sectorMeta?.capacity,
+            },
           ),
           slotFreeP,
         ]);
@@ -554,6 +589,7 @@ export async function executeTool(
           const duration = await durationP;
           await defer(syncBookingToCalendar(env, order, sectorMeta, duration));
         }
+        await defer(notifyBooking(env, sectorMeta, order, 'booked'));
         // Clear from cart. The customer already heard the booking confirmed
         // by the time this write happens — cart bookkeeping doesn't need to
         // block the response, so fire it and move on.
@@ -571,12 +607,12 @@ export async function executeTool(
           cache.orders = null;
           cache.ordersLoaded = false;
           if (order.scheduledAt && cache.bookedDatetimes) {
-            cache.bookedDatetimes.add(order.scheduledAt.slice(0, 16));
+            addBooked(cache.bookedDatetimes, order.scheduledAt, token.sub);
           }
         }
 
         const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
-        const msg = `You're all set — ${order.productName}${when}.`;
+        const msg = `You're all set — ${order.productName}${when}. Anything else I can help with?`;
         return {
           success: true,
           data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product) },
@@ -618,6 +654,61 @@ export async function executeTool(
         };
       }
 
+      case 'reschedule_booking': {
+        const newAt = args.new_datetime as string | undefined;
+        if (!newAt) return { success: false, error: 'INVALID_SCHEDULE', spoken_response: "What day and time would you like instead?" };
+        const recent = cache?.ordersLoaded ? cache.orders! : await getOrders(env, token.sub, businessType);
+        const old = recent.find(o => o.id === args.order_id && ['PENDING', 'ACCEPTED', 'COMPLETE'].includes(o.status));
+        if (!old?.scheduledAt) return { success: false, error: 'NOT_FOUND', spoken_response: "I couldn't find that booking. Want me to list your bookings?" };
+        const product = await lookupProduct(env, cache, old.productId);
+        const problem = checkWithinHours(newAt, product?.durationMinutes ?? 60, sectorMeta);
+        if (problem) return { success: false, error: problem, spoken_response: TOOL_ERROR_MESSAGES[problem] };
+        // New slot first, so a taken time leaves the original booking alone.
+        const moved = await placeOrder(env, token.sub, businessType, old.productId, old.paymentMethod, undefined, newAt, {
+          customerName: old.customerName ?? undefined, vehicle: old.vehicle ?? undefined,
+          callbackPhone: old.callbackPhone ?? token.callerPhone, notes: old.notes ?? undefined,
+          capacity: sectorMeta?.capacity,
+        });
+        const cancelled = await cancelOrder(env, old.id, token.sub);
+        lap?.('reschedule');
+        await defer(removeBookingFromCalendar(env, cancelled));
+        if (moved.scheduledAt) await defer(syncBookingToCalendar(env, moved, sectorMeta, product?.durationMinutes ?? 60));
+        await defer(notifyBooking(env, sectorMeta, moved, 'rescheduled'));
+        if (cache) { cache.orders = null; cache.ordersLoaded = false; cache.bookedDatetimes = null; }
+        const label = formatSlotLabel(moved.scheduledAt!, ...todayTomorrow(sectorMeta));
+        return {
+          success: true,
+          data: { id: moved.id, service: moved.productName, scheduled_at: moved.scheduledAt, replaced: old.id },
+          spoken_response: `Done — your ${moved.productName} is moved to ${label}. Anything else?`,
+        };
+      }
+
+      case 'transfer_to_staff': {
+        const phone = sectorMeta?.phone;
+        if (!phone) return { success: false, error: 'NO_STAFF_LINE', spoken_response: "I can't transfer you, but I can take a message and have someone call you back." };
+        if (checkWithinHours(nowLocalIso(sectorMeta), 1, sectorMeta)) {
+          return { success: false, error: 'CLOSED', spoken_response: "The shop is closed right now, so nobody can pick up. I can take a message and have someone call you back — what's your name?" };
+        }
+        // Only a live call (CallRelay) can hand off; elsewhere give the number.
+        if (!cache) return { success: true, data: { phone }, spoken_response: `You can reach the team directly at ${phone}.` };
+        cache.transferTo = phone.replace(/[^\d+]/g, '');
+        return { success: true, data: { transferring: true }, spoken_response: 'Sure — connecting you to the service desk now. One moment.' };
+      }
+
+      case 'take_message': {
+        const message = (args.message as string | undefined)?.trim();
+        if (!message) return { success: false, error: 'INVALID', spoken_response: 'What would you like me to pass on?' };
+        const callerName = (args.caller_name as string | undefined)?.trim().slice(0, 120) || null;
+        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? token.callerPhone ?? null;
+        if (!callbackPhone) return { success: false, error: 'PHONE_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.PHONE_REQUIRED };
+        await getDb(env.DB).insert(callMessages).values({
+          id: crypto.randomUUID(), businessType, callSid: cache?.callSid ?? null,
+          callerName, callbackPhone, message: message.slice(0, 2000),
+        });
+        await defer(notifyMessage(env, sectorMeta, { callerName, callbackPhone, message }));
+        return { success: true, data: { saved: true }, spoken_response: "Got it — I've passed that on, and someone will call you back. Anything else?" };
+      }
+
       case 'cancel_booking':
       case 'cancel_order': {
         let orderId = args.order_id as string | undefined;
@@ -639,14 +730,15 @@ export async function executeTool(
         const order = await cancelOrder(env, orderId, token.sub);
         lap?.('cancelOrder');
         await defer(removeBookingFromCalendar(env, order));
+        await defer(notifyBooking(env, sectorMeta, order, 'cancelled'));
         // Stale cached order list / booked-slot entry — same reasoning as
         // book_appointment above.
         if (cache) {
           cache.orders = null;
           cache.ordersLoaded = false;
-          if (order.scheduledAt && cache.bookedDatetimes) {
-            cache.bookedDatetimes.delete(order.scheduledAt.slice(0, 16));
-          }
+          // Other bookings of theirs may share the time; drop the entry
+          // and let the next availability check refetch.
+          if (order.scheduledAt) cache.bookedDatetimes = null;
         }
         const when = order.scheduledAt ? ` on ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
         return {
@@ -678,7 +770,27 @@ const TOOL_ERROR_MESSAGES: Record<string, string> = {
   SLOT_TAKEN: "Sorry, that time was just taken. Want me to check other openings?",
   OUTSIDE_HOURS: "We're not open then. Want me to find the nearest opening?",
   PAST_TIME: "That time has already passed. Want me to find the next opening?",
+  DETAILS_REQUIRED: "Can I get your name for the booking?",
+  PHONE_REQUIRED: "What's the best phone number to reach you?",
 };
+
+// "(847) 555-1234" / "847-555-1234" / "+18475551234" → E.164 (US default).
+export function normalizePhone(raw: string | undefined): string | undefined {
+  const digits = raw?.replace(/\D/g, '') ?? '';
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (raw?.trim().startsWith('+') && digits.length >= 8 && digits.length <= 15) return `+${digits}`;
+  return undefined;
+}
+
+// Business-local "now" as YYYY-MM-DDTHH:MM:00, for opening-hours checks.
+function nowLocalIso(meta: SectorMeta | null | undefined): string {
+  const tz = meta?.timezone || 'UTC';
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00`;
+}
 
 function todayTomorrow(meta: SectorMeta | null | undefined): [string, string] {
   const now = new Date();
@@ -791,8 +903,42 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
           payment_method:  { type: 'string', enum: ['CREDIT_CARD', 'DEBIT_CARD', 'STORE_CREDIT', 'INVOICE'], description: 'Defaults to CREDIT_CARD (paid at the shop).' },
           scheduled_at:    { type: 'string', description: 'The exact `datetime` of the chosen slot from check_availability, e.g. "2026-04-15T09:00:00".' },
           shipping_address: { type: 'object', description: 'Required only for physical items: { line1, city, state, zip }.' },
+          customer_name:   { type: 'string', description: "The caller's name, as they said it." },
+          vehicle:         { type: 'string', description: 'Year, make and model, for businesses that work on vehicles (e.g. "2018 Honda Civic").' },
+          callback_phone:  { type: 'string', description: "Only if the caller gives a different number than the one they're calling from, or caller ID is unavailable." },
+          notes:           { type: 'string', description: 'Anything the staff should know (symptoms, requests).' },
         },
         required: ['product_id'],
+      },
+    },
+    {
+      name: 'reschedule_booking',
+      description: 'Move an existing booking to a new time. Check availability for the new time first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          order_id:     { type: 'string', description: 'The booking id from list_bookings.' },
+          new_datetime: { type: 'string', description: 'Exact datetime from check_availability, e.g. "2026-04-15T09:00:00".' },
+        },
+        required: ['order_id', 'new_datetime'],
+      },
+    },
+    {
+      name: 'transfer_to_staff',
+      description: 'Connect the caller to a person at the business. Only when they ask for a person, or for something only staff can do. Call it without saying anything first — its reply is spoken for you.',
+      parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: [] },
+    },
+    {
+      name: 'take_message',
+      description: 'Leave a message for staff to call the caller back (exact quotes, questions you can\'t answer, after hours).',
+      parameters: {
+        type: 'object',
+        properties: {
+          caller_name:    { type: 'string' },
+          message:        { type: 'string', description: 'What they need, in a sentence or two.' },
+          callback_phone: { type: 'string', description: "Only if different from the number they're calling from." },
+        },
+        required: ['message'],
       },
     },
     {

@@ -6,6 +6,7 @@ import { classifyCall } from '../services/call-classifier.service';
 import { customerHashSalt, isProduction, timingSafeEqual } from '../config';
 import { signStreamToken } from '../utils/stream-token';
 import { hashId } from '../utils/identity';
+import { transferKey } from '../services/call-context';
 
 const twilioRouter = new Hono<HonoEnv>();
 
@@ -94,11 +95,33 @@ twilioRouter.post('/inbound', requireTwilioSig('/twilio/inbound'), withTwilioSes
   const callSid = typeof body.CallSid === 'string' ? body.CallSid : crypto.randomUUID();
   const callerKey = /^\+?\d{7,15}$/.test(from) ? from.replace(/\D/g, '') : `call:${callSid}`;
   const callerHash = await hashId(callerKey, customerHashSalt(c.env));
-  const streamToken = await signStreamToken(c.env, businessType, callerHash);
+  const callerPhone = /^\+\d{7,15}$/.test(from) ? from : undefined;
+  const streamToken = await signStreamToken(c.env, businessType, callerHash, callerPhone);
+  // When the stream ends Twilio moves on to the next verb: /after-stream
+  // either transfers the call to staff (the agent asked for it) or hangs up.
+  const afterUrl = `${(c.env.TWILIO_WEBHOOK_URL ?? `https://${host}`).replace(/\/$/, '')}/twilio/after-stream`;
   return c.text(
     `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="${xml(streamUrl)}">` +
     `<Parameter name="businessType" value="${xml(businessType)}"/>` +
-    `<Parameter name="streamToken" value="${xml(streamToken)}"/></Stream></Connect></Response>`,
+    `<Parameter name="streamToken" value="${xml(streamToken)}"/></Stream></Connect>` +
+    `<Redirect method="POST">${xml(afterUrl)}</Redirect></Response>`,
+    200, TEXT_XML,
+  );
+});
+
+// ── POST /twilio/after-stream ─────────────────────────────────────────────────
+// Reached when the media stream closes on a live call. CallRelay records a
+// transfer request in KV (transferKey) before closing the stream.
+
+twilioRouter.post('/after-stream', requireTwilioSig('/twilio/after-stream'), async (c) => {
+  const body = await c.req.parseBody();
+  const callSid = typeof body.CallSid === 'string' ? body.CallSid : '';
+  const to = callSid ? await c.env.CACHE.get(transferKey(callSid)) : null;
+  if (!to) return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>', 200, TEXT_XML);
+  console.log(`[call] ${callSid.slice(-8)} transferring to staff`);
+  return c.text(
+    `<?xml version="1.0" encoding="UTF-8"?><Response><Dial timeout="25">${xml(to)}</Dial>` +
+    `<Say voice="Polly.Joanna-Neural">Sorry, nobody was able to pick up. Please try again during business hours. Goodbye.</Say></Response>`,
     200, TEXT_XML,
   );
 });

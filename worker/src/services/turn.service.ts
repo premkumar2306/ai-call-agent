@@ -151,6 +151,15 @@ export function canSpeakToolResultDirectly(toolName: string, result: ToolResult)
       return true;
     case 'check_availability':
       return Array.isArray(d?.offered) && d.offered.length > 0;
+    // Confirmations already say everything ("You're all set — X for Monday
+    // at 8. Anything else?"); a second model call only added ~0.5s and
+    // a longer, wordier restatement.
+    case 'book_appointment':
+    case 'reschedule_booking':
+    case 'cancel_booking':
+    case 'transfer_to_staff':
+    case 'take_message':
+      return true;
     case 'search_services':
     case 'search_products':
       return d?.matchType === 'match';
@@ -177,7 +186,8 @@ export function extractCompleteSentences(buffer: string): { chunks: string[]; re
 // from a small fast model.
 const VOICE_TOOLS = new Set([
   'search_services', 'get_service_detail', 'check_availability', 'book_appointment',
-  'list_bookings', 'get_booking_status', 'cancel_booking',
+  'list_bookings', 'get_booking_status', 'cancel_booking', 'reschedule_booking',
+  'transfer_to_staff', 'take_message',
 ]);
 
 /** Tool definitions for the agent surfaces, last one marked as a cache breakpoint. */
@@ -251,7 +261,7 @@ export function buildAgentRules(businessType: string, bizName: string, channel: 
 
 USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
-- If the profile doesn't cover something, say you can't confirm that from here and a service advisor can, and give the phone number from the profile as the service desk's direct line. Never invent facts, prices or policies.
+- If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so a service advisor calls them back (or connect them, if they'd rather talk now). Never invent facts, prices or policies.
 - Speak as the business ("we", "our shop"). Never mention "the profile", "my information" or "the list" to the caller.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
 - Before a tool call say nothing, or at most a few words ("Let me check."). Never think aloud, and never say a date as YYYY-MM-DD.
@@ -261,7 +271,7 @@ CONVERSATION:
 - Use what the ${who} already told you. Never ask for something they already said, and never ask the same question twice in a row — if you didn't understand, say what you did catch and ask something narrower.
 - ${channel === 'voice' ? 'Speech recognition makes mistakes. If words look garbled, make your best guess from context and confirm it in a few words.' : 'Typos happen. Make your best guess from context and confirm it briefly.'}
 - A reply of yours ending in "${INTERRUPTED_MARK}" was cut off — the ${who} only heard the part before it. Respond to what they said; don't restart the whole reply.
-- If asked, you are an AI assistant — never claim to be human. If they want a person, read out the phone number from the profile.`;
+- If asked, you are an AI assistant — never claim to be human. If they want a person, use transfer_to_staff.`;
 
   if (businessType === 'health_nav') {
     return `You are Mogi, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
@@ -281,11 +291,14 @@ ${shared}
 BOOKING (live data — always use the tools, one step at a time):
 1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brakes, warning light → diagnostics). If it's genuinely unclear, suggest an inspection or diagnostic visit.
 2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns. If it says requested_open, book that requested_slot in the same turn — they already chose it.
-3. When they pick a time, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Then confirm the service, day and time.
+3. Before the first booking, get their name — and, if the business works on vehicles, the year, make and model — in one short question, if you don't already have them from this call. Their callback number is the one they're calling from; only ask for a number if book_appointment says it needs one.
+3b. When they pick a time and you have those details, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Its reply is spoken to the caller as-is.
 4. Only book times check_availability returned. If they ask for another time, check availability for it.
 - Adding a service to an appointment they already have (one visit, several jobs): call book_appointment for the new service with the existing booking's exact datetime from "Customer's bookings" — no availability check, never a different time.
 5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.
-- Existing appointments: list_bookings; to cancel, cancel_booking.`;
+- Existing appointments: list_bookings; to cancel, cancel_booking; to move one, check_availability for the new time, then reschedule_booking.
+- Wants a person, or needs something only staff can do: transfer_to_staff. If the shop is closed or there's no answer, take_message instead.
+- Questions you can't answer from the profile (exact quotes, coupons, special requests): offer to take_message so a service advisor calls them back, instead of telling them to call.`;
 }
 
 function describeCaller(session: SessionPayload, orders: Order[] | null | undefined, meta: SectorMeta | null): string {

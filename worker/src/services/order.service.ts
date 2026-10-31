@@ -19,6 +19,10 @@ function mapRow(r: typeof ordersTable.$inferSelect): Order {
     scheduledAt: r.scheduledAt,
     calendarEventId: r.calendarEventId,
     calendarSync: r.calendarSync,
+    customerName: r.customerName,
+    vehicle: r.vehicle,
+    callbackPhone: r.callbackPhone,
+    notes: r.notes,
     createdAt: (r.createdAt as Date).toISOString(),
     updatedAt: (r.updatedAt as Date).toISOString(),
   };
@@ -39,6 +43,18 @@ export function validateScheduledAt(scheduledAt: string, now = new Date()): stri
   return null;
 }
 
+// What the front desk took down with the booking.
+export interface BookingDetails {
+  customerName?: string;
+  vehicle?: string;
+  callbackPhone?: string;
+  notes?: string;
+  /** Different customers' visits that may start at the same time. */
+  capacity?: number;
+}
+
+const clip = (s: string | undefined, n: number) => (s?.trim() ? s.trim().slice(0, n) : null);
+
 export async function placeOrder(
   env: Env,
   customerIdHashed: string,
@@ -46,7 +62,8 @@ export async function placeOrder(
   productId: string,
   paymentMethod: string,
   shippingAddress?: { line1: string; city: string; state: string; zip: string },
-  scheduledAt?: string
+  scheduledAt?: string,
+  booking: BookingDetails = {},
 ): Promise<Order> {
   const product = await getProductById(env, productId);
   if (!product || !product.isActive) throw Object.assign(new Error('Product not found'), { code: 'NOT_FOUND' });
@@ -80,6 +97,10 @@ export async function placeOrder(
     scheduledAt: scheduledAt ?? null,
     calendarEventId: null,
     calendarSync: null,
+    customerName: clip(booking.customerName, 120),
+    vehicle: clip(booking.vehicle, 120),
+    callbackPhone: clip(booking.callbackPhone, 32),
+    notes: clip(booking.notes, 500),
     shippingLine1: shippingAddress?.line1,
     shippingCity: shippingAddress?.city,
     shippingState: shippingAddress?.state,
@@ -92,18 +113,22 @@ export async function placeOrder(
     // Single-statement conditional insert: SQLite runs it atomically, so two
     // callers racing for the same slot can't both succeed (a SELECT-then-
     // INSERT would leave a window between the two). Slot identity matches
-    // getBookedDatetimes(): business + minute-resolution start time. The
-    // same customer may stack different services on one start time — that's
-    // one visit with several jobs ("add a tune-up to my oil change").
+    // getBookedDatetimes(): business + minute-resolution start time. Up to
+    // `capacity` different customers may start then (bays). The same
+    // customer may stack different services on one start time — that's one
+    // visit with several jobs ("add a tune-up to my oil change").
     const nowSec = Math.floor(now.getTime() / 1000);
+    const capacity = Math.max(1, booking.capacity ?? 1);
     const result = await db.run(sql`
       INSERT INTO orders (
         id, customer_id_hashed, business_type, product_id, vendor_name, product_name, status,
         price_cents, payment_method, tracking_number, scheduled_at,
+        customer_name, vehicle, callback_phone, notes,
         shipping_line1, shipping_city, shipping_state, shipping_zip, created_at, updated_at
       )
       SELECT ${id}, ${customerIdHashed}, ${sector}, ${productId}, ${product.vendorName}, ${product.name}, 'PENDING',
         ${product.priceCents}, ${paymentMethod}, NULL, ${scheduledAt},
+        ${row.customerName}, ${row.vehicle}, ${row.callbackPhone}, ${row.notes},
         ${shippingAddress?.line1 ?? null}, ${shippingAddress?.city ?? null},
         ${shippingAddress?.state ?? null}, ${shippingAddress?.zip ?? null}, ${nowSec}, ${nowSec}
       WHERE NOT EXISTS (
@@ -111,8 +136,16 @@ export async function placeOrder(
         WHERE business_type = ${sector}
           AND status != 'CANCELLED'
           AND substr(scheduled_at, 1, 16) = substr(${scheduledAt}, 1, 16)
-          AND (customer_id_hashed != ${customerIdHashed} OR product_id = ${productId})
-      )`);
+          AND customer_id_hashed = ${customerIdHashed}
+          AND product_id = ${productId}
+      )
+      AND (
+        SELECT count(DISTINCT customer_id_hashed) FROM orders
+        WHERE business_type = ${sector}
+          AND status != 'CANCELLED'
+          AND substr(scheduled_at, 1, 16) = substr(${scheduledAt}, 1, 16)
+          AND customer_id_hashed != ${customerIdHashed}
+      ) < ${capacity}`);
     if (!result.meta.changes) {
       throw Object.assign(new Error('That time slot was just booked'), { code: 'SLOT_TAKEN' });
     }

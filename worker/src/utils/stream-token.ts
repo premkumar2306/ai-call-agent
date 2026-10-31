@@ -17,11 +17,14 @@ export interface StreamClaims {
   // withheld) — the caller's identity for bookings and history. Carried in
   // the token because the media stream itself never sees the From number.
   callerHash?: string;
+  // The caller's own number (E.164), so a booking or message carries a
+  // callback number the shop can use. Absent when caller ID is withheld.
+  callerPhone?: string;
 }
 
-export async function signStreamToken(env: Env, businessType: string, callerHash?: string): Promise<string> {
+export async function signStreamToken(env: Env, businessType: string, callerHash?: string, callerPhone?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({ purpose: PURPOSE, businessType, ...(callerHash ? { callerHash } : {}) })
+  return new SignJWT({ purpose: PURPOSE, businessType, ...(callerHash ? { callerHash } : {}), ...(callerPhone ? { callerPhone } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt(now)
     .setExpirationTime(now + TTL_SECONDS)
@@ -36,6 +39,7 @@ export async function verifyStreamToken(env: Env, token: string): Promise<Stream
     return {
       businessType: payload.businessType,
       callerHash: typeof payload.callerHash === 'string' ? payload.callerHash : undefined,
+      callerPhone: typeof payload.callerPhone === 'string' ? payload.callerPhone : undefined,
     };
   } catch {
     return null;

@@ -18,6 +18,8 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     phone:      row.phone ?? undefined,
     website:    row.website ?? undefined,
     about:      row.about ?? undefined,
+    notifyEmail: row.notifyEmail ?? undefined,
+    capacity:   row.capacity ?? 1,
   };
 }
 
@@ -50,6 +52,8 @@ export async function upsertSector(env: Env, key: string, data: {
   phone?: string;
   website?: string;
   about?: string;
+  notifyEmail?: string;
+  capacity?: number;
 }): Promise<void> {
   const db = getDb(env.DB);
   const now = new Date();
@@ -65,6 +69,8 @@ export async function upsertSector(env: Env, key: string, data: {
     phone:      data.phone,
     website:    data.website,
     about:      data.about,
+    notifyEmail: data.notifyEmail,
+    capacity:   data.capacity ?? 1,
     isActive:   true,
     createdAt:  now,
     updatedAt:  now,
@@ -81,6 +87,10 @@ export async function upsertSector(env: Env, key: string, data: {
       phone:      data.phone,
       website:    data.website,
       about:      data.about,
+      // Only overwritten when given, so re-saving a sector from an older
+      // admin form doesn't wipe them.
+      ...(data.notifyEmail !== undefined ? { notifyEmail: data.notifyEmail } : {}),
+      ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
       isActive:   true,
       updatedAt:  now,
     },

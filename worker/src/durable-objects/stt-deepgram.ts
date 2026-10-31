@@ -26,6 +26,8 @@
 
 export interface SttOptions {
   apiKey: string;
+  /** True when an interim transcript is our own voice coming back (speakerphone echo) — no barge-in. */
+  isEcho?: (text: string) => boolean;
   /** Deepgram model. Default 'nova-3'. */
   model?: string;
   /** 'en' (default); set 'multi' for multilingual. */
@@ -107,6 +109,31 @@ export function isBackchannel(text: string): boolean {
   return words.length > 0 && words.length <= 3 && words.every(w => BACKCHANNEL_WORDS.has(w));
 }
 
+// Words that only hold the floor ("Well,", "Um, so"). Said on their own
+// while the assistant is quiet they're the start of a sentence, not a turn.
+const DISCOURSE_WORDS = new Set(['well', 'so', 'um', 'uh', 'umm', 'uhh', 'er', 'hmm', 'and', 'but', 'like', 'also', 'then', 'actually']);
+
+export function isDiscourseOnly(text: string): boolean {
+  const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 3 && words.every(w => DISCOURSE_WORDS.has(w));
+}
+
+/**
+ * Whether `heard` is (mostly) a replay of what the assistant said — its own
+ * audio leaking back through a speakerphone into the caller's microphone.
+ * Needs 4+ words, most of them from what was just spoken, so a caller
+ * picking an option the assistant read out ("all four") isn't mistaken
+ * for echo.
+ */
+export function isEchoOf(heard: string, spoken: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, ' ').split(/\s+/).filter(Boolean);
+  const h = norm(heard);
+  if (h.length < 4) return false;
+  const said = new Set(norm(spoken));
+  if (!said.size) return false;
+  return h.filter(w => said.has(w)).length / h.length >= 0.75;
+}
+
 export interface Stt {
   sendAudio(buf: ArrayBuffer): void;
   close(): void;
@@ -119,7 +146,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900,
+    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho,
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -236,7 +263,7 @@ export async function createDeepgramSTT(
             finalized = false;
             // Barge-in once there are enough words to be a real interruption
             // — and not just the caller saying "mm-hmm" while listening.
-            if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text)) announceSpeech('interim');
+            if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text) && !isEcho?.(text)) announceSpeech('interim');
           } else if (!finalized) {
             // is_final but not (yet) speech_final, and we haven't already
             // finalized this utterance — keep lastText fresh as a fallback

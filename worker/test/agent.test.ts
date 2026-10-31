@@ -52,7 +52,8 @@ const { createCallCache } = await import('../src/services/call-context');
 const { buildBusinessProfile, describeLocalNow, formatPrice } = await import('../src/services/business-profile');
 const { searchProducts } = await import('../src/services/catalog.service');
 const { getAvailableSlots, pickSlots, checkWithinHours, formatSlotLabel } = await import('../src/services/tool-router.service');
-const { isBackchannel, looksIncomplete } = await import('../src/durable-objects/stt-deepgram');
+const { isBackchannel, looksIncomplete, isEchoOf, isDiscourseOnly } = await import('../src/durable-objects/stt-deepgram');
+const { executeTool, normalizePhone } = await import('../src/services/tool-router.service');
 const { agentTools } = await import('../src/services/turn.service');
 const { joinUtterances } = await import('../src/durable-objects/call-relay');
 
@@ -100,7 +101,7 @@ function freshCache() {
   cache.productsAll = PRODUCTS;
   cache.orders = [];
   cache.ordersLoaded = true;
-  cache.bookedDatetimes = new Set();
+  cache.bookedDatetimes = new Map();
   cache.calendarBusy = [];
   return cache;
 }
@@ -166,7 +167,7 @@ describe('searchProducts', () => {
 describe('availability', () => {
   // Thursday 2026-10-29, 10:00 in Chicago.
   const now = new Date('2026-10-29T15:00:00Z');
-  const slots = () => getAvailableSlots({} as any, 'advanced_vtech', META, 60, new Set(), [], now);
+  const slots = () => getAvailableSlots({} as any, 'advanced_vtech', META, 60, new Map(), [], now);
 
   it('offers today after a lead time, starts at the real opening minute, skips closed days', async () => {
     const s = await slots();
@@ -336,6 +337,20 @@ describe('trimMessages', () => {
 // ── Turn-taking ─────────────────────────────────────────────────────────────
 
 describe('turn-taking helpers', () => {
+  // CAbcf248: the agent's "I'm not sure what you mean by that, but I'm
+  // available to help" came back through the speakerphone as caller speech.
+  it('recognises our own words coming back as echo, not a caller picking an option', () => {
+    const said = "I'm not sure what you mean by that, but I'm available to help.";
+    expect(isEchoOf("I'm not by that, but I'm available Monday.", said)).toBe(true);
+    expect(isEchoOf('all four corners', 'Front, rear, or all four corners?')).toBe(false);
+    expect(isEchoOf("I'm available Monday morning for brakes", said)).toBe(false);
+  });
+
+  it('holds lone filler words instead of answering them', () => {
+    for (const t of ['Well,', 'Um, so', 'and']) expect(isDiscourseOnly(t)).toBe(true);
+    for (const t of ['Oh, no.', 'Well, Monday works', 'yes']) expect(isDiscourseOnly(t)).toBe(false);
+  });
+
   it('treats listener feedback as backchannel, real answers as speech', () => {
     for (const t of ['uh huh', 'Mm-hmm.', 'okay', 'yeah got it', 'Right.']) expect(isBackchannel(t)).toBe(true);
     for (const t of ['okay book it', 'no', 'yeah tuesday works', 'what about Saturday', '']) expect(isBackchannel(t)).toBe(false);
@@ -359,5 +374,45 @@ describe('turn-taking helpers', () => {
   it('joins a split utterance', () => {
     expect(joinUtterances('I need an oil change', ' for my Civic on Friday')).toBe('I need an oil change for my Civic on Friday');
     expect(joinUtterances('', 'hello')).toBe('hello');
+  });
+});
+
+// ── Front desk ──────────────────────────────────────────────────────────────
+
+describe('front desk details', () => {
+  it('normalises spoken phone numbers to E.164', () => {
+    expect(normalizePhone('(847) 555-1234')).toBe('+18475551234');
+    expect(normalizePhone('1 847 555 1234')).toBe('+18475551234');
+    expect(normalizePhone('555-1234')).toBeUndefined();
+  });
+
+  it('asks for a name before booking, and for a number when caller ID is withheld', async () => {
+    const cache = freshCache();
+    const at = '2026-11-02T09:00:00';
+    const noName = await executeTool('book_appointment', { product_id: PRODUCTS[0].id, scheduled_at: at }, { ...SESSION, callerPhone: '+18475551234' }, env(), META, cache);
+    expect(noName.error).toBe('DETAILS_REQUIRED');
+    const noPhone = await executeTool('book_appointment', { product_id: PRODUCTS[0].id, scheduled_at: at, customer_name: 'Sam' }, SESSION, env(), META, cache);
+    expect(noPhone.error).toBe('PHONE_REQUIRED');
+  });
+
+  it('hands a live call to staff during opening hours', async () => {
+    const cache = freshCache();
+    const res = await executeTool('transfer_to_staff', {}, SESSION, env(), { ...META, phone: '(847) 777-5000', hours: { mon: '12am–11:59pm', tue: '12am–11:59pm', wed: '12am–11:59pm', thu: '12am–11:59pm', fri: '12am–11:59pm', sat: '12am–11:59pm', sun: '12am–11:59pm' } }, cache);
+    expect(res.success).toBe(true);
+    expect(cache.transferTo).toBe('8477775000');
+  });
+});
+
+describe('capacity', () => {
+  it("blocks a time only once other customers fill it; the caller's own visit never blocks them", async () => {
+    const now = new Date('2026-10-29T15:00:00Z');
+    const booked = new Map([['2026-11-02T09:00', new Set(['someone-else'])]]);
+    const one = await getAvailableSlots({} as any, 'advanced_vtech', META, 60, booked, [], now);
+    expect(one.some(s => s.datetime === '2026-11-02T09:00:00')).toBe(false);
+    const two = await getAvailableSlots({} as any, 'advanced_vtech', { ...META, capacity: 2 }, 60, booked, [], now);
+    expect(two.some(s => s.datetime === '2026-11-02T09:00:00')).toBe(true);
+    const mine = new Map([['2026-11-02T09:00', new Set(['caller-1'])]]);
+    const own = await getAvailableSlots({} as any, 'advanced_vtech', META, 60, mine, [], now, 'caller-1');
+    expect(own.some(s => s.datetime === '2026-11-02T09:00:00')).toBe(true);
   });
 });

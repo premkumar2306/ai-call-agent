@@ -8,8 +8,8 @@ import { getOrders } from '../services/order.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
-import { createCallCache, type CallCache } from '../services/call-context';
-import { createDeepgramSTT, isBackchannel, type Stt } from './stt-deepgram';
+import { createCallCache, transferKey, type CallCache } from '../services/call-context';
+import { createDeepgramSTT, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
 import { verifyStreamToken } from '../utils/stream-token';
 import { getOrCreateCustomer } from '../utils/identity';
 import { isProduction } from '../config';
@@ -58,6 +58,10 @@ const MAX_FILLERS = 3;
 // ask "Are you still there?", and after the same again say goodbye and hang
 // up, rather than holding an open line in dead air.
 const SILENCE_REPROMPT_MS = 8000;
+
+// A transcript arriving this soon after our audio stopped can still be
+// that audio's echo.
+const ECHO_TAIL_MS = 1500;
 
 interface SpokenChunk { text: string; played: boolean; filler: boolean }
 
@@ -119,6 +123,14 @@ export class CallRelay extends DurableObject<Env> {
   private quietSince = 0;
   private silencePrompts = 0;
   private hangupWhenDone = false;
+  // A transfer to staff was requested: close the stream (→ /twilio/after-stream
+  // dials them) once the "connecting you" line has played. Not cancelled by
+  // caller speech, unlike the silence goodbye.
+  private endStreamWhenDone = false;
+  // What the assistant said recently and when its audio last finished, for
+  // echo detection (isEchoOf).
+  private spokenLog: { text: string; at: number }[] = [];
+  private lastAudioEndAt = 0;
   private metrics: TurnMetric[] = [];
 
   private get ttsConfig(): CartesiaConfig {
@@ -164,6 +176,7 @@ export class CallRelay extends DurableObject<Env> {
         endpointingMs: numEnv(this.env.DG_ENDPOINTING_MS),
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
+        isEcho: (text) => this.looksLikeEcho(text),
         incompleteHoldMs: numEnv(this.env.DG_INCOMPLETE_HOLD_MS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
@@ -217,9 +230,30 @@ export class CallRelay extends DurableObject<Env> {
     this.bargeIn();
   }
 
+  // Our own audio coming back from a speakerphone, heard while (or just
+  // after) it played.
+  private looksLikeEcho(text: string): boolean {
+    const now = Date.now();
+    if (this.pendingMarks.size === 0 && now - this.lastAudioEndAt > ECHO_TAIL_MS) return false;
+    const spoken = this.spokenLog.filter(s => now - s.at < 20_000).map(s => s.text).join(' ');
+    return isEchoOf(text, spoken);
+  }
+
   private handleTranscript(text: string) {
     if (!this.session || !this.twWs) return;
+    if (this.looksLikeEcho(text)) {
+      console.log(`[turn] ignoring echo of our own audio: "${text.slice(0, 60)}"`);
+      return;
+    }
     this.callerActive();
+
+    // "Well," / "Um, so" with the assistant quiet: the caller is starting a
+    // sentence. Keep it for their next utterance instead of answering it.
+    if (!this.agentActive && isDiscourseOnly(text)) {
+      console.log(`[turn] holding filler words: "${text}"`);
+      this.carryOver = joinUtterances(this.carryOver, text);
+      return;
+    }
 
     // "Uh huh" / "okay" while the assistant is mid-reply is the caller
     // listening, not taking the turn — unless what they've heard so far
@@ -260,6 +294,9 @@ export class CallRelay extends DurableObject<Env> {
       return;
     }
     const ws = this.twWs!;
+    const now = Date.now();
+    this.spokenLog = this.spokenLog.filter(s => now - s.at < 20_000);
+    this.spokenLog.push({ text: chunk.text, at: now });
     await cartesiaDrain(res, this.streamSid, ws, signal, false);
     if (signal.aborted || ws.readyState !== WebSocket.OPEN) return;
     const name = `m${++this.markSeq}`;
@@ -371,6 +408,10 @@ export class CallRelay extends DurableObject<Env> {
       }
       clearInterval(watchdog);
       await chunkChain;
+      if (this.cache.transferTo && !this.endStreamWhenDone) {
+        await this.env.CACHE.put(transferKey(this.callSid), this.cache.transferTo, { expirationTtl: 600 });
+        this.endStreamWhenDone = true;
+      }
     } catch (e: any) {
       if (e?.name !== 'AbortError') console.error('[turn]', e?.message || e);
     } finally {
@@ -409,6 +450,15 @@ export class CallRelay extends DurableObject<Env> {
     if (!this.quietSince) return;
     const now = Date.now();
     if (this.agentActive) { this.quietSince = now; return; }
+    if (this.endStreamWhenDone) {
+      this.endStreamWhenDone = false;
+      this.quietSince = 0;
+      console.log(`[call] ${this.callSid.slice(-8)} handing off to staff`);
+      this.stt.close();
+      this.ctx.waitUntil(this.flushTranscript());
+      if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'transfer');
+      return;
+    }
     if (this.hangupWhenDone) {
       // Goodbye has finished playing.
       this.hangupWhenDone = false;
@@ -454,6 +504,16 @@ export class CallRelay extends DurableObject<Env> {
 
     // The greeting is a turn of its own so a caller who talks over it
     // actually cuts it off. It isn't part of the model's history.
+    // A greeting saved in the admin UI (Settings → admin_config:<business>
+    // in KV, see routes/admin.ts) replaces the built-in one.
+    const savedGreeting = businessType
+      ? this.env.CACHE.get(`admin_config:${businessType}`)
+          .then(raw => {
+            const cfg = raw ? JSON.parse(raw) as { greeting?: string; agentName?: string } : null;
+            return cfg?.greeting?.trim() ? { greeting: cfg.greeting.trim(), agentName: cfg.agentName?.trim() ?? '' } : null;
+          })
+          .catch(() => null)
+      : Promise.resolve(null);
     const turn = this.startTurn(true);
     const { signal } = turn.abort;
     const say = (text: string) => {
@@ -466,10 +526,12 @@ export class CallRelay extends DurableObject<Env> {
     say('Thanks for calling!')
       .then(async () => {
         if (signal.aborted) return;
-        const sectorMeta = await sectorPromise;
+        const [sectorMeta, custom] = await Promise.all([sectorPromise, savedGreeting]);
         if (signal.aborted) return;
         const storeName = sectorMeta?.name ?? businessType ?? 'us';
-        await say(`You've reached ${storeName}. I'm Mogi, the virtual assistant. ${capabilityHint}`);
+        await say(custom
+          ? `${custom.greeting} I'm ${custom.agentName || 'Mogi'}, the virtual assistant.`
+          : `You've reached ${storeName}. I'm Mogi, the virtual assistant. ${capabilityHint}`);
       })
       .catch(e => { if (e?.name !== 'AbortError') console.error('[greeting]', e?.message || e); })
       .finally(() => this.endTurn(turn));
@@ -496,11 +558,13 @@ export class CallRelay extends DurableObject<Env> {
       if (chunk) {
         chunk.played = true;
         this.pendingMarks.delete(msg.mark.name);
+        if (this.pendingMarks.size === 0) this.lastAudioEndAt = Date.now();
       }
 
     } else if (msg.event === 'start') {
       this.callStartedAt = Date.now();
       this.callSid = msg.start.callSid;
+      this.cache.callSid = this.callSid;
       this.streamSid = msg.start.streamSid;
       console.log(`[call] ${this.callSid.slice(-8)}`);
 
@@ -511,11 +575,13 @@ export class CallRelay extends DurableObject<Env> {
       const params = msg.start.customParameters ?? {};
       let businessType: string | undefined;
       let callerHash: string | undefined;
+      let callerPhone: string | undefined;
       if (params.streamToken) {
         const claims = await verifyStreamToken(this.env, params.streamToken);
         if (!claims) { this.reject('invalid stream token'); return; }
         businessType = claims.businessType;
         callerHash = claims.callerHash;
+        callerPhone = claims.callerPhone;
       } else if (isProduction(this.env)) {
         this.reject('missing stream token');
         return;
@@ -526,6 +592,7 @@ export class CallRelay extends DurableObject<Env> {
       this.startStt();
       this.session = buildDefaultTwilioSession(this.env, businessType) ?? undefined;
       if (this.session && callerHash) this.session.sub = callerHash;
+      if (this.session && callerPhone) this.session.callerPhone = callerPhone;
       const session = this.session;
 
       // Kick the sector lookup off, but don't block the greeting on it.

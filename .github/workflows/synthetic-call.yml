@@ -19,7 +19,23 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
+      # Until the Twilio secrets exist this monitor can't place a call; say so
+      # as a warning instead of failing red on every run.
+      - name: Check configuration
+        id: cfg
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          SYNTHETIC_FROM_NUMBER: ${{ secrets.SYNTHETIC_FROM_NUMBER }}
+          SYNTHETIC_TO_NUMBER: ${{ secrets.SYNTHETIC_TO_NUMBER }}
+        run: |
+          if [ -z "$TWILIO_ACCOUNT_SID" ] || [ -z "$SYNTHETIC_FROM_NUMBER" ] || [ -z "$SYNTHETIC_TO_NUMBER" ]; then
+            echo "::warning::Synthetic call skipped: set repo secrets TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, SYNTHETIC_FROM_NUMBER, SYNTHETIC_TO_NUMBER, SYNTHETIC_ADMIN_KEY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Place call and verify
+        if: steps.cfg.outputs.ready == 'true'
         run: node scripts/synthetic-call.mjs
         env:
           TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}

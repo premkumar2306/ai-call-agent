@@ -192,7 +192,15 @@ wrangler secret put TWILIO_WEBHOOK_URL    # public base URL Twilio calls
 wrangler secret put DEEPGRAM_API_KEY
 wrangler secret put CARTESIA_API_KEY
 # WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN
+# Optional notifications:
+wrangler secret put RESEND_API_KEY        # booking/message emails to sectors.notify_email
+wrangler secret put TWILIO_ACCOUNT_SID    # confirmation texts, with TWILIO_SMS_FROM (an SMS-capable Twilio number)
+wrangler secret put TWILIO_SMS_FROM
 ```
+
+Set where a business's booking and message emails go, and how many different
+customers' visits may start at the same time (bays), with `POST /admin/sectors`
+(`notify_email`, `capacity`).
 
 ### Calendar integration (optional)
 
@@ -282,6 +290,7 @@ what ships.
 | `DG_BARGE_IN_MIN_WORDS` | `2` | Recognised words (excluding "uh huh"/"okay"-style backchannels) before the caller's speech cuts the assistant off. |
 | `VOICE_BARGE_IN_ON_VAD` | off | Set `1` to barge in on Deepgram's raw voice-activity event instead of recognised words. Faster, but line noise and echo cut replies off. |
 | `VOICE_DIRECT_TOOL_REPLY` | on | Set `0` to always round-trip a tool result through Claude for paraphrasing instead of speaking the tool's own response. Costs one extra model call per tool turn. |
+| `VOICE_SILENCE_REPROMPT_MS` | 8000 | Caller silence after the assistant finishes before "Are you still there?"; the same again ends the call with a goodbye. |
 | `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
 
 ### How a call turn works
@@ -300,6 +309,14 @@ what ships.
   running turn is abandoned and their words are merged into the next utterance.
 - **Caller identity.** `/twilio/inbound` hashes the caller's number (same key as WhatsApp) into the stream
   token; callers no longer share `TWILIO_DEFAULT_CUSTOMER_HASH`. Withheld numbers get a per-call identity.
+  The raw number also rides in the token as the default callback number for bookings and messages.
+- **Front desk.** Bookings record the caller's name, vehicle and callback number; the same caller can stack
+  services on one visit. `transfer_to_staff` closes the stream and `POST /twilio/after-stream` dials the
+  business phone (during opening hours); `take_message` stores a callback request (`call_messages`).
+  The admin **Calls** tab lists bookings, messages, and a latency chart per call (`transcripts.metrics`).
+- **Echo and silence.** Transcripts that replay what the assistant just said (speakerphone echo) are
+  ignored; lone "well,"/"um" waits for the rest of the sentence; a silent caller is re-prompted, then
+  the call ends politely.
 
 Watch the `⏱` lines in `npx wrangler tail`: `transcript-finalized` (STT),
 `anthropic#N first-token`, `direct-tool-reply` (when the second model call is
