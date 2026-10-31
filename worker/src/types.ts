@@ -18,6 +18,10 @@ export interface SectorMeta {
   // Free-text facts the agent may quote (warranty, certifications, payment
   // options, parking, languages spoken…). Shown verbatim in the prompt.
   about?: string;
+  // Where booking/message notifications go (needs RESEND_API_KEY).
+  notifyEmail?: string;
+  // Different customers' visits that may start at the same time. Default 1.
+  capacity?: number;
 }
 
 export interface WeeklyHours {
@@ -28,6 +32,7 @@ export interface WeeklyHours {
 export interface SessionPayload {
   sub: string;       // hashed customer ID
   businessType: string;
+  callerPhone?: string; // voice calls: the caller's number (E.164), for callbacks
   iat: number;
   exp: number;
   account: {
@@ -68,6 +73,10 @@ export interface Order {
   scheduledAt?: string | null;   // ISO datetime for bookings
   calendarEventId?: string | null; // "<provider>|<calendarId>|<eventId>" in the business's calendar
   calendarSync?: string | null;    // null (no calendar) | synced | failed
+  customerName?: string | null;
+  vehicle?: string | null;
+  callbackPhone?: string | null;
+  notes?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,6 +103,9 @@ export interface Env {
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   TWILIO_AUTH_TOKEN?: string;
+  /** Enables confirmation texts (with TWILIO_SMS_FROM, a Twilio number that can send SMS). */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_SMS_FROM?: string;
   TWILIO_WEBHOOK_URL?: string;
   NODE_ENV?: string;
   // Set to '1'/'true' to enable verbose Deepgram STT logging (Results /

@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
-import { eq, desc } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
 import { getSectors, getSector, upsertSector } from '../services/sector.service';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
-import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable } from '../db/schema';
+import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
 
@@ -94,6 +94,8 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     phone:        body.phone,
     website:      body.website,
     about:        typeof body.about === 'string' ? body.about.slice(0, 4000) : undefined,
+    notifyEmail:  typeof body.notify_email === 'string' && /^[^\s@]+@[^\s@]+$/.test(body.notify_email) ? body.notify_email : undefined,
+    capacity:     Number.isInteger(body.capacity) && body.capacity >= 1 && body.capacity <= 50 ? body.capacity : undefined,
   });
   return c.json({ success: true, data: { key: body.key, name: body.name } });
 });
@@ -220,6 +222,33 @@ adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
     rows = rows.filter(r => r.callSid?.startsWith('wa:'));
   }
   return c.json({ success: true, data: rows });
+});
+
+// GET /admin/bookings/:businessType — recent bookings with the caller's details
+adminRouter.get('/bookings/:businessType', withAdminKey, async (c) => {
+  const rows = await getDb(c.env.DB).select().from(ordersTable)
+    .where(eq(ordersTable.businessType, c.req.param('businessType') ?? ''))
+    .orderBy(desc(ordersTable.createdAt))
+    .limit(100);
+  return c.json({ success: true, data: rows });
+});
+
+// GET /admin/messages/:businessType — messages callers left for staff
+adminRouter.get('/messages/:businessType', withAdminKey, async (c) => {
+  const rows = await getDb(c.env.DB).select().from(callMessages)
+    .where(eq(callMessages.businessType, c.req.param('businessType') ?? ''))
+    .orderBy(desc(callMessages.createdAt))
+    .limit(100);
+  return c.json({ success: true, data: rows });
+});
+
+// PATCH /admin/messages/:businessType/:id — mark a message handled { status: 'DONE' | 'NEW' }
+adminRouter.patch('/messages/:businessType/:id', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const status = body?.status === 'DONE' ? 'DONE' : 'NEW';
+  await getDb(c.env.DB).update(callMessages).set({ status })
+    .where(and(eq(callMessages.id, c.req.param('id') ?? ''), eq(callMessages.businessType, c.req.param('businessType') ?? '')));
+  return c.json({ success: true });
 });
 
 export { adminRouter };

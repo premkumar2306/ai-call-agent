@@ -12,6 +12,8 @@ export const sectors = sqliteTable('sectors', {
   phone:        text('phone'),
   website:      text('website'),
   about:        text('about'),
+  notifyEmail:  text('notify_email'),
+  capacity:     integer('capacity').notNull().default(1),
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -65,6 +67,10 @@ export const orders = sqliteTable('orders', {
   scheduledAt:      text('scheduled_at'),               // ISO datetime for service bookings
   calendarEventId:  text('calendar_event_id'),          // event in the business's connected calendar
   calendarSync:     text('calendar_sync'),              // null (not connected) | synced | failed
+  customerName:     text('customer_name'),
+  vehicle:          text('vehicle'),
+  callbackPhone:    text('callback_phone'),             // E.164, from caller ID or given on the call
+  notes:            text('notes'),
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -123,4 +129,18 @@ export const transcripts = sqliteTable('transcripts', {
 }, (t) => [
   index('idx_transcripts_customer_business_type').on(t.customerIdHashed, t.businessType),
   index('idx_transcripts_call_sid').on(t.callSid),
+]);
+
+// Messages a caller left for staff ("have someone call me about a quote").
+export const callMessages = sqliteTable('call_messages', {
+  id:            text('id').primaryKey(),
+  businessType:  text('business_type').notNull(),
+  callSid:       text('call_sid'),
+  callerName:    text('caller_name'),
+  callbackPhone: text('callback_phone'),
+  message:       text('message').notNull(),
+  status:        text('status').notNull().default('NEW'),
+  createdAt:     integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_call_messages_business_created').on(t.businessType, t.createdAt),
 ]);

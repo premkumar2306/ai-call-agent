@@ -11,8 +11,97 @@ interface TranscriptRow {
   customerIdHashed: string;
   businessType: string;
   turns: Array<{ role: string; content: string }>;
+  metrics?: TurnMetric[] | null;
   createdAt: number | string;
   updatedAt?: number | string;
+}
+
+// Per-turn timing saved by CallRelay (worker/src/durable-objects/call-relay.ts).
+interface TurnMetric {
+  n: number;
+  at: number;
+  text: string;
+  queued: number;
+  laps: [string, number][];
+  firstAudio?: number;
+  fillers: number;
+  outcome: 'done' | 'interrupted' | 'dropped';
+}
+
+interface BookingRow {
+  id: string;
+  businessType: string;
+  productName: string;
+  status: string;
+  scheduledAt: string | null;
+  customerName: string | null;
+  vehicle: string | null;
+  callbackPhone: string | null;
+  notes: string | null;
+  createdAt: number | string;
+}
+
+interface MessageRow {
+  id: string;
+  businessType: string;
+  callerName: string | null;
+  callbackPhone: string | null;
+  message: string;
+  status: string;
+  createdAt: number | string;
+}
+
+function formatSlot(iso: string | null): string {
+  if (!iso) return '—';
+  const [d, t] = iso.split('T');
+  const date = new Date(`${d}T12:00:00`);
+  const [h, m] = t.split(':').map(Number);
+  const clock = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+  return `${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} ${clock}`;
+}
+
+// Time to first audio per turn, split into model / tools / speech, so a slow
+// turn shows where the time went.
+function LatencyChart({ metrics }: { metrics: TurnMetric[] }) {
+  const max = Math.max(1, ...metrics.map(m => m.firstAudio ?? 0));
+  const lap = (m: TurnMetric, pre: string) => m.laps.filter(l => l[0].startsWith(pre));
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      {metrics.map(m => {
+        const total = m.firstAudio ?? 0;
+        const firstToken = lap(m, 'anthropic#0 first-token')[0]?.[1] ?? lap(m, 'anthropic#0 (')[0]?.[1] ?? 0;
+        const toolEnd = lap(m, 'tools#').slice(-1)[0]?.[1];
+        const toolStart = lap(m, 'anthropic#0 (')[0]?.[1] ?? 0;
+        const tools = toolEnd ? Math.max(0, toolEnd - toolStart) : 0;
+        const model = Math.min(total, firstToken + (toolEnd ? (lap(m, 'anthropic#1 first-token')[0]?.[1] ?? toolEnd) - toolEnd : 0));
+        const speech = Math.max(0, total - model - tools);
+        const w = (ms: number) => `${(ms / max) * 100}%`;
+        return (
+          <div key={m.n} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 56px', gap: 8, alignItems: 'center' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: '#999', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {m.n}. “{m.text}”{m.fillers ? ` · ${m.fillers} filler` : ''}{m.outcome !== 'done' ? ` · ${m.outcome}` : ''}
+              </div>
+              <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: '#1e1e2e' }}>
+                <div title={`model ${model}ms`} style={{ width: w(model), background: '#6c47ff' }} />
+                <div title={`tools ${tools}ms`} style={{ width: w(tools), background: '#f59e0b' }} />
+                <div title={`speech ${speech}ms`} style={{ width: w(speech), background: '#22c55e' }} />
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: total > 1500 ? '#f87171' : '#ddd', textAlign: 'right' }}>
+              {m.firstAudio != null ? `${(total / 1000).toFixed(2)}s` : '—'}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11, color: '#777', display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}>
+        <span><span style={{ color: '#6c47ff' }}>■</span> model</span>
+        <span><span style={{ color: '#f59e0b' }}>■</span> tools</span>
+        <span><span style={{ color: '#22c55e' }}>■</span> speech start</span>
+        <span>Time from the caller's words to our first audio. Excludes end-of-speech detection.</span>
+      </div>
+    </div>
+  );
 }
 
 interface SectorOption { key: string; name: string }
@@ -71,6 +160,8 @@ export default function Calls({ base, adminKey }: Props) {
   const [error, setError]             = useState('');
   const [openId, setOpenId]           = useState<string | null>(null);
   const [businessFilter, setBusinessFilter] = useState<string>('all');
+  const [bookings, setBookings]       = useState<BookingRow[]>([]);
+  const [messages, setMessages]       = useState<MessageRow[]>([]);
 
   useEffect(() => {
     if (!adminKey) {
@@ -86,6 +177,13 @@ export default function Calls({ base, adminKey }: Props) {
         if (!json.success) { setError('Failed to load business list'); return; }
         const allSectors: SectorOption[] = json.data;
         setSectors(allSectors);
+
+        const getAll = async <T,>(path: string): Promise<T[]> => (await Promise.all(allSectors.map(s =>
+          fetch(`${base}/admin/${path}/${s.key}`, { headers: { 'X-Admin-Key': adminKey } })
+            .then(r => r.json()).then((j: any) => (j.success ? j.data : []) as T[]).catch(() => [] as T[])
+        ))).flat();
+        getAll<BookingRow>('bookings').then(rows => setBookings(rows.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt))));
+        getAll<MessageRow>('messages').then(rows => setMessages(rows.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt))));
 
         const results = await Promise.all(
           allSectors.map(s =>
@@ -111,6 +209,17 @@ export default function Calls({ base, adminKey }: Props) {
   const sectorName = (key: string) => sectors.find(s => s.key === key)?.name ?? key;
   const visible = businessFilter === 'all' ? transcripts : transcripts.filter(t => t.businessType === businessFilter);
   const open = visible.find(t => t.id === openId) ?? null;
+  const inBusiness = <T extends { businessType: string }>(rows: T[]) =>
+    businessFilter === 'all' ? rows : rows.filter(r => r.businessType === businessFilter);
+  const visibleBookings = inBusiness(bookings).filter(b => b.status !== 'CANCELLED').slice(0, 30);
+  const visibleMessages = inBusiness(messages).slice(0, 30);
+
+  const markDone = (m: MessageRow) => {
+    fetch(`${base}/admin/messages/${m.businessType}/${m.id}`, {
+      method: 'PATCH', headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: m.status === 'DONE' ? 'NEW' : 'DONE' }),
+    }).then(() => setMessages(ms => ms.map(x => x.id === m.id ? { ...x, status: m.status === 'DONE' ? 'NEW' : 'DONE' } : x)));
+  };
 
   return (
     <div style={{ display: 'grid', gap: 24, minWidth: 0 }}>
@@ -178,6 +287,57 @@ export default function Calls({ base, adminKey }: Props) {
         )}
       </div>
 
+      {!loading && !error && (
+        <div style={card}>
+          <h2 style={h2}>Bookings from calls</h2>
+          <p style={{ fontSize: 13, color: '#888', marginTop: 0, marginBottom: 16 }}>Who's coming in, for what, and how to reach them.</p>
+          {visibleBookings.length === 0 ? <p style={{ color: '#888', fontSize: 14 }}>No bookings yet.</p> : (
+            <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+              <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
+                <thead><tr>
+                  <th style={th}>When</th><th style={th}>Service</th><th style={th}>Customer</th>
+                  <th style={th}>Vehicle</th><th style={th}>Callback</th><th style={th}>Status</th>
+                </tr></thead>
+                <tbody>
+                  {visibleBookings.map(b => (
+                    <tr key={b.id}>
+                      <td style={td}>{formatSlot(b.scheduledAt)}</td>
+                      <td style={td}>{b.productName}{b.notes ? <div style={{ color: '#888', fontSize: 12 }}>{b.notes}</div> : null}</td>
+                      <td style={td}>{b.customerName ?? '—'}</td>
+                      <td style={td}>{b.vehicle ?? '—'}</td>
+                      <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: '#a78bff' }}>{b.callbackPhone}</a> : '—'}</td>
+                      <td style={td}>{b.status.toLowerCase()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!loading && !error && (
+        <div style={card}>
+          <h2 style={h2}>Messages for staff</h2>
+          <p style={{ fontSize: 13, color: '#888', marginTop: 0, marginBottom: 16 }}>Callers who asked to be called back.</p>
+          {visibleMessages.length === 0 ? <p style={{ color: '#888', fontSize: 14 }}>No messages.</p> : (
+            <div style={{ display: 'grid', gap: 10 }}>
+              {visibleMessages.map(m => (
+                <div key={m.id} style={{ border: '1px solid #26263a', borderRadius: 10, padding: 12, opacity: m.status === 'DONE' ? 0.5 : 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', fontSize: 12, color: '#999' }}>
+                    <span>{m.callerName ?? 'Caller'} · {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`} style={{ color: '#a78bff' }}>{m.callbackPhone}</a> : 'no number'} · {formatDateTime(m.createdAt)}</span>
+                    <button onClick={() => markDone(m)} style={{ background: '#22222f', border: '1px solid #2a2a3a', color: '#ddd', borderRadius: 6, fontSize: 12, padding: '2px 8px', cursor: 'pointer' }}>
+                      {m.status === 'DONE' ? 'Reopen' : 'Mark done'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 14, color: '#eee', marginTop: 6 }}>{m.message}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {open && (
         <div
           style={{
@@ -237,6 +397,13 @@ export default function Calls({ base, adminKey }: Props) {
                 fontSize: 11, color: '#555', fontFamily: 'monospace', padding: 'clamp(6px, 3vw, 8px) clamp(14px, 4vw, 22px) 0',
               }}>
                 {open.callSid}
+              </div>
+            )}
+
+            {open.metrics && open.metrics.length > 0 && (
+              <div style={{ padding: 'clamp(10px, 3vw, 14px) clamp(14px, 4vw, 22px)', borderBottom: '1px solid #26263a', maxHeight: '35vh', overflowY: 'auto', flexShrink: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#bbb', marginBottom: 8 }}>Latency per turn</div>
+                <LatencyChart metrics={open.metrics} />
               </div>
             )}
 
