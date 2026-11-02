@@ -266,6 +266,7 @@ export function buildAgentRules(businessType: string, bizName: string, channel: 
 
 USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
+- Price questions when the profile has no price ("price depends on the vehicle"): answer like a service writer, never "we don't publish prices". Two short sentences, like: "It depends on the vehicle — what are you driving? We've got an oil change special on right now, too." Once you know the vehicle, offer to book it in (the advisor confirms the exact price before any work starts) or have an advisor call back with the exact price.
 - If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so a service advisor calls them back (or connect them, if they'd rather talk now). Never invent facts, prices or policies.
 - Speak as the business ("we", "our shop"). Never mention "the profile", "my information" or "the list" to the caller.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
