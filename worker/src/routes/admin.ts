@@ -228,21 +228,25 @@ adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
 
 export const SYNTHETIC_CALLER = 'synthetic-latency-test';
 
-// POST /admin/stream-token { businessType } — a media-stream token for
+// POST /admin/stream-token { businessType, caller? } — a media-stream token for
 // svt/latency-test.mjs, so a synthetic caller can talk to production
 // without a phone call. The caller identity is fixed and marked synthetic.
 adminRouter.post('/stream-token', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
   const businessType = typeof body?.businessType === 'string' ? body.businessType : '';
   if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: 'Unknown business' }, 404);
+  // Parallel test calls each get their own identity (`caller`), so they
+  // don't cancel each other's bookings.
+  const caller = typeof body?.caller === 'string' && /^[a-z0-9-]{1,20}$/.test(body.caller)
+    ? `${SYNTHETIC_CALLER}:${body.caller}` : SYNTHETIC_CALLER;
   // Each run starts clean: earlier runs' bookings would otherwise take the
   // slots this one asks for, and pile up in the shop's list and calendar.
   const stale = await getDb(c.env.DB).update(ordersTable).set({ status: 'CANCELLED' })
-    .where(and(eq(ordersTable.customerIdHashed, SYNTHETIC_CALLER), ne(ordersTable.status, 'CANCELLED')))
+    .where(and(eq(ordersTable.customerIdHashed, caller), ne(ordersTable.status, 'CANCELLED')))
     .returning({ id: ordersTable.id, businessType: ordersTable.businessType, calendarEventId: ordersTable.calendarEventId });
   c.executionCtx.waitUntil(Promise.all(stale.map(o => removeBookingFromCalendar(c.env, o))));
   // A real call always has caller ID; 555-01xx numbers are reserved for fiction.
-  const token = await signStreamToken(c.env, businessType, SYNTHETIC_CALLER, '+13125550100');
+  const token = await signStreamToken(c.env, businessType, caller, '+13125550100');
   return c.json({ success: true, data: { token } });
 });
 

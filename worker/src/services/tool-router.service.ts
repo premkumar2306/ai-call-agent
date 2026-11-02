@@ -626,7 +626,9 @@ export async function executeTool(
         }
 
         const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
-        const msg = `You're all set — ${order.productName}${when}. Anything else I can help with?`;
+        // The name is read back so a misheard one ("Westfield") gets corrected now.
+        const name = order.customerName ? `, ${order.customerName}` : '';
+        const msg = `You're all set${name} — ${order.productName}${when}. Anything else I can help with?`;
         return {
           success: true,
           data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product) },
