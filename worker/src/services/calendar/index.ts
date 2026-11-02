@@ -299,7 +299,7 @@ export function parseEventRef(ref: string): { provider: string; calendarId: stri
 }
 
 /** Deletes a cancelled booking's calendar event, if it has one. */
-export async function removeBookingFromCalendar(env: Env, order: Order): Promise<void> {
+export async function removeBookingFromCalendar(env: Env, order: Pick<Order, 'id' | 'businessType' | 'calendarEventId'>): Promise<void> {
   const ref = order.calendarEventId ? parseEventRef(order.calendarEventId) : null;
   if (!ref || !env.CALENDAR_TOKEN_KEY) return;
   const conn = await getConnection(env, order.businessType).catch(() => null);

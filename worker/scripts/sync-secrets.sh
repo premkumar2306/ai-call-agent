@@ -34,6 +34,7 @@ WORKER_KEYS=(
 GITHUB_KEYS=(
   CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
   TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN SYNTHETIC_FROM_NUMBER SYNTHETIC_TO_NUMBER SYNTHETIC_ADMIN_KEY
+  ANTHROPIC_API_KEY DEEPGRAM_API_KEY   # the Claude-played callers in svt/
 )
 
 value() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }

@@ -39,3 +39,4 @@ npm-debug.log*
 # Editor
 .vscode/
 .idea/
+worker/svt/results/
