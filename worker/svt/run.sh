@@ -9,11 +9,15 @@
 # environment (GitHub Actions) or else the repo-root .env (ADMIN_KEY from
 # AVERY_SECRET). Needs macOS `say` and ffmpeg, so CI runs on a macOS runner.
 #
-# Every run cancels the previous run's test bookings (and their calendar
-# events), so the booking persona goes last and its appointment stays
-# visible in the business's calendar until the next run.
-# Exits non-zero if any call left the caller without a reply, or the median
-# wait across all calls is over SVT_MAX_MEDIAN_MS (default 2500).
+# Calls run SVT_PARALLEL at a time (default 4). Each persona is its own test
+# caller, and a call cancels only that persona's bookings (and calendar
+# events) from the previous run, so its appointment stays visible in the
+# business's calendar until the next run.
+# Each call is graded by Claude against the caller's goal (wrong details,
+# forgotten requests, false confirmations).
+# Exits non-zero if any call left the caller without a reply or failed its
+# grading, or the median wait across all calls is over SVT_MAX_MEDIAN_MS
+# (default 2500).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 OUT=${SVT_OUT:-svt/results}
@@ -27,23 +31,31 @@ for k in ADMIN_KEY ANTHROPIC_API_KEY DEEPGRAM_API_KEY; do
   [ -n "${!k}" ] || { echo "$k is not set"; exit 2; }
 done
 
-# Persona 3 books an appointment; keep it last (see above).
-PERSONAS=("$@"); [ ${#PERSONAS[@]} -gt 0 ] || PERSONAS=(0 1 2 4 5 6 7 3)
+# 8–13 are the multi-turn complex cases (changes of mind, corrections, two cars, …).
+PERSONAS=("$@"); [ ${#PERSONAS[@]} -gt 0 ] || PERSONAS=($(seq 0 13))
+
+for p in "${PERSONAS[@]}"; do
+  while [ "$(jobs -rp | wc -l)" -ge "${SVT_PARALLEL:-4}" ]; do sleep 2; done
+  echo "calling as persona $p"
+  # 7-minute cap per call (perl: macOS has no `timeout`).
+  ( perl -e 'alarm shift; exec @ARGV' 420 node svt/latency-test.mjs --persona "$p" > "$OUT/persona-$p.txt" 2>&1
+    echo $? > "$OUT/persona-$p.status" ) &
+done
+wait
 
 failed=0; waits=()
-SUMMARY="| persona | median wait | worst wait | result |\n|---|---|---|---|\n"
+SUMMARY="| persona | median wait | worst wait | result | issues |\n|---|---|---|---|---|\n"
 for p in "${PERSONAS[@]}"; do
-  log="$OUT/persona-$p.txt"
-  echo "── persona $p ──"
-  # 7-minute cap per call (perl: macOS has no `timeout`).
-  perl -e 'alarm shift; exec @ARGV' 420 node svt/latency-test.mjs --persona "$p" > "$log" 2>&1; status=$?
-  grep -E "^Persona:|^  [0-9]+\. CALLER|^     \(|^median|^FAILED" "$log"
+  log="$OUT/persona-$p.txt"; status=$(cat "$OUT/persona-$p.status" 2>/dev/null || echo 1)
+  echo; echo "── persona $p ──"
+  grep -E "^Persona:|^  [0-9]+\. CALLER|^     \(|^median|^FAILED|^VERDICT|^  - " "$log"
   median=$(sed -nE 's/^median e2e ([0-9]+) ms, worst ([0-9]+) ms/\1/p' "$log")
   worst=$(sed -nE 's/^median e2e ([0-9]+) ms, worst ([0-9]+) ms/\2/p' "$log")
   # Every caller wait, for the overall median.
   waits+=($(sed -nE 's/^     \(([0-9]+) ms\).*/\1/p' "$log"))
   result=pass; [ $status -eq 0 ] || { result="FAIL ($status)"; failed=1; }
-  SUMMARY+="| $p | ${median:-—} ms | ${worst:-—} ms | $result |\n"
+  issues=$(sed -n '/^VERDICT/,$p' "$log" | sed -n 's/^  - //p' | paste -sd ';' - | tr '|' '/')
+  SUMMARY+="| $p | ${median:-—} ms | ${worst:-—} ms | $result | ${issues:-} |\n"
 done
 
 overall=—
@@ -53,6 +65,6 @@ if [ ${#waits[@]} -gt 0 ]; then
   [ "$overall" -le "${SVT_MAX_MEDIAN_MS:-2500}" ] || { echo "Median wait $overall ms is over ${SVT_MAX_MEDIAN_MS:-2500} ms"; failed=1; }
 fi
 SUMMARY+="\nOverall median wait: **${overall} ms** over ${#waits[@]} turns."
-printf "\n$SUMMARY\n" | tee "$OUT/summary.md"
-[ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf "## Synthetic voice tests\n\n$SUMMARY\n" >> "$GITHUB_STEP_SUMMARY"
+printf "\n%b\n" "$SUMMARY" | tee "$OUT/summary.md"
+[ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf "## Synthetic voice tests\n\n%b\n" "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 exit $failed

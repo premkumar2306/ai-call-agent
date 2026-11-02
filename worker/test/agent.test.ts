@@ -375,6 +375,10 @@ describe('turn-taking helpers', () => {
   it('turns a phone number formatted as money back into a phone number', () => {
     expect(fixPhoneNumbers("Sure. It's $55,521,438.76. So no ballpark?")).toBe("Sure. It's (555) 214-3876. So no ballpark?");
     expect(fixPhoneNumbers('It costs $89.99 or $1,250.00')).toBe('It costs $89.99 or $1,250.00');
+    // Model years read as money or with a thousands separator.
+    expect(fixPhoneNumbers("Got it. It's a $20.19 F-150.")).toBe("Got it. It's a 2019 F-150.");
+    expect(fixPhoneNumbers("Okay, it's a 2,019, if that helps.")).toBe("Okay, it's a 2019, if that helps.");
+    expect(fixPhoneNumbers('That was $1,250.00 and 3,019 miles')).toBe('That was $1,250.00 and 3,019 miles');
   });
 
   it('treats a sentence ending in a number as finished', () => {

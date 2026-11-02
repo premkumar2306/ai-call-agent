@@ -53,9 +53,16 @@ const PERSONAS = [
   "You're an older caller. You start by asking what their hours are on Saturday, then ask if they can do an alignment because the car pulls to the right. You sometimes repeat yourself. You decide to call back later.",
   "You booked something earlier this week but can't remember what time. You want to check your appointment and maybe move it to Friday. If they can't find it, you ask to talk to a person.",
   'You want to convert your work truck to propane and have lots of questions: is it worth it, how long it takes, what it costs. Ask one thing at a time.',
+  // Multi-turn complex cases: changes of mind, corrections, several requests in one call.
+  "You want brakes checked on your 2017 Subaru Outback. You book Wednesday morning, then remember you have a meeting and ask to move it to Thursday afternoon instead. Once it's moved, ask them to also do an oil change on the same visit. Name: Dana Whitfield, number 773 555 0142. Check at the end that they have Thursday, not Wednesday.",
+  "You need an oil change on your 2020 Honda CR-V. When they ask for your number, give 630 555 0119, then immediately correct yourself: it's actually 630 555 0191. Your last name is Nguyen and you spell it out when they get it wrong. Book any weekday morning. Make sure they repeat back the corrected number.",
+  "You have two cars: a 2015 Jeep Wrangler that needs new tires looked at and a 2021 Toyota Prius that's due for an oil change. You want both done, ideally the same day so you only make one trip, but you'll take different days if needed. Name: Priya Shah, number 224 555 0168.",
+  "Your car is making a grinding noise when you turn, and you don't know what it is. You're vague at first ('it's making a weird noise'), and only give details when asked: 2014 Chevy Malibu, grinding on turns, worse at low speed. You want to know if it's safe to drive and to get it looked at this week. Book it. Name: Marcus Bell, 312 555 0133.",
+  "You book an alignment for your 2018 Mazda 3 for Friday, then during the same call change your mind and cancel it because your spouse already booked one somewhere else. Name: Jordan Lee, 847 555 0177. Make sure they confirm it's cancelled.",
+  "You're annoyed: you were told your car would be ready yesterday and nobody called. You want to talk to a real person right now. If they can't connect you, you want to leave a message with your name (Alex Moreno), number (708 555 0150) and what it's about, and you want to know when someone will call back.",
 ];
 const VOICES = ['Samantha', 'Alex', 'Daniel', 'Karen', 'Moira', 'Tessa', 'Fred', 'Victoria'];
-const MAX_TURNS = 10;
+const MAX_TURNS = 16;
 const BUSINESS = process.env.BUSINESS_TYPE ?? 'advanced_vtech';
 const BASE = local ? `http://localhost:${process.env.PORT ?? 8787}` : (process.env.WORKER_URL ?? 'https://mogi-platform.premkumar-2ba.workers.dev');
 const ADMIN_KEY = process.env.ADMIN_KEY;
@@ -83,7 +90,7 @@ const params = { businessType: BUSINESS };
 if (!local) {
   const r = await fetch(`${BASE}/admin/stream-token`, {
     method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ businessType: BUSINESS }),
+    body: JSON.stringify({ businessType: BUSINESS, ...(personaIdx >= 0 ? { caller: `p${Number(args[personaIdx + 1])}` } : {}) }),
   });
   const j = await r.json();
   if (!j.success) { console.error('stream-token:', j.error ?? r.status); process.exit(1); }
@@ -262,4 +269,33 @@ else {
 // A caller left hanging is a failure, whatever the latency.
 const unanswered = results.filter(r => r.e2e == null).length;
 if (unanswered) console.log(`\nFAILED: ${unanswered} turn(s) got no reply within ${TURN_TIMEOUT_MS} ms`);
-process.exit(unanswered ? 1 : 0);
+
+// ── Did the shop actually handle it? ───────────────────────────────────────
+// Claude grades the call against the caller's goal, from what the caller
+// heard plus what the server recorded (bookings, tool calls).
+let judged = true;
+if (persona && anthropic) {
+  const heard = heardSoFar.map(h => `${h.who === 'you' ? 'Caller' : 'Shop'}: ${h.text}`).join('\n');
+  const server = row ? row.turns.map(t => `${t.role}: ${t.content}`).join('\n') : '(not available)';
+  const res = await anthropic.messages.create({
+    model: 'claude-opus-5-5',
+    max_tokens: 2000,
+    output_config: { effort: 'low' },
+    system: `You review phone calls handled by an AI receptionist for a car repair shop. The caller was a tester with this brief:
+
+${persona}
+
+Judge the receptionist, not the caller. Fail it for: getting a detail wrong (time, day, name, number, vehicle, service), losing or ignoring something the caller asked, confirming something it didn't do, contradicting itself, asking for information already given, or leaving the caller's goal unmet when the shop could have met it. Speech-to-text noise in the caller's lines is not the receptionist's fault; how the receptionist used what it heard is. Don't fail it for not quoting prices: the shop deliberately doesn't.
+
+Reply with JSON only: {"pass": true|false, "issues": ["short description", ...]}`,
+    messages: [{ role: 'user', content: `What the caller heard:\n${heard}\n\nWhat the server recorded:\n${server}` }],
+  }).catch(e => ({ content: [{ type: 'text', text: JSON.stringify({ pass: true, issues: [`judge unavailable: ${e.message}`] }) }] }));
+  const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  let verdict;
+  try { verdict = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); }
+  catch { verdict = { pass: true, issues: [`unparseable verdict: ${text.slice(0, 200)}`] }; }
+  judged = verdict.pass !== false;
+  console.log(`\nVERDICT: ${judged ? 'PASS' : 'FAIL'}`);
+  for (const i of verdict.issues ?? []) console.log(`  - ${i}`);
+}
+process.exit(unanswered || !judged ? 1 : 0);
