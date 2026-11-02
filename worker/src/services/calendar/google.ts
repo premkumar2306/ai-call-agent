@@ -130,6 +130,8 @@ export const googleCalendar: CalendarProvider = {
         description: event.description,
         ...when,
         extendedProperties: { private: { mogiOrderId: event.externalId } },
+        // Google's event palette: 9 = Blueberry for bookings, 8 = Graphite for tests.
+        colorId: event.test ? '8' : '9',
         // "Show as available": Mogi already counts its own bookings against
         // capacity in D1. An opaque event would also show up in free/busy
         // and block its own slot — the caller couldn't add a second job to

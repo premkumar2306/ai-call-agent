@@ -272,11 +272,23 @@ export async function syncBookingToCalendar(env: Env, order: Order, meta: Sector
   const { start, end } = bookingInterval(order.scheduledAt, durationMinutes, timeZone);
   const isLocal = !/(Z|[+-]\d{2}:\d{2})$/.test(order.scheduledAt);
   const localStart = order.scheduledAt.slice(0, 19).padEnd(19, ':00');
-  const price = order.priceCents === 0 ? 'Free' : `$${(order.priceCents / 100).toFixed(2)}`;
+  // $0 means "quoted on the day" for some shops, so it's left off rather than shown as free.
+  const price = order.priceCents ? `$${(order.priceCents / 100).toFixed(2)}` : '';
+  const test = order.customerIdHashed.startsWith('synthetic-latency-test');
   try {
     const eventId = await withToken(env, conn, (p, t) => p.createEvent(t, conn.calendarId, {
-      title: order.productName,
-      description: ['Booked by phone through Mogi.', `Reference: ${order.id.slice(0, 8)}`, `Price: ${price}`, `Payment: ${order.paymentMethod}`].join('\n'),
+      // "Mogi:" prefix so the shop can search for phone bookings in Google
+      // Calendar; "Mogi TEST:" for svt/ calls, so they're easy to tell apart.
+      title: `${test ? 'Mogi TEST' : 'Mogi'}: ${order.productName}${order.customerName ? ` — ${order.customerName}` : ''}${order.vehicle ? ` (${order.vehicle})` : ''}`,
+      description: [
+        'Booked by phone through Mogi.',
+        order.customerName ? `Customer: ${order.customerName}` : '',
+        order.vehicle ? `Vehicle: ${order.vehicle}` : '',
+        order.callbackPhone ? `Callback: ${order.callbackPhone}` : '',
+        order.notes ? `Notes: ${order.notes}` : '',
+        `Reference: ${order.id.slice(0, 8)}`, price ? `Price: ${price}` : '', `Payment: ${order.paymentMethod}`,
+      ].filter(Boolean).join('\n'),
+      test,
       start, end, timeZone,
       ...(isLocal ? { localStart, localEnd: addMinutesLocal(localStart, durationMinutes) } : {}),
       externalId: order.id,

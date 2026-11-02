@@ -21,6 +21,8 @@ export interface CalendarEvent {
   timeZone: string;
   /** Mogi order ID, stored on the event so it can be traced back. */
   externalId: string;
+  /** Test bookings (svt/) get their own colour so they stand apart from real ones. */
+  test?: boolean;
 }
 
 export interface OAuthTokens {
