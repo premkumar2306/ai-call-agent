@@ -94,8 +94,10 @@ export function looksIncomplete(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   if (/(\.\.\.|…)$/.test(t)) return true;
+  // A number at the end ("…my number is 847-555-0123.") is a finished thought.
+  const lastToken = t.split(/\s+/).pop() ?? '';
   const last = t.toLowerCase().replace(/[^a-z'\s]/g, ' ').trim().split(/\s+/).pop() ?? '';
-  if (DANGLING_WORDS.has(last)) return true;
+  if (!/\d/.test(lastToken) && DANGLING_WORDS.has(last)) return true;
   return !/[.?!]["')]?$/.test(t);
 }
 
@@ -182,6 +184,13 @@ export async function createDeepgramSTT(
   // the last piece turned "What times do you have Tuesday morning for an oil
   // change?" into "Tuesday morning for an oil change?".
   let segments: string[] = [];
+  // Audio time (s) up to which speech has been finalized. A final Results
+  // message that starts at or after it is new speech, even when no interim
+  // came first — with short endpointing a quick utterance can arrive as
+  // is_final straight away, and treating it as a trailing confirmation of
+  // the previous utterance dropped it entirely.
+  let finalizedUntil = 0;
+  let lastEnd = 0;
   let lastConfidence = 1;
   let utteranceStart = 0;
   let finalized = false;
@@ -218,6 +227,7 @@ export async function createDeepgramSTT(
       console.log(`[dg stt] dropped low-confidence transcript (${confidence.toFixed(2)} < ${minConfidence}): "${text}"`);
       lastText = '';
       segments = [];
+      finalizedUntil = lastEnd;
       utteranceStart = 0;
       speechAnnounced = false;
       return;
@@ -226,6 +236,7 @@ export async function createDeepgramSTT(
     console.log(`[dg stt] ⏱ transcript-finalized (${reason}): ${ms}ms — "${text}"`);
     lastText = '';
     segments = [];
+    finalizedUntil = lastEnd;
     utteranceStart = 0;
     speechAnnounced = false;
     if (holdTimer) clearTimeout(holdTimer);
@@ -257,6 +268,15 @@ export async function createDeepgramSTT(
           ? msg.channel.alternatives[0].confidence as number : 1;
         if (debug) {
           console.log(`[dg stt] Results is_final=${!!msg.is_final} speech_final=${!!msg.speech_final} text="${text ?? ''}"`);
+        }
+        if (typeof msg.start === 'number' && typeof msg.duration === 'number') {
+          if (msg.is_final && text && finalized && msg.start >= finalizedUntil - 0.01) {
+            // New speech that skipped the interim stage.
+            finalized = false;
+            segments = [];
+            if (!utteranceStart) utteranceStart = Date.now();
+          }
+          lastEnd = Math.max(lastEnd, msg.start + msg.duration);
         }
         if (text) {
           if (!msg.is_final) {

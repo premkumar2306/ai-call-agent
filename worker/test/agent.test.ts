@@ -356,6 +356,11 @@ describe('turn-taking helpers', () => {
     for (const t of ['okay book it', 'no', 'yeah tuesday works', 'what about Saturday', '']) expect(isBackchannel(t)).toBe(false);
   });
 
+  it('treats a sentence ending in a number as finished', () => {
+    expect(looksIncomplete("It's Sam Patel. My number is (847) 555-0123.")).toBe(false);
+    expect(looksIncomplete('My number is')).toBe(true);
+  });
+
   it('holds fragments from the 2026-10-30 call, answers finished sentences', () => {
     for (const t of ['Oh, I forgot. I also wanna change my', 'Okay. I wanna I wanna change', 'just', 'just...', 'I need an oil change and'])
       expect(looksIncomplete(t)).toBe(true);
@@ -444,5 +449,25 @@ describe('Deepgram transcript assembly', () => {
     res('Tuesday morning', false);
     res('Tuesday morning for an oil change?', true, true);
     expect(heard).toEqual(['What times do you have Tuesday morning for an oil change?']);
+  });
+
+  // Production synthetic run (2026-11-02): with 250ms endpointing the next
+  // utterance arrived as is_final with no interim and was dropped as a
+  // "trailing confirmation" of the previous one.
+  it('hears a new utterance that arrives already final, but not a re-sent old one', async () => {
+    const { createDeepgramSTT } = await import('../src/durable-objects/stt-deepgram');
+    const listeners: ((e: { data: string }) => void)[] = [];
+    const fakeWs = { accept() {}, send() {}, close() {}, addEventListener(t: string, fn: any) { if (t === 'message') listeners.push(fn); } };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({ webSocket: fakeWs })) as any;
+    const heard: string[] = [];
+    try { await createDeepgramSTT({ apiKey: 'k', incompleteHoldMs: 0 }, t => heard.push(t)); } finally { globalThis.fetch = realFetch; }
+    const res = (transcript: string, start: number, duration: number, is_final: boolean, speech_final = false) =>
+      listeners.forEach(l => l({ data: JSON.stringify({ type: 'Results', start, duration, is_final, speech_final, channel: { alternatives: [{ transcript, confidence: 0.99 }] } }) }));
+    res('Where are you', 0, 1, false);
+    res('Where are you located?', 0, 1.5, true, true);
+    res('Where are you located?', 0, 1.5, true, false);          // re-sent: ignore
+    res('What times do you have Tuesday?', 4, 2, true, true);     // new, no interim
+    expect(heard).toEqual(['Where are you located?', 'What times do you have Tuesday?']);
   });
 });
