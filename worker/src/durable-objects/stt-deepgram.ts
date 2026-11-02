@@ -17,7 +17,7 @@
 //
 // On finalization: `endpointing` (silence-based) drives speech_final, and
 // utterance_end_ms drives UtteranceEnd (word-timing-based). With the values
-// below speech_final normally wins — endpointing is 400ms (default) where
+// below speech_final normally wins — endpointing is 250ms (default) where
 // utterance_end_ms cannot go below 1000ms — so UtteranceEnd is a *fallback*
 // for utterances where Deepgram never emits speech_final, not a latency win
 // in the common case. (The commit that introduced it claimed otherwise; the
@@ -35,7 +35,8 @@ export interface SttOptions {
   /**
    * Silence (ms) Deepgram waits before declaring end-of-speech. Longer is more
    * robust to background noise and mid-sentence pauses, at the cost of that
-   * much extra reply latency. Default 400.
+   * much extra reply latency. Default 250 — short pauses that split a sentence
+   * are rejoined by the incomplete-sentence hold and segment assembly below.
    */
   endpointingMs?: number;
   /**
@@ -146,7 +147,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 400, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho,
+    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho,
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 

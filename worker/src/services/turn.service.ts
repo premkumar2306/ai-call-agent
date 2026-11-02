@@ -254,7 +254,7 @@ export type Channel = 'voice' | 'chat';
 export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice'): string {
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
-- One or two short sentences (under 35 words), then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
+- Open with a very short first sentence (one to five words, e.g. "Yes, we do." / "Sure." / "We're at 320 Lexington Drive."), so the caller hears you right away; then at most one more short sentence. Under 35 words in all, then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
 - Plain spoken English: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
 - At most one question per reply. Don't read out booking reference numbers unless asked.`
     : `WRITING (WhatsApp / web chat):
