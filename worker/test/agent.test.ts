@@ -521,32 +521,39 @@ describe('Deepgram transcript assembly', () => {
 
   // SVT (2026-11-02): Deepgram re-sent the same finished interim for 6–9 s
   // before endpointing; the caller waited the whole time.
-  it('finalizes a finished interim that stops changing, once', async () => {
+  it('asks Deepgram to Finalize a finished interim that stops changing', async () => {
     vi.useFakeTimers();
     const { createDeepgramSTT } = await import('../src/durable-objects/stt-deepgram');
     const listeners: ((e: { data: string }) => void)[] = [];
-    const fakeWs = { accept() {}, send() {}, close() {}, addEventListener(t: string, fn: any) { if (t === 'message') listeners.push(fn); } };
+    const sent: string[] = [];
+    const fakeWs = { accept() {}, send(d: any) { if (typeof d === 'string') sent.push(d); }, close() {}, addEventListener(t: string, fn: any) { if (t === 'message') listeners.push(fn); } };
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async () => ({ webSocket: fakeWs })) as any;
     const heard: string[] = [];
     try { await createDeepgramSTT({ apiKey: 'k', incompleteHoldMs: 0, statementHoldMs: 0 }, t => heard.push(t)); } finally { globalThis.fetch = realFetch; }
-    const res = (transcript: string, start: number, duration: number, is_final: boolean, speech_final = false) =>
-      listeners.forEach(l => l({ data: JSON.stringify({ type: 'Results', start, duration, is_final, speech_final, channel: { alternatives: [{ transcript, confidence: 0.99 }] } }) }));
+    const res = (transcript: string, start: number, duration: number, is_final: boolean, extra: object = {}) =>
+      listeners.forEach(l => l({ data: JSON.stringify({ type: 'Results', start, duration, is_final, ...extra, channel: { alternatives: [{ transcript, confidence: 0.99 }] } }) }));
+    const finalizes = () => sent.filter(m => m.includes('Finalize')).length;
     try {
       res('Jordan Lee.', 0, 1, false);
       res("Jordan Lee. It's a 2018 Mazda three.", 0, 3, false);
       res("Jordan Lee. It's a 2018 Mazda three.", 0, 3, false);   // unchanged
-      vi.advanceTimersByTime(600);
-      expect(heard).toEqual([]);
+      vi.advanceTimersByTime(900);
+      expect(finalizes()).toBe(0);
       vi.advanceTimersByTime(200);
+      expect(finalizes()).toBe(1);
+      expect(heard).toEqual([]);                                   // Deepgram's flush decides
+      res("Jordan Lee. It's a 2018 Mazda three.", 0, 3, true, { from_finalize: true });
       expect(heard).toEqual(["Jordan Lee. It's a 2018 Mazda three."]);
-      res("Jordan Lee. It's a 2018 Mazda three.", 0, 3, true, true); // Deepgram's late final
-      expect(heard).toHaveLength(1);
-      // Still mid-sentence: no early finalize.
-      res('I was wondering if', 5, 1, false);
-      res('I was wondering if', 5, 1, false);
-      vi.advanceTimersByTime(2000);
-      expect(heard).toHaveLength(1);
+      // The caller carries on: a new utterance with its own words only.
+      res('And the number', 3.5, 1, false);
+      res('And the number is fine?', 3.5, 1.5, true, { speech_final: true });
+      expect(heard).toEqual(["Jordan Lee. It's a 2018 Mazda three.", 'And the number is fine?']);
+      // Still mid-sentence: no Finalize.
+      res('I was wondering if', 6, 1, false);
+      res('I was wondering if', 6, 1, false);
+      vi.advanceTimersByTime(3000);
+      expect(finalizes()).toBe(1);
     } finally {
       vi.useRealTimers();
     }
