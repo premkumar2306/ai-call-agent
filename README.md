@@ -303,7 +303,7 @@ what ships.
 | `VOICE_MODEL` | `claude-haiku-5-5` | Overrides the model used on live calls only (`DEFAULT_VOICE_MODEL` in `src/config.ts`). `ANTHROPIC_MODEL` covers the other agent surfaces. |
 | `DG_MODEL` | `nova-3` | Deepgram model. |
 | `DG_LANGUAGE` | `en` | Set to `multi` for multilingual callers (slower). |
-| `DG_ENDPOINTING_MS` | `400` | Silence before an utterance is considered finished. A pause mid-sentence that ends an utterance early is safe: the next fragment is merged into it (see below). |
+| `DG_ENDPOINTING_MS` | `250` | Silence before an utterance is considered finished. A pause mid-sentence that ends an utterance early is safe: the next fragment is merged into it (see below). |
 | `DG_BARGE_IN_MIN_WORDS` | `2` | Recognised words (excluding "uh huh"/"okay"-style backchannels) before the caller's speech cuts the assistant off. |
 | `VOICE_BARGE_IN_ON_VAD` | off | Set `1` to barge in on Deepgram's raw voice-activity event instead of recognised words. Faster, but line noise and echo cut replies off. |
 | `VOICE_DIRECT_TOOL_REPLY` | on | Set `0` to always round-trip a tool result through Claude for paraphrasing instead of speaking the tool's own response. Costs one extra model call per tool turn. |
