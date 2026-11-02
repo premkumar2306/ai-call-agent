@@ -416,3 +416,33 @@ describe('capacity', () => {
     expect(own.some(s => s.datetime === '2026-11-02T09:00:00')).toBe(true);
   });
 });
+
+// ── Deepgram utterance assembly ─────────────────────────────────────────────
+
+describe('Deepgram transcript assembly', () => {
+  it('joins every is_final piece of a long utterance, not just the last', async () => {
+    const { createDeepgramSTT } = await import('../src/durable-objects/stt-deepgram');
+    const listeners: ((e: { data: string }) => void)[] = [];
+    const fakeWs = {
+      accept() {}, send() {}, close() {},
+      addEventListener(type: string, fn: any) { if (type === 'message') listeners.push(fn); },
+    };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({ webSocket: fakeWs })) as any;
+    const heard: string[] = [];
+    try {
+      await createDeepgramSTT({ apiKey: 'k', incompleteHoldMs: 0 }, t => heard.push(t));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const send = (o: object) => listeners.forEach(l => l({ data: JSON.stringify(o) }));
+    const res = (transcript: string, is_final: boolean, speech_final = false) =>
+      send({ type: 'Results', is_final, speech_final, channel: { alternatives: [{ transcript, confidence: 0.99 }] } });
+    // CAsynth (2026-11-02): the first half was dropped.
+    res('What times do', false);
+    res('What times do you have', true);
+    res('Tuesday morning', false);
+    res('Tuesday morning for an oil change?', true, true);
+    expect(heard).toEqual(['What times do you have Tuesday morning for an oil change?']);
+  });
+});

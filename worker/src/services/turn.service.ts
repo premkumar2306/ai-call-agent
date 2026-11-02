@@ -144,7 +144,12 @@ export function popFirstChunk(buffer: string): { chunk: string; rest: string } |
 // lookup came back empty. Set VOICE_DIRECT_TOOL_REPLY=0 to disable and fall
 // back to always round-tripping.
 export function canSpeakToolResultDirectly(toolName: string, result: ToolResult): boolean {
-  if (!result.success || !result.spoken_response) return false;
+  if (!result.spoken_response) return false;
+  // Failures that are just the next question to ask ("Can I get your name
+  // for the booking?") or the whole answer ("The shop is closed right now…").
+  if (toolName === 'transfer_to_staff') return true;
+  if (toolName === 'book_appointment' && (result.error === 'DETAILS_REQUIRED' || result.error === 'PHONE_REQUIRED')) return true;
+  if (!result.success) return false;
   const d = result.data as any;
   switch (toolName) {
     case 'get_business_hours':

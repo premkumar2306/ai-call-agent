@@ -175,6 +175,12 @@ export async function createDeepgramSTT(
   // `utteranceStart` from going stale: it's reset in lockstep with
   // `lastText`/`finalized` instead of drifting across utterance boundaries.
   let lastText = '';
+  // Deepgram finalizes a long utterance in pieces: each is_final Results
+  // carries only the words since the previous one, and speech_final carries
+  // just the last piece. The utterance is all of them joined — taking only
+  // the last piece turned "What times do you have Tuesday morning for an oil
+  // change?" into "Tuesday morning for an oil change?".
+  let segments: string[] = [];
   let lastConfidence = 1;
   let utteranceStart = 0;
   let finalized = false;
@@ -210,6 +216,7 @@ export async function createDeepgramSTT(
       // Most likely background noise or a voice that isn't the caller's.
       console.log(`[dg stt] dropped low-confidence transcript (${confidence.toFixed(2)} < ${minConfidence}): "${text}"`);
       lastText = '';
+      segments = [];
       utteranceStart = 0;
       speechAnnounced = false;
       return;
@@ -217,6 +224,7 @@ export async function createDeepgramSTT(
     const ms = utteranceStart ? Date.now() - utteranceStart : -1;
     console.log(`[dg stt] ⏱ transcript-finalized (${reason}): ${ms}ms — "${text}"`);
     lastText = '';
+    segments = [];
     utteranceStart = 0;
     speechAnnounced = false;
     if (holdTimer) clearTimeout(holdTimer);
@@ -258,7 +266,8 @@ export async function createDeepgramSTT(
             // The caller carried on — the held fragment will be joined to
             // this utterance when it finalizes.
             if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined; }
-            lastText = text;
+            if (finalized) segments = [];
+            lastText = [...segments, text].join(' ');
             lastConfidence = confidence;
             finalized = false;
             // Barge-in once there are enough words to be a real interruption
@@ -271,14 +280,18 @@ export async function createDeepgramSTT(
             // fire mid-sentence on an endpointing pause, truncating the
             // transcript. speech_final (checked below) is Deepgram's actual
             // end-of-utterance signal.
-            lastText = text;
+            if (!msg.speech_final) segments.push(text);
+            lastText = [...segments, ...(msg.speech_final ? [text] : [])].join(' ');
             lastConfidence = confidence;
           }
           // If finalized is already true, this is a trailing confirmation
           // Results message for an utterance UtteranceEnd already closed —
           // ignore it for state purposes so we don't double-fire.
         }
-        if (msg.speech_final && text && !finalized) finalize(text, 'speech_final', confidence);
+        if (msg.speech_final && !finalized) {
+          const full = [...segments, text ?? ''].filter(Boolean).join(' ');
+          if (full) finalize(full, 'speech_final', confidence);
+        }
         return;
       }
 
