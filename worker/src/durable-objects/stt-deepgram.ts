@@ -28,6 +28,8 @@ export interface SttOptions {
   apiKey: string;
   /** True when an interim transcript is our own voice coming back (speakerphone echo) — no barge-in. */
   isEcho?: (text: string) => boolean;
+  /** Extra wait (ms) after a complete statement of 4+ words, for a follow-up question. Default 400; 0 disables. */
+  statementHoldMs?: number;
   /** Any recognised caller speech (every interim) — e.g. to reset a silence timer mid-sentence. */
   onActivity?: () => void;
   /** Deepgram model. Default 'nova-3'. */
@@ -165,7 +167,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho, onActivity,
+    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, statementHoldMs = 400, isEcho, onActivity,
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -230,7 +232,7 @@ export async function createDeepgramSTT(
     const text = held;
     held = '';
     if (text) {
-      console.log(`[dg stt] releasing held fragment after ${incompleteHoldMs}ms: "${text}"`);
+      console.log(`[dg stt] releasing held text: "${text}"`);
       onTranscript(text);
     }
   };
@@ -258,10 +260,15 @@ export async function createDeepgramSTT(
     if (holdTimer) clearTimeout(holdTimer);
     holdTimer = undefined;
     const combined = [held, text].filter(Boolean).join(' ');
-    if (incompleteHoldMs > 0 && looksIncomplete(combined)) {
+    // A finished statement of a few words is often followed by a question
+    // after a breath ("…one or two off the road at a time. Is there a fleet
+    // discount?"); answering at the full stop talks over the question.
+    // Questions and short answers ("Two works.") go straight through.
+    const statementHold = statementHoldMs > 0 && /[.!]["')]?$/.test(combined) && combined.split(/\s+/).length >= 4;
+    if ((incompleteHoldMs > 0 && looksIncomplete(combined)) || statementHold) {
       held = combined;
-      holdTimer = setTimeout(releaseHeld, incompleteHoldMs);
-      if (debug) console.log(`[dg stt] holding incomplete "${combined}"`);
+      holdTimer = setTimeout(releaseHeld, looksIncomplete(combined) ? incompleteHoldMs : statementHoldMs);
+      if (debug) console.log(`[dg stt] holding ${statementHold && !looksIncomplete(combined) ? 'statement' : 'incomplete'} "${combined}"`);
       return;
     }
     held = '';
@@ -274,6 +281,10 @@ export async function createDeepgramSTT(
 
       if (msg.type === 'SpeechStarted') {
         if (!utteranceStart) utteranceStart = Date.now();
+        // Speaking again while a fragment is held: give the words time to
+        // arrive (the interim clears the timer) rather than releasing the
+        // fragment now — but not forever, in case it was only noise.
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = setTimeout(releaseHeld, 1500); }
         announceSpeech('vad');
         return;
       }

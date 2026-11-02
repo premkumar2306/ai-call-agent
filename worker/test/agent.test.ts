@@ -458,6 +458,29 @@ describe('Deepgram transcript assembly', () => {
     expect(heard).toEqual(['What times do you have Tuesday morning for an oil change?']);
   });
 
+  // LLM-caller test (2026-11-02): a statement and the question after it were
+  // answered as two turns, the agent talking over the question.
+  it('waits briefly after a statement so a follow-up question joins it', async () => {
+    const { createDeepgramSTT } = await import('../src/durable-objects/stt-deepgram');
+    const listeners: ((e: { data: string }) => void)[] = [];
+    const fakeWs = { accept() {}, send() {}, close() {}, addEventListener(t: string, fn: any) { if (t === 'message') listeners.push(fn); } };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({ webSocket: fakeWs })) as any;
+    const heard: string[] = [];
+    try { await createDeepgramSTT({ apiKey: 'k', incompleteHoldMs: 0, statementHoldMs: 400 }, t => heard.push(t)); } finally { globalThis.fetch = realFetch; }
+    const send = (o: object) => listeners.forEach(l => l({ data: JSON.stringify(o) }));
+    const res = (transcript: string, start: number, duration: number, is_final: boolean, speech_final = false) =>
+      send({ type: 'Results', start, duration, is_final, speech_final, channel: { alternatives: [{ transcript, confidence: 0.99 }] } });
+    res("I can't have more than two off the road.", 0, 2, true, true);
+    expect(heard).toEqual([]);                       // held
+    send({ type: 'SpeechStarted' });
+    res('Is there a fleet', 2.5, 0.6, false);
+    res('Is there a fleet discount?', 2.5, 1.2, true, true);
+    expect(heard).toEqual(["I can't have more than two off the road. Is there a fleet discount?"]);
+    res('Yes.', 5, 0.3, true, true);                 // short answer: no hold
+    expect(heard.at(-1)).toBe('Yes.');
+  });
+
   // Production synthetic run (2026-11-02): with 250ms endpointing the next
   // utterance arrived as is_final with no interim and was dropped as a
   // "trailing confirmation" of the previous one.

@@ -184,6 +184,7 @@ export class CallRelay extends DurableObject<Env> {
         // Mid-sentence speech must hold off "Are you still there?".
         onActivity: () => this.callerActive(),
         incompleteHoldMs: numEnv(this.env.DG_INCOMPLETE_HOLD_MS),
+        statementHoldMs: numEnv(this.env.DG_STATEMENT_HOLD_MS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
       (text) => { this.handleTranscript(fixPhoneNumbers(text)); },
