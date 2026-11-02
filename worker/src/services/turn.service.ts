@@ -458,6 +458,7 @@ export async function runTurn(
       return;
     }
     spokenResponse = spokenResponse ? `${spokenResponse} ${chunk}` : chunk;
+    if (!emittedAny) lap('first-chunk-emitted');
     emittedAny = true;
     // Deliberately not awaited — see the OnChunk doc comment.
     onChunk?.(chunk);

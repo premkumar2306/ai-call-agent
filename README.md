@@ -145,6 +145,23 @@ curl -X POST http://localhost:8787/twilio/turn \
 
 The response is TwiML XML containing what Mogi would say.
 
+### Synthetic call latency test (no phone needed)
+
+`scripts/latency-test.mjs` talks to the voice agent the way a phone call does: it speaks a scripted
+conversation (macOS `say` + ffmpeg) into the Media Streams socket, plays the replies back in real
+time, and prints per turn how long the caller waited and where the time went (end-of-speech
+detection, model to first sentence, tools, voice synthesis), plus the transcript.
+
+```bash
+cd worker
+ADMIN_KEY=<admin key> node scripts/latency-test.mjs          # against production
+node scripts/latency-test.mjs --local                         # against wrangler dev (needs Deepgram + Cartesia keys)
+node scripts/latency-test.mjs --lines "Do you fix brakes?" "Book me Monday at 9"
+```
+
+The same per-turn breakdown is saved for every real call (`transcripts.metrics`) and charted in the
+admin **Calls** tab.
+
 ### Full audio pipeline (STT → LLM → TTS)
 
 ```bash
