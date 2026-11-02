@@ -5,6 +5,7 @@ import { withAdminKey } from '../middleware';
 import { getSectors, getSector, upsertSector } from '../services/sector.service';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
+import { signStreamToken } from '../utils/stream-token';
 import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
@@ -222,6 +223,17 @@ adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
     rows = rows.filter(r => r.callSid?.startsWith('wa:'));
   }
   return c.json({ success: true, data: rows });
+});
+
+// POST /admin/stream-token { businessType } — a media-stream token for
+// scripts/latency-test.mjs, so a synthetic caller can talk to production
+// without a phone call. The caller identity is fixed and marked synthetic.
+adminRouter.post('/stream-token', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const businessType = typeof body?.businessType === 'string' ? body.businessType : '';
+  if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: 'Unknown business' }, 404);
+  const token = await signStreamToken(c.env, businessType, 'synthetic-latency-test', '+15555550100');
+  return c.json({ success: true, data: { token } });
 });
 
 // GET /admin/bookings/:businessType — recent bookings with the caller's details

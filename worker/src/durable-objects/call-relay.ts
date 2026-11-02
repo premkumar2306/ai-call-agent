@@ -76,6 +76,8 @@ interface TurnMetric {
   queued: number;
   laps: [string, number][];
   firstAudio?: number;
+  // Cartesia time to first audio byte for that first chunk.
+  tts?: number;
   fillers: number;
   outcome: 'done' | 'interrupted' | 'dropped';
 }
@@ -351,6 +353,7 @@ export class CallRelay extends DurableObject<Env> {
       const chunk: SpokenChunk = { text: textToSay, played: false, filler };
       turn.chunks.push(chunk);
       unsent++;
+      const queuedAt = Date.now();
       const started = cartesiaStart(this.ttsConfig, textToSay, signal).catch((e) => {
         if (e?.name !== 'AbortError') console.error('[cartesia start]', e?.message || e);
         return null;
@@ -363,6 +366,7 @@ export class CallRelay extends DurableObject<Env> {
           if (res && !firstChunkLogged && !filler && !signal.aborted) {
             firstChunkLogged = true;
             metric.firstAudio = Date.now() - t0;
+            metric.tts = Date.now() - queuedAt;
             console.log(`[${tag}] ⏱ first-chunk-spoken: ${metric.firstAudio}ms`);
           }
           await this.playChunk(turn, chunk, Promise.resolve(res));
