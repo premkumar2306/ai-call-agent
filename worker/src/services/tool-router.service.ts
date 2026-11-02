@@ -785,7 +785,7 @@ const TOOL_ERROR_MESSAGES: Record<string, string> = {
   OUTSIDE_HOURS: "We're not open then. Want me to find the nearest opening?",
   PAST_TIME: "That time has already passed. Want me to find the next opening?",
   DETAILS_REQUIRED: "Can I get your name for the booking?",
-  PHONE_REQUIRED: "What's the best phone number to reach you?",
+  PHONE_REQUIRED: "I can't see the number you're calling from — what's the best number to reach you?",
 };
 
 // "(847) 555-1234" / "847-555-1234" / "+18475551234" → E.164 (US default).

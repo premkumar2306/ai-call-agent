@@ -47,7 +47,7 @@ vi.mock('../src/config', async (importOriginal) => ({
   }),
 }));
 
-const { runTurn, INTERRUPTED_MARK, trimMessages, amendInterruptedReply } = await import('../src/services/turn.service');
+const { runTurn, INTERRUPTED_MARK, trimMessages, amendInterruptedReply, retractLastExchange } = await import('../src/services/turn.service');
 const { createCallCache } = await import('../src/services/call-context');
 const { buildBusinessProfile, describeLocalNow, formatPrice } = await import('../src/services/business-profile');
 const { searchProducts } = await import('../src/services/catalog.service');
@@ -270,6 +270,20 @@ describe('runTurn', () => {
     amendInterruptedReply(cache, 'We are open seven thirty to six on weekdays');
     expect(cache.messages.at(-1)?.content).toBe(`We are open seven thirty to six on weekdays ${INTERRUPTED_MARK}`);
     expect(cache.history.at(-1)?.content).toBe(`We are open seven thirty to six on weekdays ${INTERRUPTED_MARK}`);
+  });
+
+  // LLM-caller test: "Oh, sure." [pause] "It's 555-218-4073." — the reply to
+  // "Oh, sure." is withdrawn and the words joined to what came next.
+  it('withdraws a plain reply the caller cut into, but never one that used a tool', async () => {
+    const cache = freshCache();
+    script = [{ text: 'Great, go ahead.' }];
+    await runTurn(env(), SESSION, 'CA10', 'Oh, sure.', { cache });
+    expect(retractLastExchange(cache)).toBe('Oh, sure.');
+    expect(cache.messages).toEqual([]);
+    expect(cache.history).toEqual([]);
+    script = [{ text: 'Let me check.', tool: { name: 'list_bookings', input: {} } }, { text: 'You have no bookings.' }];
+    await runTurn({ ...env(), VOICE_DIRECT_TOOL_REPLY: '0' }, SESSION, 'CA11', 'what do I have booked', { cache });
+    expect(retractLastExchange(cache)).toBeNull();
   });
 
   it('still answers and records the turn when the model errors', async () => {

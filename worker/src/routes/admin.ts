@@ -238,7 +238,8 @@ adminRouter.post('/stream-token', withAdminKey, async (c) => {
   // slots this one asks for, and pile up in the shop's list.
   await getDb(c.env.DB).update(ordersTable).set({ status: 'CANCELLED' })
     .where(eq(ordersTable.customerIdHashed, SYNTHETIC_CALLER));
-  const token = await signStreamToken(c.env, businessType, SYNTHETIC_CALLER);
+  // A real call always has caller ID; 555-01xx numbers are reserved for fiction.
+  const token = await signStreamToken(c.env, businessType, SYNTHETIC_CALLER, '+13125550100');
   return c.json({ success: true, data: { token } });
 });
 
