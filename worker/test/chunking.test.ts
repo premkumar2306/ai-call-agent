@@ -19,7 +19,9 @@ describe('popFirstChunk', () => {
 
   it('waits below the minimum length', () => {
     // Has a comma, but too short to be worth speaking on its own.
-    expect(popFirstChunk('Great news, we')).toBeNull();
+    expect(popFirstChunk('Yes, we')).toBeNull();
+    // Past it, a short clause goes out at once so speech starts sooner.
+    expect(popFirstChunk('Great news, we')?.chunk).toBe('Great news,');
   });
 
   it('breaks on a clause boundary past the minimum', () => {
