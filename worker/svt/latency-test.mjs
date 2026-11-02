@@ -63,6 +63,10 @@ const PERSONAS = [
 ];
 const VOICES = ['Samantha', 'Alex', 'Daniel', 'Karen', 'Moira', 'Tessa', 'Fred', 'Victoria'];
 const MAX_TURNS = 16;
+// Cheap by default: Haiku plays the caller (short lines, many turns), Sonnet
+// grades the call once at the end.
+const CALLER_MODEL = process.env.SVT_CALLER_MODEL ?? 'claude-haiku-5-5';
+const JUDGE_MODEL = process.env.SVT_JUDGE_MODEL ?? 'claude-sonnet-5-5';
 const BUSINESS = process.env.BUSINESS_TYPE ?? 'advanced_vtech';
 const BASE = local ? `http://localhost:${process.env.PORT ?? 8787}` : (process.env.WORKER_URL ?? 'https://mogi-platform.premkumar-2ba.workers.dev');
 const ADMIN_KEY = process.env.ADMIN_KEY;
@@ -183,9 +187,8 @@ async function nextLine() {
   if (heardSoFar.filter(h => h.who === 'you').length >= MAX_TURNS) return null;
   const transcript = heardSoFar.map(h => `${h.who === 'you' ? 'You' : 'Shop'}: ${h.text}`).join('\n');
   const res = await anthropic.messages.create({
-    model: 'claude-opus-5-5',
-    max_tokens: 2000,
-    output_config: { effort: 'low' },
+    model: CALLER_MODEL,
+    max_tokens: 300,
     system: `You are role-playing a real person phoning a car repair shop. The shop's phone is answered by an AI receptionist.
 
 ${persona}
@@ -278,8 +281,8 @@ if (persona && anthropic) {
   const heard = heardSoFar.map(h => `${h.who === 'you' ? 'Caller' : 'Shop'}: ${h.text}`).join('\n');
   const server = row ? row.turns.map(t => `${t.role}: ${t.content}`).join('\n') : '(not available)';
   const res = await anthropic.messages.create({
-    model: 'claude-opus-5-5',
-    max_tokens: 2000,
+    model: JUDGE_MODEL,
+    max_tokens: 1000,
     output_config: { effort: 'low' },
     system: `You review phone calls handled by an AI receptionist for a car repair shop. The caller was a tester with this brief:
 

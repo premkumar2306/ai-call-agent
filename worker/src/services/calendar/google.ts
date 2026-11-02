@@ -130,6 +130,11 @@ export const googleCalendar: CalendarProvider = {
         description: event.description,
         ...when,
         extendedProperties: { private: { mogiOrderId: event.externalId } },
+        // "Show as available": Mogi already counts its own bookings against
+        // capacity in D1. An opaque event would also show up in free/busy
+        // and block its own slot — the caller couldn't add a second job to
+        // the visit, and with capacity > 1 one booking would fill every bay.
+        transparency: 'transparent',
       }),
     }, timeoutMs);
     return (await res.json() as any).id;

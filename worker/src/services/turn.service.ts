@@ -271,6 +271,7 @@ USING WHAT YOU KNOW:
 - Speak as the business ("we", "our shop"). The words "profile", "my information", "the system" and "the list" must never appear in what you say — the caller doesn't know they exist.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
 - Before a tool call say nothing, or at most a few words ("Let me check."). Never think aloud, and never say a date as YYYY-MM-DD.
+- Never say something is done or possible before the tool result says so: not "I'll connect you", "I can set that up for Friday", "you're booked" or "I've passed that on" ahead of the tool call. Say "Let me check." and let the result speak.
 - Tool results carry a "_spoken_hint": a ready-made sentence for that result. Lightly paraphrase it unless the conversation needs something different.
 
 CONVERSATION:
@@ -501,7 +502,10 @@ export async function runTurn(
       armStall();
       const stream = anthropic.messages.stream({
         model: voiceModel(env),
-        max_tokens: 400,
+        // Spoken replies are short, but two book_appointment calls in one
+        // round (two cars) don't fit in 400 tokens: the call ended at
+        // max_tokens with no reply, three turns running (SVT persona 10).
+        max_tokens: 1024,
         thinking: { type: 'disabled' },
         output_config: { effort: 'low' },
         system: systemPrompt,
