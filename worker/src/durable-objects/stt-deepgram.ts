@@ -164,7 +164,7 @@ export interface Stt {
   close(): void;
 }
 
-const STABLE_MS = 700;
+const STABLE_MS = 1000;
 
 export async function createDeepgramSTT(
   opts: SttOptions,
@@ -233,7 +233,10 @@ export async function createDeepgramSTT(
   // Deepgram sometimes keeps re-sending the same finished interim for
   // seconds before it endpoints (SVT: 6–9 s on "Jordan Lee. It's a 2018
   // Mazda three."). When an interim that ends a sentence repeats unchanged
-  // for STABLE_MS, the caller has stopped — finalize it ourselves.
+  // for STABLE_MS, ask Deepgram to Finalize: it flushes the words as an
+  // is_final (from_finalize), which we treat as the end of the utterance.
+  // Finalizing locally instead split utterances — Deepgram's later final
+  // repeated the early words and looked stale, so the rest was dropped.
   let stableTimer: ReturnType<typeof setTimeout> | undefined;
   let lastInterim = '';
   const clearStable = () => { if (stableTimer) clearTimeout(stableTimer); stableTimer = undefined; };
@@ -340,7 +343,13 @@ export async function createDeepgramSTT(
               lastInterim = text;
               clearStable();
             } else if (!stableTimer && /[.?!]["')]?$/.test(text) && !looksIncomplete(lastText)) {
-              stableTimer = setTimeout(() => { stableTimer = undefined; finalize(lastText, 'stable', lastConfidence); }, STABLE_MS);
+              stableTimer = setTimeout(() => {
+                stableTimer = undefined;
+                if (isOpen && !finalized) {
+                  if (debug) console.log(`[dg stt] interim stable ${STABLE_MS}ms — Finalize`);
+                  ws.send(JSON.stringify({ type: 'Finalize' }));
+                }
+              }, STABLE_MS);
             }
             // Barge-in once there are enough words to be a real interruption
             // — and not just the caller saying "mm-hmm" while listening.
@@ -367,6 +376,8 @@ export async function createDeepgramSTT(
         if (msg.speech_final && !finalized) {
           const full = [...segments, text ?? ''].filter(Boolean).join(' ');
           if (full) finalize(full, 'speech_final', confidence);
+        } else if (msg.from_finalize && msg.is_final && !finalized && lastText) {
+          finalize(lastText, 'stable', lastConfidence);
         }
         return;
       }
