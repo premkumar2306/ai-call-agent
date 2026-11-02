@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, ne } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
 import { getSectors, getSector, upsertSector } from '../services/sector.service';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
+import { removeBookingFromCalendar } from '../services/calendar';
 import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
@@ -228,16 +229,18 @@ adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
 export const SYNTHETIC_CALLER = 'synthetic-latency-test';
 
 // POST /admin/stream-token { businessType } — a media-stream token for
-// scripts/latency-test.mjs, so a synthetic caller can talk to production
+// svt/latency-test.mjs, so a synthetic caller can talk to production
 // without a phone call. The caller identity is fixed and marked synthetic.
 adminRouter.post('/stream-token', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
   const businessType = typeof body?.businessType === 'string' ? body.businessType : '';
   if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: 'Unknown business' }, 404);
   // Each run starts clean: earlier runs' bookings would otherwise take the
-  // slots this one asks for, and pile up in the shop's list.
-  await getDb(c.env.DB).update(ordersTable).set({ status: 'CANCELLED' })
-    .where(eq(ordersTable.customerIdHashed, SYNTHETIC_CALLER));
+  // slots this one asks for, and pile up in the shop's list and calendar.
+  const stale = await getDb(c.env.DB).update(ordersTable).set({ status: 'CANCELLED' })
+    .where(and(eq(ordersTable.customerIdHashed, SYNTHETIC_CALLER), ne(ordersTable.status, 'CANCELLED')))
+    .returning({ id: ordersTable.id, businessType: ordersTable.businessType, calendarEventId: ordersTable.calendarEventId });
+  c.executionCtx.waitUntil(Promise.all(stale.map(o => removeBookingFromCalendar(c.env, o))));
   // A real call always has caller ID; 555-01xx numbers are reserved for fiction.
   const token = await signStreamToken(c.env, businessType, SYNTHETIC_CALLER, '+13125550100');
   return c.json({ success: true, data: { token } });

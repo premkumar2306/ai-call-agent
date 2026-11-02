@@ -20,11 +20,11 @@
  * what to say next, until it hangs up. `--lines` runs a fixed script instead.
  *
  * Usage (from worker/; ANTHROPIC_API_KEY and DEEPGRAM_API_KEY for the caller):
- *   ADMIN_KEY=… node scripts/latency-test.mjs                    # production, random persona
- *   ADMIN_KEY=… node scripts/latency-test.mjs --persona 2        # a specific persona
- *   node scripts/latency-test.mjs --local                        # wrangler dev on :8787
- *   node scripts/latency-test.mjs --lines "Hi, do you fix brakes?" "How much is it?"
- *   BUSINESS_TYPE=dental ADMIN_KEY=… node scripts/latency-test.mjs
+ *   ADMIN_KEY=… node svt/latency-test.mjs                    # production, random persona
+ *   ADMIN_KEY=… node svt/latency-test.mjs --persona 2        # a specific persona
+ *   node svt/latency-test.mjs --local                        # wrangler dev on :8787
+ *   node svt/latency-test.mjs --lines "Hi, do you fix brakes?" "How much is it?"
+ *   BUSINESS_TYPE=dental ADMIN_KEY=… node svt/latency-test.mjs
  *
  * Production mode gets a stream token from POST /admin/stream-token and reads
  * the server breakdown from /admin/transcripts. Local mode reads it from the
@@ -259,4 +259,7 @@ else {
   console.log('\nTranscript:');
   for (const t of row.turns) console.log(`  ${t.role === 'user' ? 'CALLER' : 'AGENT '}: ${t.content}`);
 }
-process.exit(0);
+// A caller left hanging is a failure, whatever the latency.
+const unanswered = results.filter(r => r.e2e == null).length;
+if (unanswered) console.log(`\nFAILED: ${unanswered} turn(s) got no reply within ${TURN_TIMEOUT_MS} ms`);
+process.exit(unanswered ? 1 : 0);

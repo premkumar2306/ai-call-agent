@@ -147,7 +147,7 @@ The response is TwiML XML containing what Mogi would say.
 
 ### Synthetic call latency test (no phone needed)
 
-`scripts/latency-test.mjs` phones the voice agent the way a real caller does. The caller is Claude
+`svt/latency-test.mjs` phones the voice agent the way a real caller does. The caller is Claude
 playing one of eight personas (squealing brakes, a fleet manager, a worried check-engine-light caller,
 someone pushing for a price…): it hears the agent (audio transcribed with Deepgram), decides what to say
 next, speaks it with a random macOS voice into the Media Streams socket, and hangs up when done — so
@@ -156,11 +156,20 @@ caller waited and where the time went (end-of-speech detection, model to first s
 
 ```bash
 cd worker   # needs ANTHROPIC_API_KEY + DEEPGRAM_API_KEY for the caller, macOS say + ffmpeg
-ADMIN_KEY=<admin key> node scripts/latency-test.mjs              # production, random persona
-ADMIN_KEY=<admin key> node scripts/latency-test.mjs --persona 3  # a specific one
-node scripts/latency-test.mjs --local                             # against wrangler dev
-node scripts/latency-test.mjs --lines "Do you fix brakes?" "Book me Monday at 9"   # fixed script
+ADMIN_KEY=<admin key> node svt/latency-test.mjs              # production, random persona
+ADMIN_KEY=<admin key> node svt/latency-test.mjs --persona 3  # a specific one
+node svt/latency-test.mjs --local                             # against wrangler dev
+node svt/latency-test.mjs --lines "Do you fix brakes?" "Book me Monday at 9"   # fixed script
+./svt/run.sh            # every persona, one call each, with a summary table (keys from ../.env)
+./svt/run.sh 3          # just the booking persona
 ```
+
+`.github/workflows/svt.yml` runs `svt/run.sh` every Monday (and on demand from the Actions tab, with
+optional persona numbers) and fails if a caller got no reply or the median wait is over 2.5 s. It needs
+the repo secrets `SYNTHETIC_ADMIN_KEY`, `ANTHROPIC_API_KEY` and `DEEPGRAM_API_KEY`
+(`scripts/sync-secrets.sh --apply` sets them from `.env`). Each run cancels the previous run's test
+bookings and their calendar events; the booking persona goes last, so its appointment stays in the
+connected calendar until the next run.
 
 The same per-turn breakdown is saved for every real call (`transcripts.metrics`) and charted in the
 admin **Calls** tab.
