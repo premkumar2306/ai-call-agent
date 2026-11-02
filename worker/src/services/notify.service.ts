@@ -80,10 +80,10 @@ export async function notifyBooking(env: Env, meta: SectorMeta | null | undefine
 
 export async function notifyMessage(
   env: Env, meta: SectorMeta | null | undefined,
-  msg: { callerName?: string | null; callbackPhone?: string | null; message: string },
+  msg: { callerName?: string | null; callbackPhone?: string | null; message: string; updated?: boolean },
 ): Promise<void> {
   if (!meta?.notifyEmail) return;
-  await sendEmail(env, meta.notifyEmail, `Phone message from ${msg.callerName ?? 'a caller'}`,
+  await sendEmail(env, meta.notifyEmail, `${msg.updated ? 'Updated phone message' : 'Phone message'} from ${msg.callerName ?? 'a caller'}`,
     `Message left with the ${meta.name} phone assistant.\n\nFrom: ${msg.callerName ?? 'not given'}\nCallback: ${msg.callbackPhone ?? 'not given'}\n\n${msg.message}\n`,
   ).catch(logFail('message email'));
 }

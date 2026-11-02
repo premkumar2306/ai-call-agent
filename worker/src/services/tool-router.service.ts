@@ -1,7 +1,7 @@
 import { eq, and, ne, gte, lte } from 'drizzle-orm';
 import type { SessionPayload, Env, SectorMeta } from '../types';
 import { getProducts, getProductById, searchProducts } from './catalog.service';
-import { placeOrder, getOrders, getOrder, cancelOrder } from './order.service';
+import { placeOrder, getOrders, getOrder, cancelOrder, updateOrderDetails } from './order.service';
 import { scoreProducts } from './recommendations.service';
 import { formatPrice } from './business-profile';
 import { getDb } from '../db/client';
@@ -670,6 +670,37 @@ export async function executeTool(
         };
       }
 
+      case 'update_booking': {
+        const callbackPhone = args.callback_phone ? normalizePhone(args.callback_phone as string) : undefined;
+        if (args.callback_phone && !callbackPhone) {
+          return { success: false, error: 'INVALID', spoken_response: "Sorry, I didn't catch the whole number — could you say it again?" };
+        }
+        const updated = await updateOrderDetails(env, args.order_id as string, token.sub, {
+          customerName: args.customer_name as string | undefined,
+          vehicle: args.vehicle as string | undefined,
+          callbackPhone: callbackPhone ?? undefined,
+          notes: args.notes as string | undefined,
+        });
+        if (!updated) return { success: false, error: 'NOT_FOUND', spoken_response: "I couldn't find that booking. Want me to list your bookings?" };
+        if (cache) { cache.orders = null; cache.ordersLoaded = false; }
+        // Re-create the calendar event so its title and details match.
+        if (updated.calendarEventId) {
+          const product = await lookupProduct(env, cache, updated.productId);
+          await defer(removeBookingFromCalendar(env, updated)
+            .then(() => syncBookingToCalendar(env, updated, sectorMeta, product?.durationMinutes ?? 60)));
+        }
+        const parts = [
+          updated.customerName ? `under ${updated.customerName}` : '',
+          updated.vehicle ? `for the ${updated.vehicle}` : '',
+          updated.callbackPhone ? `and we'll call ${updated.callbackPhone}` : '',
+        ].filter(Boolean).join(' ');
+        return {
+          success: true,
+          data: { id: updated.id, customer_name: updated.customerName, vehicle: updated.vehicle, callback_phone: updated.callbackPhone, notes: updated.notes },
+          spoken_response: `Updated — your ${updated.productName} is ${parts || 'updated'}. Anything else?`,
+        };
+      }
+
       case 'reschedule_booking': {
         const newAt = args.new_datetime as string | undefined;
         if (!newAt) return { success: false, error: 'INVALID_SCHEDULE', spoken_response: "What day and time would you like instead?" };
@@ -715,14 +746,30 @@ export async function executeTool(
         const message = (args.message as string | undefined)?.trim();
         if (!message) return { success: false, error: 'INVALID', spoken_response: 'What would you like me to pass on?' };
         const callerName = (args.caller_name as string | undefined)?.trim().slice(0, 120) || null;
+        // Without a name the message is "someone called" — ask before saving.
+        if (!callerName) return { success: false, error: 'NAME_REQUIRED', spoken_response: 'Sure — what name should I put on the message?' };
         const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? token.callerPhone ?? null;
         if (!callbackPhone) return { success: false, error: 'PHONE_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.PHONE_REQUIRED };
-        await getDb(env.DB).insert(callMessages).values({
-          id: crypto.randomUUID(), businessType, callSid: cache?.callSid ?? null,
-          callerName, callbackPhone, message: message.slice(0, 2000),
-        });
-        await defer(notifyMessage(env, sectorMeta, { callerName, callbackPhone, message }));
-        return { success: true, data: { saved: true }, spoken_response: "Got it — I've passed that on, and someone will call you back. Anything else?" };
+        // One message per call: a second take_message (the caller adds a
+        // detail or corrects their number) replaces it rather than leaving
+        // staff two half-messages.
+        const db = getDb(env.DB);
+        const fields = { callerName, callbackPhone, message: message.slice(0, 2000) };
+        const updating = !!cache?.messageId;
+        if (cache?.messageId) {
+          await db.update(callMessages).set(fields).where(eq(callMessages.id, cache.messageId));
+        } else {
+          const id = crypto.randomUUID();
+          await db.insert(callMessages).values({ id, businessType, callSid: cache?.callSid ?? null, ...fields });
+          if (cache) cache.messageId = id;
+        }
+        await defer(notifyMessage(env, sectorMeta, { ...fields, updated: updating }));
+        // Read the number back so a misheard one gets corrected now.
+        return {
+          success: true,
+          data: { saved: true, updated: updating, caller_name: callerName, callback_phone: callbackPhone },
+          spoken_response: `Got it, ${callerName} — ${updating ? "I've updated your message" : "I've passed that on"}, and someone will call you back at ${callbackPhone}. Anything else?`,
+        };
       }
 
       case 'cancel_booking':
@@ -940,21 +987,36 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
       },
     },
     {
+      name: 'update_booking',
+      description: "Correct the caller's details on a booking already made in this call or listed in their bookings: name, vehicle, callback number or notes. Pass only what changed.",
+      parameters: {
+        type: 'object',
+        properties: {
+          order_id:       { type: 'string', description: 'The booking id.' },
+          customer_name:  { type: 'string' },
+          vehicle:        { type: 'string', description: 'Year, make and model.' },
+          callback_phone: { type: 'string' },
+          notes:          { type: 'string', description: 'Symptoms or requests for the technician.' },
+        },
+        required: ['order_id'],
+      },
+    },
+    {
       name: 'transfer_to_staff',
       description: 'Connect the caller to a person at the business. Only when they ask for a person, or for something only staff can do. Call it without saying anything first — its reply is spoken for you.',
       parameters: { type: 'object', properties: { reason: { type: 'string' } }, required: [] },
     },
     {
       name: 'take_message',
-      description: 'Leave a message for staff to call the caller back (exact quotes, questions you can\'t answer, after hours). Only once the caller has said they want a callback and what it is about.',
+      description: 'Leave a message for staff to call the caller back (exact quotes, questions you can\'t answer, after hours). Only once you have their name and what it is about. One message per call: if they add or correct something, call it again with the complete message — it replaces the earlier one.',
       parameters: {
         type: 'object',
         properties: {
           caller_name:    { type: 'string' },
-          message:        { type: 'string', description: 'What they need, in a sentence or two.' },
+          message:        { type: 'string', description: 'Everything they want passed on, in a sentence or two.' },
           callback_phone: { type: 'string', description: "Only if different from the number they're calling from." },
         },
-        required: ['message'],
+        required: ['caller_name', 'message'],
       },
     },
     {

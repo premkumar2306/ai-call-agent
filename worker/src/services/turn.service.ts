@@ -149,6 +149,7 @@ export function canSpeakToolResultDirectly(toolName: string, result: ToolResult)
   // for the booking?") or the whole answer ("The shop is closed right now…").
   if (toolName === 'transfer_to_staff') return true;
   if (toolName === 'book_appointment' && (result.error === 'DETAILS_REQUIRED' || result.error === 'PHONE_REQUIRED')) return true;
+  if (toolName === 'take_message' && (result.error === 'NAME_REQUIRED' || result.error === 'PHONE_REQUIRED')) return true;
   if (!result.success) return false;
   const d = result.data as any;
   switch (toolName) {
@@ -161,6 +162,7 @@ export function canSpeakToolResultDirectly(toolName: string, result: ToolResult)
     // a longer, wordier restatement.
     case 'book_appointment':
     case 'reschedule_booking':
+    case 'update_booking':
     case 'cancel_booking':
     case 'transfer_to_staff':
     case 'take_message':
@@ -191,7 +193,7 @@ export function extractCompleteSentences(buffer: string): { chunks: string[]; re
 // from a small fast model.
 const VOICE_TOOLS = new Set([
   'search_services', 'get_service_detail', 'check_availability', 'book_appointment',
-  'list_bookings', 'get_booking_status', 'cancel_booking', 'reschedule_booking',
+  'list_bookings', 'get_booking_status', 'cancel_booking', 'reschedule_booking', 'update_booking',
   'transfer_to_staff', 'take_message',
 ]);
 
@@ -296,15 +298,17 @@ HEALTH:
 ${shared}
 
 BOOKING (live data — always use the tools, one step at a time):
-1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brakes, warning light → diagnostics). If it's genuinely unclear, suggest an inspection or diagnostic visit.
+1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brakes, warning light → diagnostics). If the cause is unknown (a noise, a feeling), book the inspection or diagnostic service — not a repair — and put their symptoms in notes.
 2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns. If it says requested_open, book that requested_slot in the same turn — they already chose it.
 3. Once they've picked a time (not before — don't ask for details while they're still asking questions), get their name — and, if the business works on vehicles, the year, make and model — in one short question, if you don't already have them from this call. Their callback number is the one they're calling from; only ask for a number if book_appointment says it needs one.
 3b. When they pick a time and you have those details, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Its reply is spoken to the caller as-is.
-4. Only book times check_availability returned. If they ask for another time, check availability for it.
+4. Only offer or book times check_availability returned — never guess one ("9:30 may be open"). If they ask for another day or time, check availability for exactly that (preferred_date, preferred_time) and say plainly whether it's open.
+- Corrections after booking (name misheard, different number, other vehicle, symptoms): update_booking on that booking — not a message.
 - Adding a service to an appointment they already have (one visit, several jobs): call book_appointment for the new service with the existing booking's exact datetime from "Customer's bookings" — no availability check, never a different time.
 5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.
 - Existing appointments: list_bookings; to cancel, cancel_booking; to move one, check_availability for the new time, then reschedule_booking.
 - Wants a person, or needs something only staff can do: transfer_to_staff. If the shop is closed or there's no answer, take_message instead.
+- Messages: get their name and what it's about first (their number is the one they're calling from unless they give another), then call take_message once. Never say a message is passed on before take_message succeeds. If they add or correct something, call take_message again with the complete message.
 - Questions you can't answer from the profile (exact quotes, coupons, special requests): offer to take_message so a service advisor calls them back, instead of telling them to call.`;
 }
 

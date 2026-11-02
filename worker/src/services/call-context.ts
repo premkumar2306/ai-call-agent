@@ -20,6 +20,8 @@ export interface CallCache {
   // the current reply has played.
   transferTo?: string;
   callSid?: string;
+  // The call's take_message row, so later details update it.
+  messageId?: string;
   // Full, unfiltered product list for the business — used for recommendation
   // scoring every turn and reused (when no category filter is requested) by
   // search_services / get_recommendations.
