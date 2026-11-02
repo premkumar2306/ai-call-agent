@@ -132,9 +132,9 @@ describe('business profile', () => {
 
   it('does not call a quote-on-request job free', () => {
     expect(formatPrice(PRODUCTS[0])).toBe('free');
-    expect(formatPrice(PRODUCTS[5])).toBe('price quoted after inspection');
+    expect(formatPrice(PRODUCTS[5])).toBe('price depends on the vehicle');
     // Real Advanced VTech catalog has no prices — "quotes"/"quoted" must not read as free.
-    expect(formatPrice({ priceCents: 0, originalPriceCents: 0, name: 'Brake Repair', description: 'The shop quotes after inspecting the vehicle.' })).toBe('price quoted after inspection');
+    expect(formatPrice({ priceCents: 0, originalPriceCents: 0, name: 'Brake Repair', description: 'The shop quotes after inspecting the vehicle.' })).toBe('price depends on the vehicle');
   });
 
   it('gives the model a weekday → date map in the business timezone', () => {

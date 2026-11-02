@@ -29,7 +29,7 @@ const QUOTE_RE = /\b(quote[sd]?|custom pricing|price varies|call for)\b/i;
 
 export function formatPrice(p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>): string {
   if (p.priceCents === 0) {
-    return QUOTE_RE.test(`${p.name} ${p.description}`) ? 'price quoted after inspection' : 'free';
+    return QUOTE_RE.test(`${p.name} ${p.description}`) ? 'price depends on the vehicle' : 'free';
   }
   const dollars = (c: number) => `$${(c / 100).toFixed(c % 100 === 0 ? 0 : 2)}`;
   const regular = p.originalPriceCents > p.priceCents ? ` (regularly ${dollars(p.originalPriceCents)})` : '';
