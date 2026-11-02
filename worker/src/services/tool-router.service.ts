@@ -535,6 +535,20 @@ export async function executeTool(
         // The front desk needs to know who is coming and how to reach them.
         const customerName = (args.customer_name as string | undefined)?.trim();
         const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? token.callerPhone;
+        // Booking the same thing twice (a repeated request, a retry) isn't a
+        // clash with someone else — say they're already set.
+        if (scheduledAt) {
+          const mine = cache?.ordersLoaded ? cache.orders! : await getOrders(env, token.sub, businessType);
+          if (cache && !cache.ordersLoaded) { cache.orders = mine; cache.ordersLoaded = true; }
+          const dup = mine.find(o => o.productId === product.id && o.status !== 'CANCELLED' && o.scheduledAt?.slice(0, 16) === scheduledAt.slice(0, 16));
+          if (dup) {
+            return {
+              success: true,
+              data: { id: dup.id, service: dup.productName, scheduled_at: dup.scheduledAt, already_booked: true },
+              spoken_response: `You're already booked for ${dup.productName} ${formatSlotLabel(dup.scheduledAt!, ...todayTomorrow(sectorMeta))}. Anything else?`,
+            };
+          }
+        }
         if (product.fulfillmentType === 'SERVICE_BOOKING' && !customerName) {
           return { success: false, error: 'DETAILS_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.DETAILS_REQUIRED };
         }

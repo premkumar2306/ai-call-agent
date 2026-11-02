@@ -52,7 +52,7 @@ const { createCallCache } = await import('../src/services/call-context');
 const { buildBusinessProfile, describeLocalNow, formatPrice } = await import('../src/services/business-profile');
 const { searchProducts } = await import('../src/services/catalog.service');
 const { getAvailableSlots, pickSlots, checkWithinHours, formatSlotLabel } = await import('../src/services/tool-router.service');
-const { isBackchannel, looksIncomplete, isEchoOf, isDiscourseOnly } = await import('../src/durable-objects/stt-deepgram');
+const { isBackchannel, looksIncomplete, isEchoOf, isDiscourseOnly, fixPhoneNumbers } = await import('../src/durable-objects/stt-deepgram');
 const { executeTool, normalizePhone } = await import('../src/services/tool-router.service');
 const { agentTools } = await import('../src/services/turn.service');
 const { joinUtterances } = await import('../src/durable-objects/call-relay');
@@ -354,6 +354,13 @@ describe('turn-taking helpers', () => {
   it('treats listener feedback as backchannel, real answers as speech', () => {
     for (const t of ['uh huh', 'Mm-hmm.', 'okay', 'yeah got it', 'Right.']) expect(isBackchannel(t)).toBe(true);
     for (const t of ['okay book it', 'no', 'yeah tuesday works', 'what about Saturday', '']) expect(isBackchannel(t)).toBe(false);
+  });
+
+  // LLM-caller test (2026-11-02): "555-214-3876" arrived as "$55,521,438.76"
+  // and the booking failed three times.
+  it('turns a phone number formatted as money back into a phone number', () => {
+    expect(fixPhoneNumbers("Sure. It's $55,521,438.76. So no ballpark?")).toBe("Sure. It's (555) 214-3876. So no ballpark?");
+    expect(fixPhoneNumbers('It costs $89.99 or $1,250.00')).toBe('It costs $89.99 or $1,250.00');
   });
 
   it('treats a sentence ending in a number as finished', () => {

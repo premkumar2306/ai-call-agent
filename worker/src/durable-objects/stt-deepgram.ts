@@ -28,6 +28,8 @@ export interface SttOptions {
   apiKey: string;
   /** True when an interim transcript is our own voice coming back (speakerphone echo) — no barge-in. */
   isEcho?: (text: string) => boolean;
+  /** Any recognised caller speech (every interim) — e.g. to reset a silence timer mid-sentence. */
+  onActivity?: () => void;
   /** Deepgram model. Default 'nova-3'. */
   model?: string;
   /** 'en' (default); set 'multi' for multilingual. */
@@ -137,6 +139,20 @@ export function isEchoOf(heard: string, spoken: string): boolean {
   return h.filter(w => said.has(w)).length / h.length >= 0.75;
 }
 
+/**
+ * smart_format reads a spoken phone number as money: "five five five, two
+ * one four, three eight seven six" → "$55,521,438.76". A "dollar amount"
+ * with exactly 10 (or 1 + 10) digits is a phone number; rewrite it so the
+ * agent can use it.
+ */
+export function fixPhoneNumbers(text: string): string {
+  return text.replace(/\$\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?/g, (m) => {
+    let d = m.replace(/\D/g, '');
+    if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+    return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : m;
+  });
+}
+
 export interface Stt {
   sendAudio(buf: ArrayBuffer): void;
   close(): void;
@@ -149,7 +165,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho,
+    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho, onActivity,
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -278,6 +294,7 @@ export async function createDeepgramSTT(
           }
           lastEnd = Math.max(lastEnd, msg.start + msg.duration);
         }
+        if (text) onActivity?.();
         if (text) {
           if (!msg.is_final) {
             // Interim result: reliable signal of new/ongoing speech. Only
@@ -301,7 +318,11 @@ export async function createDeepgramSTT(
             // fire mid-sentence on an endpointing pause, truncating the
             // transcript. speech_final (checked below) is Deepgram's actual
             // end-of-utterance signal.
-            if (!msg.speech_final) segments.push(text);
+            // Skip a piece already consumed by an earlier finalize
+            // (UtteranceEnd can close an utterance before its last is_final
+            // arrives) — it would be spoken twice.
+            const stale = typeof msg.start === 'number' && msg.start < finalizedUntil - 0.01;
+            if (!msg.speech_final && !stale) segments.push(text);
             lastText = [...segments, ...(msg.speech_final ? [text] : [])].join(' ');
             lastConfidence = confidence;
           }
@@ -340,5 +361,92 @@ export async function createDeepgramSTT(
   return {
     sendAudio: (buf: ArrayBuffer) => { if (isOpen) ws.send(buf); },
     close: () => { isOpen = false; if (holdTimer) clearTimeout(holdTimer); try { ws.close(); } catch {} },
+  };
+}
+
+// ── Flux (DG_MODEL=flux-general-en) ─────────────────────────────────────────
+// Deepgram's conversational model decides end-of-turn itself from how the
+// sentence sounds and reads, instead of a fixed silence window. That
+// replaces endpointing, the incomplete-sentence hold and segment assembly
+// above: one EndOfTurn carries the whole turn.
+// https://developers.deepgram.com/docs/flux/nova-3-migration
+
+// Flux wants ~80 ms chunks; Twilio sends 20 ms (160 bytes of 8 kHz µ-law).
+const FLUX_CHUNK_BYTES = 640;
+
+export async function createDeepgramFluxSTT(
+  opts: SttOptions & { eotThreshold?: number; eotTimeoutMs?: number },
+  onTranscript: (text: string) => void,
+  onSpeechStart?: (reason: SpeechStartReason) => void,
+): Promise<Stt> {
+  const { apiKey, model = 'flux-general-en', debug = false, minConfidence = 0.5, bargeInMinWords = 2, isEcho } = opts;
+  if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
+  const url = 'https://api.deepgram.com/v2/listen?' + new URLSearchParams({
+    model, encoding: 'mulaw', sample_rate: '8000',
+    eot_threshold: String(opts.eotThreshold ?? 0.7),
+    eot_timeout_ms: String(opts.eotTimeoutMs ?? 3000),
+  });
+  const resp = await fetch(url, { headers: { Upgrade: 'websocket', Authorization: `Token ${apiKey}` } });
+  const ws = resp.webSocket;
+  if (!ws) throw new Error(`Deepgram Flux did not accept the WebSocket upgrade (${resp.status})`);
+  ws.accept();
+
+  let isOpen = true;
+  let pending = new Uint8Array(0);
+  let announcedTurn = -1;
+  let turnStartedAt = 0;
+
+  ws.addEventListener('message', (event: MessageEvent) => {
+    try {
+      const msg = JSON.parse(event.data as string);
+      if (msg.type !== 'TurnInfo') {
+        if (debug || msg.type === 'Error') console.log(`[dg flux] ${JSON.stringify(msg).slice(0, 200)}`);
+        return;
+      }
+      const text = String(msg.transcript ?? '').trim();
+      const turn = Number(msg.turn_index ?? 0);
+      if (debug) console.log(`[dg flux] ${msg.event} #${turn} eot=${msg.end_of_turn_confidence} "${text}"`);
+      if (msg.event === 'StartOfTurn' && !turnStartedAt) turnStartedAt = Date.now();
+      if (text) opts.onActivity?.();
+      if ((msg.event === 'StartOfTurn' || msg.event === 'Update') && text && announcedTurn !== turn
+          && text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text) && !isEcho?.(text)) {
+        announcedTurn = turn;
+        onSpeechStart?.('interim');
+      }
+      if (msg.event === 'EndOfTurn') {
+        const words: { confidence?: number }[] = Array.isArray(msg.words) ? msg.words : [];
+        const confidence = words.length ? words.reduce((s, w) => s + (w.confidence ?? 1), 0) / words.length : 1;
+        const ms = turnStartedAt ? Date.now() - turnStartedAt : -1;
+        turnStartedAt = 0;
+        if (!text) return;
+        if (confidence < minConfidence) {
+          console.log(`[dg flux] dropped low-confidence turn (${confidence.toFixed(2)}): "${text}"`);
+          return;
+        }
+        console.log(`[dg flux] ⏱ end-of-turn (${msg.trigger ?? 'model'}): ${ms}ms — "${text}"`);
+        onTranscript(text);
+      }
+    } catch (e: any) {
+      console.error('[dg flux] parse error', e?.message || e);
+    }
+  });
+  ws.addEventListener('close', () => { isOpen = false; });
+  ws.addEventListener('error', (e: any) => { isOpen = false; console.error('[dg flux]', e?.message || e); });
+
+  return {
+    sendAudio: (buf: ArrayBuffer) => {
+      if (!isOpen) return;
+      const next = new Uint8Array(pending.length + buf.byteLength);
+      next.set(pending);
+      next.set(new Uint8Array(buf), pending.length);
+      if (next.length < FLUX_CHUNK_BYTES) { pending = next; return; }
+      pending = new Uint8Array(0);
+      ws.send(next.buffer);
+    },
+    close: () => {
+      isOpen = false;
+      try { ws.send(JSON.stringify({ type: 'CloseStream' })); } catch {}
+      try { ws.close(); } catch {}
+    },
   };
 }

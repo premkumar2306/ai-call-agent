@@ -14,8 +14,14 @@
  *            (transcripts.metrics): queueing, model first token, tools,
  *            first audio.
  *
- * Usage (from worker/):
- *   ADMIN_KEY=… node scripts/latency-test.mjs                    # production
+ * The caller is Claude playing a randomly picked persona (a goal, a car, a
+ * way of talking), so every run is a different, natural conversation: it
+ * hears the assistant (its audio transcribed with Deepgram) and decides
+ * what to say next, until it hangs up. `--lines` runs a fixed script instead.
+ *
+ * Usage (from worker/; ANTHROPIC_API_KEY and DEEPGRAM_API_KEY for the caller):
+ *   ADMIN_KEY=… node scripts/latency-test.mjs                    # production, random persona
+ *   ADMIN_KEY=… node scripts/latency-test.mjs --persona 2        # a specific persona
  *   node scripts/latency-test.mjs --local                        # wrangler dev on :8787
  *   node scripts/latency-test.mjs --lines "Hi, do you fix brakes?" "How much is it?"
  *   BUSINESS_TYPE=dental ADMIN_KEY=… node scripts/latency-test.mjs
@@ -25,6 +31,7 @@
  * local D1 with wrangler. Requires macOS `say` and ffmpeg.
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import { execFileSync, spawnSync } from 'child_process';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -33,17 +40,26 @@ import { join } from 'path';
 const args = process.argv.slice(2);
 const local = args.includes('--local');
 const linesIdx = args.indexOf('--lines');
-const LINES = linesIdx >= 0 ? args.slice(linesIdx + 1).filter(a => !a.startsWith('--')) : [
-  'Hi, do you guys fix windshields?',
-  'How much is an oil change?',
-  'Where are you located?',
-  'What times do you have Tuesday morning for an oil change?',
-  "Okay, thanks. That's all.",
+const LINES = linesIdx >= 0 ? args.slice(linesIdx + 1).filter(a => !a.startsWith('--')) : null;
+const personaIdx = args.indexOf('--persona');
+
+// Who's calling. Each is a goal plus a way of talking; Claude improvises the rest.
+const PERSONAS = [
+  'You drive a 2016 Toyota Camry. Your brakes started squealing this week. You want to know if they can look at it and roughly what it costs, then book something Saturday morning if possible. You are friendly but a bit rushed.',
+  "You manage 6 delivery vans for a bakery and want to know if they do fleet maintenance and how it works. You ask practical questions, one at a time. You don't book anything today; you want someone to call you back.",
+  "Your check engine light came on in your 2012 Honda Accord. You're worried and not very car-savvy. You ask whether it's safe to drive and when they can look at it. You book the earliest time they offer.",
+  'You want an oil change for your 2019 Ford F-150. You ask the price, push a little when they don\'t give an exact number, then book Tuesday afternoon. Give your name (Chris Romero) and number (312 555 0187) when asked.',
+  'You got a rock chip in your windshield on the highway. You ask if they fix chips or only replace windshields, and how long it takes. You talk in short, casual fragments with some "um"s.',
+  "You're an older caller. You start by asking what their hours are on Saturday, then ask if they can do an alignment because the car pulls to the right. You sometimes repeat yourself. You decide to call back later.",
+  "You booked something earlier this week but can't remember what time. You want to check your appointment and maybe move it to Friday. If they can't find it, you ask to talk to a person.",
+  'You want to convert your work truck to propane and have lots of questions: is it worth it, how long it takes, what it costs. Ask one thing at a time.',
 ];
+const VOICES = ['Samantha', 'Alex', 'Daniel', 'Karen', 'Moira', 'Tessa', 'Fred', 'Victoria'];
+const MAX_TURNS = 10;
 const BUSINESS = process.env.BUSINESS_TYPE ?? 'advanced_vtech';
 const BASE = local ? `http://localhost:${process.env.PORT ?? 8787}` : (process.env.WORKER_URL ?? 'https://mogi-platform.premkumar-2ba.workers.dev');
 const ADMIN_KEY = process.env.ADMIN_KEY;
-const VOICE = process.env.SAY_VOICE ?? 'Samantha';
+const VOICE = process.env.SAY_VOICE ?? VOICES[Math.floor(Math.random() * VOICES.length)];
 const REPLY_DONE_MS = 1500;   // assistant audio quiet this long after playback = reply finished
 const TURN_TIMEOUT_MS = 20000;
 if (!local && !ADMIN_KEY) {
@@ -60,7 +76,6 @@ function speech(text, i) {
   if (out.status !== 0) throw new Error(`ffmpeg: ${out.stderr}`);
   return out.stdout;
 }
-const clips = LINES.map(speech);
 const SILENCE = Buffer.alloc(160, 0xff);
 
 // ── Connect ────────────────────────────────────────────────────────────────
@@ -86,6 +101,7 @@ let playbackEndsAt = 0;
 let lastAgentAudioAt = 0;
 let firstAudioAfter = null;  // set when waiting for a reply
 let closed = false;
+let agentAudio = [];         // what the assistant said since the caller last spoke
 const pendingMarks = new Set();
 ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
@@ -94,6 +110,7 @@ ws.onmessage = (e) => {
     const bytes = Buffer.from(m.media.payload, 'base64').length;
     playbackEndsAt = Math.max(now, playbackEndsAt) + bytes / 8;
     lastAgentAudioAt = now;
+    agentAudio.push(Buffer.from(m.media.payload, 'base64'));
     if (firstAudioAfter && !firstAudioAfter.at) firstAudioAfter.at = now;
   } else if (m.event === 'mark') {
     const name = m.mark.name;
@@ -135,21 +152,70 @@ async function waitForReplyDone() {
   }
 }
 
+// ── The caller ─────────────────────────────────────────────────────────────
+// What the assistant said, from its audio, as a caller would hear it.
+async function hear(chunks) {
+  const audio = Buffer.concat(chunks);
+  if (!audio.length || !process.env.DEEPGRAM_API_KEY) return '';
+  const r = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&encoding=mulaw&sample_rate=8000&smart_format=true', {
+    method: 'POST',
+    headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`, 'Content-Type': 'application/octet-stream' },
+    body: audio,
+  });
+  const j = await r.json().catch(() => null);
+  return j?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
+}
+
+const persona = LINES ? null : PERSONAS[personaIdx >= 0 ? Number(args[personaIdx + 1]) % PERSONAS.length : Math.floor(Math.random() * PERSONAS.length)];
+const anthropic = LINES ? null : new Anthropic();
+const heardSoFar = [];  // [{who: 'shop' | 'you', text}]
+
+// Claude, in character, decides the caller's next line; null = hang up.
+async function nextLine() {
+  if (LINES) return LINES[heardSoFar.filter(h => h.who === 'you').length] ?? null;
+  if (heardSoFar.filter(h => h.who === 'you').length >= MAX_TURNS) return null;
+  const transcript = heardSoFar.map(h => `${h.who === 'you' ? 'You' : 'Shop'}: ${h.text}`).join('\n');
+  const res = await anthropic.messages.create({
+    model: 'claude-opus-5-5',
+    max_tokens: 2000,
+    output_config: { effort: 'low' },
+    system: `You are role-playing a real person phoning a car repair shop. The shop's phone is answered by an AI receptionist.
+
+${persona}
+
+Speak the way people really talk on the phone: casual, usually one short sentence, sometimes a fragment, "yeah", "um", or a follow-up that depends on what you just heard. React to what the shop actually said — if it misunderstood you, say so; if it asked you something, answer it. Don't read out a list of questions. Never describe actions or add stage directions.
+
+Reply with only the words you say next. When your goal is done, or the conversation has naturally ended and you've said goodbye, reply with exactly [HANG UP].`,
+    messages: [{ role: 'user', content: `The call so far:\n${transcript || '(the shop is picking up)'}\n\nWhat do you say next?` }],
+  });
+  const text = res.content.filter(b => b.type === 'text').map(b => b.text).join(' ').trim().replace(/^["']|["']$/g, '');
+  return !text || /\[HANG UP\]/i.test(text) ? null : text;
+}
+
 // ── Conversation ───────────────────────────────────────────────────────────
-console.log(`Calling ${BUSINESS} at ${BASE} (${callSid})…`);
+console.log(`Calling ${BUSINESS} at ${BASE} (${callSid}), caller voice ${VOICE}`);
+if (persona) console.log(`Persona: ${persona}\n`);
+agentAudio = [];
 await waitForReplyDone();                      // greeting
+heardSoFar.push({ who: 'shop', text: await hear(agentAudio) });
 const results = [];
-for (let i = 0; i < LINES.length; i++) {
+for (let i = 0; ; i++) {
+  const line = await nextLine();
+  if (!line) break;
+  heardSoFar.push({ who: 'you', text: line });
   firstAudioAfter = { at: null };
   lastAgentAudioAt = 0;
-  const endedAt = await say(clips[i]);
+  agentAudio = [];
+  const endedAt = await say(speech(line, i));
   const t = Date.now();
   while (!firstAudioAfter.at && Date.now() - t < TURN_TIMEOUT_MS) await sleep(20);
   const e2e = firstAudioAfter.at ? firstAudioAfter.at - endedAt : null;
-  results.push({ line: LINES[i], e2e });
-  console.log(`  ${i + 1}. "${LINES[i]}" → ${e2e == null ? 'no reply' : `${e2e} ms`}`);
+  results.push({ line, e2e });
   await waitForReplyDone();
-  await sleep(400);
+  const reply = await hear(agentAudio);
+  heardSoFar.push({ who: 'shop', text: reply });
+  console.log(`  ${i + 1}. CALLER: ${line}\n     (${e2e == null ? 'no reply' : `${e2e} ms`}) SHOP: ${reply}`);
+  await sleep(300);
 }
 ws.send(JSON.stringify({ event: 'stop' }));
 await sleep(500);

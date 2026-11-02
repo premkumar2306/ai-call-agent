@@ -147,16 +147,19 @@ The response is TwiML XML containing what Mogi would say.
 
 ### Synthetic call latency test (no phone needed)
 
-`scripts/latency-test.mjs` talks to the voice agent the way a phone call does: it speaks a scripted
-conversation (macOS `say` + ffmpeg) into the Media Streams socket, plays the replies back in real
-time, and prints per turn how long the caller waited and where the time went (end-of-speech
-detection, model to first sentence, tools, voice synthesis), plus the transcript.
+`scripts/latency-test.mjs` phones the voice agent the way a real caller does. The caller is Claude
+playing one of eight personas (squealing brakes, a fleet manager, a worried check-engine-light caller,
+someone pushing for a price…): it hears the agent (audio transcribed with Deepgram), decides what to say
+next, speaks it with a random macOS voice into the Media Streams socket, and hangs up when done — so
+every run is a different, natural conversation. It prints the conversation and, per turn, how long the
+caller waited and where the time went (end-of-speech detection, model to first sentence, tools, voice).
 
 ```bash
-cd worker
-ADMIN_KEY=<admin key> node scripts/latency-test.mjs          # against production
-node scripts/latency-test.mjs --local                         # against wrangler dev (needs Deepgram + Cartesia keys)
-node scripts/latency-test.mjs --lines "Do you fix brakes?" "Book me Monday at 9"
+cd worker   # needs ANTHROPIC_API_KEY + DEEPGRAM_API_KEY for the caller, macOS say + ffmpeg
+ADMIN_KEY=<admin key> node scripts/latency-test.mjs              # production, random persona
+ADMIN_KEY=<admin key> node scripts/latency-test.mjs --persona 3  # a specific one
+node scripts/latency-test.mjs --local                             # against wrangler dev
+node scripts/latency-test.mjs --lines "Do you fix brakes?" "Book me Monday at 9"   # fixed script
 ```
 
 The same per-turn breakdown is saved for every real call (`transcripts.metrics`) and charted in the
@@ -303,6 +306,7 @@ what ships.
 | `VOICE_MODEL` | `claude-haiku-5-5` | Overrides the model used on live calls only (`DEFAULT_VOICE_MODEL` in `src/config.ts`). `ANTHROPIC_MODEL` covers the other agent surfaces. |
 | `DG_MODEL` | `nova-3` | Deepgram model. |
 | `DG_LANGUAGE` | `en` | Set to `multi` for multilingual callers (slower). |
+| `DG_MODEL` | `nova-3` | `flux-general-en` switches to Deepgram's end-of-turn model. Measured slower here (median 1.9s vs 1.5s) and it doesn't format numbers, so it's off. |
 | `DG_ENDPOINTING_MS` | `250` | Silence before an utterance is considered finished. A pause mid-sentence that ends an utterance early is safe: the next fragment is merged into it (see below). |
 | `DG_BARGE_IN_MIN_WORDS` | `2` | Recognised words (excluding "uh huh"/"okay"-style backchannels) before the caller's speech cuts the assistant off. |
 | `VOICE_BARGE_IN_ON_VAD` | off | Set `1` to barge in on Deepgram's raw voice-activity event instead of recognised words. Faster, but line noise and echo cut replies off. |

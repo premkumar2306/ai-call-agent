@@ -9,7 +9,7 @@ import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
-import { createDeepgramSTT, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
+import { createDeepgramSTT, createDeepgramFluxSTT, fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
 import { verifyStreamToken } from '../utils/stream-token';
 import { getOrCreateCustomer } from '../utils/identity';
 import { isProduction } from '../config';
@@ -170,7 +170,9 @@ export class CallRelay extends DurableObject<Env> {
   // connection never opens a (billed) Deepgram session. Startup overlaps the
   // greeting TTS, so the caller doesn't notice the delay.
   private startStt() {
-    createDeepgramSTT(
+    // DG_MODEL=flux-* switches to Deepgram's end-of-turn model (same callbacks).
+    const create = /^flux/.test(this.env.DG_MODEL ?? '') ? createDeepgramFluxSTT : createDeepgramSTT;
+    create(
       {
         apiKey: this.env.DEEPGRAM_API_KEY ?? '',
         model: this.env.DG_MODEL,
@@ -179,10 +181,12 @@ export class CallRelay extends DurableObject<Env> {
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
         isEcho: (text) => this.looksLikeEcho(text),
+        // Mid-sentence speech must hold off "Are you still there?".
+        onActivity: () => this.callerActive(),
         incompleteHoldMs: numEnv(this.env.DG_INCOMPLETE_HOLD_MS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
-      (text) => { this.handleTranscript(text); },
+      (text) => { this.handleTranscript(fixPhoneNumbers(text)); },
       (reason) => { this.handleSpeechStart(reason); },
     )
       .then(s => {
