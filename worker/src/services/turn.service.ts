@@ -268,7 +268,7 @@ USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
 - Price questions when the profile has no price ("price depends on the vehicle"): answer like a service writer, never "we don't publish prices". Two short sentences, like: "It depends on the vehicle — what are you driving? We've got an oil change special on right now, too." Once you know the vehicle, offer to book it in (the advisor confirms the exact price before any work starts) or have an advisor call back with the exact price.
 - If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so a service advisor calls them back (or connect them, if they'd rather talk now). Never invent facts, prices or policies.
-- Speak as the business ("we", "our shop"). Never mention "the profile", "my information" or "the list" to the caller.
+- Speak as the business ("we", "our shop"). The words "profile", "my information", "the system" and "the list" must never appear in what you say — the caller doesn't know they exist.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
 - Before a tool call say nothing, or at most a few words ("Let me check."). Never think aloud, and never say a date as YYYY-MM-DD.
 - Tool results carry a "_spoken_hint": a ready-made sentence for that result. Lightly paraphrase it unless the conversation needs something different.
@@ -668,6 +668,24 @@ function persistTurn(
  * history to what they actually heard, so the next turn doesn't assume they
  * got information they never did.
  */
+/**
+ * Undoes the last exchange when the caller turned out not to be finished —
+ * they kept talking a moment after the reply started ("Oh, sure. [pause]
+ * It's 555-218-4073."). Removes the caller's words and the plain-text reply
+ * from history and returns the words, to be joined to what they say next.
+ * An exchange that used tools is kept: what a tool did (a booking) must
+ * stay on record.
+ */
+export function retractLastExchange(cache: CallCache): string | null {
+  const [user, reply] = cache.messages.slice(-2);
+  if (user?.role !== 'user' || typeof user.content !== 'string') return null;
+  if (reply?.role !== 'assistant' || typeof reply.content !== 'string') return null;
+  cache.messages = cache.messages.slice(0, -2);
+  const [hu, ha] = cache.history.slice(-2);
+  if (hu?.role === 'user' && ha?.role === 'assistant') cache.history = cache.history.slice(0, -2);
+  return user.content;
+}
+
 export function amendInterruptedReply(cache: CallCache, heard: string): void {
   const text = heard.trim() ? `${heard.trim()} ${INTERRUPTED_MARK}` : INTERRUPTED_MARK;
   const lastMsg = cache.messages[cache.messages.length - 1];

@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Env, SessionPayload } from '../types';
 import { buildDefaultTwilioSession } from '../middleware';
-import { runTurn, amendInterruptedReply } from '../services/turn.service';
+import { runTurn, amendInterruptedReply, retractLastExchange } from '../services/turn.service';
 import { getSector } from '../services/sector.service';
 import { getProducts } from '../services/catalog.service';
 import { getOrders } from '../services/order.service';
@@ -59,6 +59,11 @@ const MAX_FILLERS = 3;
 // up, rather than holding an open line in dead air.
 const SILENCE_REPROMPT_MS = 8000;
 
+// Caller speech this soon after a reply began speaking means they hadn't
+// finished their turn (a pause mid-thought ended the utterance early): the
+// reply is withdrawn and their words are joined to what they say now.
+const CONTINUATION_MS = 2000;
+
 // A transcript arriving this soon after our audio stopped can still be
 // that audio's echo.
 const ECHO_TAIL_MS = 1500;
@@ -92,6 +97,11 @@ interface ActiveTurn {
   // runTurn already wrote the full reply to history.
   committed: boolean;
   greeting: boolean;
+  // When this reply's first real audio started playing.
+  firstAudioAt?: number;
+  // The caller cut in so soon that they were still mid-turn: the reply is
+  // withdrawn, not recorded as interrupted (see CONTINUATION_MS).
+  retracted?: boolean;
 }
 
 export class CallRelay extends DurableObject<Env> {
@@ -202,6 +212,7 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   private heardText(turn: ActiveTurn): string {
+    if (turn.retracted) return '';
     return turn.chunks.filter(c => c.played && !c.filler).map(c => c.text).join(' ');
   }
 
@@ -211,10 +222,20 @@ export class CallRelay extends DurableObject<Env> {
     const turn = this.active;
     if (turn && !turn.closed) {
       turn.closed = true;
+      // Cut in almost as soon as the reply began: they weren't finished.
+      if (!turn.greeting && (!turn.firstAudioAt || Date.now() - turn.firstAudioAt < CONTINUATION_MS)) {
+        turn.retracted = true;
+        if (turn.committed) {
+          const words = retractLastExchange(this.cache);
+          if (words) this.carryOver = joinUtterances(words, this.carryOver);
+          else turn.retracted = false;   // a tool ran — keep it on record
+        }
+        if (turn.retracted) console.log(`[turn] caller wasn't finished — withdrawing the reply`);
+      }
       turn.abort.abort();
       // The reply was already committed in full but the caller cut the
       // audio short — rewrite history to what they actually heard.
-      if (turn.committed && !turn.greeting) amendInterruptedReply(this.cache, this.heardText(turn));
+      if (turn.committed && !turn.greeting && !turn.retracted) amendInterruptedReply(this.cache, this.heardText(turn));
     }
     this.pendingMarks.clear();
     if (this.twWs && this.twWs.readyState === WebSocket.OPEN) {
@@ -302,6 +323,7 @@ export class CallRelay extends DurableObject<Env> {
     }
     const ws = this.twWs!;
     const now = Date.now();
+    if (!chunk.filler && !turn.firstAudioAt) turn.firstAudioAt = now;
     this.spokenLog = this.spokenLog.filter(s => now - s.at < 20_000);
     this.spokenLog.push({ text: chunk.text, at: now });
     await cartesiaDrain(res, this.streamSid, ws, signal, false);
