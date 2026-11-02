@@ -145,14 +145,18 @@ export function isEchoOf(heard: string, spoken: string): boolean {
  * smart_format reads a spoken phone number as money: "five five five, two
  * one four, three eight seven six" → "$55,521,438.76". A "dollar amount"
  * with exactly 10 (or 1 + 10) digits is a phone number; rewrite it so the
- * agent can use it.
+ * agent can use it. It does the same to model years: "twenty nineteen" →
+ * "$20.19" or "2,019"; those go back to "2019".
  */
 export function fixPhoneNumbers(text: string): string {
-  return text.replace(/\$\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?/g, (m) => {
-    let d = m.replace(/\D/g, '');
-    if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
-    return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : m;
-  });
+  return text
+    .replace(/\$\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?/g, (m) => {
+      let d = m.replace(/\D/g, '');
+      if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+      return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : m;
+    })
+    .replace(/\$(19|20)\.(\d{2})\b/g, '$1$2')
+    .replace(/\b([12]),(\d{3})\b(?!,\d)/g, (m, a, b) => (/^(19|20)\d\d$/.test(a + b) ? a + b : m));
 }
 
 export interface Stt {
