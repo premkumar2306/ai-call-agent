@@ -930,7 +930,7 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
     },
     {
       name: 'take_message',
-      description: 'Leave a message for staff to call the caller back (exact quotes, questions you can\'t answer, after hours).',
+      description: 'Leave a message for staff to call the caller back (exact quotes, questions you can\'t answer, after hours). Only once the caller has said they want a callback and what it is about.',
       parameters: {
         type: 'object',
         properties: {

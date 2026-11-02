@@ -76,7 +76,7 @@ export type OnChunk = (chunk: string) => void | Promise<void>;
 // clause boundary rather than a sentence end. Short enough to beat the
 // sentence wait, long enough that TTS still gets a speakable phrase —
 // "Great news," on its own sounds clipped.
-const FIRST_CHUNK_MIN_CHARS = 25;
+const FIRST_CHUNK_MIN_CHARS = 12;
 
 // Hard ceiling on how long the first chunk may sit unflushed waiting for
 // punctuation. Past this, break at the last word boundary. This is what

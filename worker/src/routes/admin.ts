@@ -225,6 +225,8 @@ adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
   return c.json({ success: true, data: rows });
 });
 
+export const SYNTHETIC_CALLER = 'synthetic-latency-test';
+
 // POST /admin/stream-token { businessType } — a media-stream token for
 // scripts/latency-test.mjs, so a synthetic caller can talk to production
 // without a phone call. The caller identity is fixed and marked synthetic.
@@ -232,7 +234,11 @@ adminRouter.post('/stream-token', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
   const businessType = typeof body?.businessType === 'string' ? body.businessType : '';
   if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: 'Unknown business' }, 404);
-  const token = await signStreamToken(c.env, businessType, 'synthetic-latency-test', '+15555550100');
+  // Each run starts clean: earlier runs' bookings would otherwise take the
+  // slots this one asks for, and pile up in the shop's list.
+  await getDb(c.env.DB).update(ordersTable).set({ status: 'CANCELLED' })
+    .where(eq(ordersTable.customerIdHashed, SYNTHETIC_CALLER));
+  const token = await signStreamToken(c.env, businessType, SYNTHETIC_CALLER);
   return c.json({ success: true, data: { token } });
 });
 

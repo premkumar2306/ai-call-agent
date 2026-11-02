@@ -59,6 +59,8 @@ export function bookingSummary(order: Order): string {
 }
 
 export async function notifyBooking(env: Env, meta: SectorMeta | null | undefined, order: Order, event: BookingEvent): Promise<void> {
+  // scripts/latency-test.mjs bookings (see /admin/stream-token) tell nobody.
+  if (order.customerIdHashed === 'synthetic-latency-test') return;
   const name = meta?.name ?? order.businessType;
   const verb = event === 'booked' ? 'New booking' : event === 'rescheduled' ? 'Booking moved' : 'Booking cancelled';
   const jobs: Promise<void>[] = [];
