@@ -172,13 +172,15 @@ async function hear(chunks) {
     method: 'POST',
     headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`, 'Content-Type': 'application/octet-stream' },
     body: audio,
-  });
-  const j = await r.json().catch(() => null);
+    signal: AbortSignal.timeout(20_000),
+  }).catch(() => null);
+  const j = await r?.json().catch(() => null);
   return j?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
 }
 
 const persona = LINES ? null : PERSONAS[personaIdx >= 0 ? Number(args[personaIdx + 1]) % PERSONAS.length : Math.floor(Math.random() * PERSONAS.length)];
-const anthropic = LINES ? null : new Anthropic();
+// Bounded so one stuck request fails the call instead of hanging the run.
+const anthropic = LINES ? null : new Anthropic({ timeout: 30_000, maxRetries: 2 });
 const heardSoFar = [];  // [{who: 'shop' | 'you', text}]
 
 // Claude, in character, decides the caller's next line; null = hang up.

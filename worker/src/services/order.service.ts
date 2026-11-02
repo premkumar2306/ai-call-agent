@@ -1,4 +1,4 @@
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { getDb } from '../db/client';
 import { orders as ordersTable } from '../db/schema';
 import { getProductById } from './catalog.service';
@@ -179,6 +179,23 @@ export async function getOrder(env: Env, id: string, customerIdHashed: string): 
     .select()
     .from(ordersTable)
     .where(and(eq(ordersTable.id, id), eq(ordersTable.customerIdHashed, customerIdHashed)));
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/** Corrects the caller's details on an active booking; null if it isn't theirs or isn't active. */
+export async function updateOrderDetails(
+  env: Env, id: string, customerIdHashed: string,
+  details: { customerName?: string; vehicle?: string; callbackPhone?: string; notes?: string },
+): Promise<Order | null> {
+  const set: Partial<typeof ordersTable.$inferInsert> = { updatedAt: new Date() };
+  if (details.customerName) set.customerName = clip(details.customerName, 120);
+  if (details.vehicle) set.vehicle = clip(details.vehicle, 120);
+  if (details.callbackPhone) set.callbackPhone = clip(details.callbackPhone, 32);
+  if (details.notes) set.notes = clip(details.notes, 500);
+  const rows = await getDb(env.DB).update(ordersTable).set(set)
+    .where(and(eq(ordersTable.id, id), eq(ordersTable.customerIdHashed, customerIdHashed),
+      inArray(ordersTable.status, ['PENDING', 'ACCEPTED', 'COMPLETE'])))
+    .returning();
   return rows[0] ? mapRow(rows[0]) : null;
 }
 

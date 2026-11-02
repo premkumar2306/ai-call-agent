@@ -136,6 +136,13 @@ describe('canSpeakToolResultDirectly', () => {
     expect(canSpeakToolResultDirectly('book_appointment', ok({ id: 'x' }))).toBe(true);
     expect(canSpeakToolResultDirectly('cancel_booking', ok({ id: 'x' }))).toBe(true);
     expect(canSpeakToolResultDirectly('transfer_to_staff', ok({ transferring: true }))).toBe(true);
+    expect(canSpeakToolResultDirectly('update_booking', ok({ id: 'x' }))).toBe(true);
+  });
+
+  it('speaks the "what name?" question for a message directly', () => {
+    const r = { success: false, error: 'NAME_REQUIRED', spoken_response: 'Sure — what name should I put on the message?' };
+    expect(canSpeakToolResultDirectly('take_message', r)).toBe(true);
+    expect(canSpeakToolResultDirectly('take_message', { ...r, error: 'INVALID' })).toBe(false);
   });
 
   it('round-trips unknown tools through the model', () => {

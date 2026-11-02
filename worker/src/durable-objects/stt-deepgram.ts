@@ -164,6 +164,8 @@ export interface Stt {
   close(): void;
 }
 
+const STABLE_MS = 700;
+
 export async function createDeepgramSTT(
   opts: SttOptions,
   onTranscript: (text: string) => void,
@@ -228,6 +230,14 @@ export async function createDeepgramSTT(
     onSpeechStart?.(reason);
   };
 
+  // Deepgram sometimes keeps re-sending the same finished interim for
+  // seconds before it endpoints (SVT: 6–9 s on "Jordan Lee. It's a 2018
+  // Mazda three."). When an interim that ends a sentence repeats unchanged
+  // for STABLE_MS, the caller has stopped — finalize it ourselves.
+  let stableTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastInterim = '';
+  const clearStable = () => { if (stableTimer) clearTimeout(stableTimer); stableTimer = undefined; };
+
   // A fragment waiting for the rest of its sentence (see looksIncomplete).
   let held = '';
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
@@ -241,9 +251,11 @@ export async function createDeepgramSTT(
     }
   };
 
-  const finalize = (text: string, reason: 'speech_final' | 'utterance_end', confidence: number) => {
+  const finalize = (text: string, reason: 'speech_final' | 'utterance_end' | 'stable', confidence: number) => {
     if (!text || finalized) return;
     finalized = true;
+    clearStable();
+    lastInterim = '';
     if (confidence < minConfidence) {
       // Most likely background noise or a voice that isn't the caller's.
       console.log(`[dg stt] dropped low-confidence transcript (${confidence.toFixed(2)} < ${minConfidence}): "${text}"`);
@@ -285,6 +297,7 @@ export async function createDeepgramSTT(
 
       if (msg.type === 'SpeechStarted') {
         if (!utteranceStart) utteranceStart = Date.now();
+        clearStable();  // more speech coming — wait for its words
         // Speaking again while a fragment is held: give the words time to
         // arrive (the interim clears the timer) rather than releasing the
         // fragment now — but not forever, in case it was only noise.
@@ -323,6 +336,12 @@ export async function createDeepgramSTT(
             lastText = [...segments, text].join(' ');
             lastConfidence = confidence;
             finalized = false;
+            if (text !== lastInterim) {
+              lastInterim = text;
+              clearStable();
+            } else if (!stableTimer && /[.?!]["')]?$/.test(text) && !looksIncomplete(lastText)) {
+              stableTimer = setTimeout(() => { stableTimer = undefined; finalize(lastText, 'stable', lastConfidence); }, STABLE_MS);
+            }
             // Barge-in once there are enough words to be a real interruption
             // — and not just the caller saying "mm-hmm" while listening.
             if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text) && !isEcho?.(text)) announceSpeech('interim');
@@ -375,7 +394,7 @@ export async function createDeepgramSTT(
 
   return {
     sendAudio: (buf: ArrayBuffer) => { if (isOpen) ws.send(buf); },
-    close: () => { isOpen = false; if (holdTimer) clearTimeout(holdTimer); try { ws.close(); } catch {} },
+    close: () => { isOpen = false; if (holdTimer) clearTimeout(holdTimer); clearStable(); try { ws.close(); } catch {} },
   };
 }
 
