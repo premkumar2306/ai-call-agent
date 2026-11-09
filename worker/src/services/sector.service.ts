@@ -14,6 +14,8 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     hours:      row.hours as SectorMeta['hours'],
     timezone:   row.timezone,
     currency:   row.currency,
+    locale:     row.locale ?? 'en-US',
+    countryCode: row.countryCode ?? 'US',
     address:    row.address ?? undefined,
     phone:      row.phone ?? undefined,
     website:    row.website ?? undefined,
@@ -48,6 +50,8 @@ export async function upsertSector(env: Env, key: string, data: {
   hours: Record<string, string>;
   timezone?: string;
   currency?: string;
+  locale?: string;
+  countryCode?: string;
   address?: string;
   phone?: string;
   website?: string;
@@ -65,6 +69,8 @@ export async function upsertSector(env: Env, key: string, data: {
     hours:      data.hours,
     timezone:   data.timezone ?? 'America/Chicago',
     currency:   data.currency ?? 'USD',
+    locale:     data.locale ?? 'en-US',
+    countryCode: data.countryCode ?? 'US',
     address:    data.address,
     phone:      data.phone,
     website:    data.website,
@@ -82,7 +88,6 @@ export async function upsertSector(env: Env, key: string, data: {
       categories: data.categories,
       hours:      data.hours,
       timezone:   data.timezone ?? 'America/Chicago',
-      currency:   data.currency ?? 'USD',
       address:    data.address,
       phone:      data.phone,
       website:    data.website,
@@ -91,6 +96,11 @@ export async function upsertSector(env: Env, key: string, data: {
       // admin form doesn't wipe them.
       ...(data.notifyEmail !== undefined ? { notifyEmail: data.notifyEmail } : {}),
       ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
+      // Locale likewise: an older client that doesn't send it must not reset
+      // an Indian business to USD / en-US.
+      ...(data.currency !== undefined ? { currency: data.currency } : {}),
+      ...(data.locale !== undefined ? { locale: data.locale } : {}),
+      ...(data.countryCode !== undefined ? { countryCode: data.countryCode } : {}),
       isActive:   true,
       updatedAt:  now,
     },

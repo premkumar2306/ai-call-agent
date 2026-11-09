@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
 import { createAnthropic, MAX_TOOL_ROUNDS, VOICE_MODEL_TIMEOUT_MS, voiceModel } from '../config';
+import { formatMoney, localeOf } from '../utils/locale';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
@@ -315,14 +316,15 @@ BOOKING (live data — always use the tools, one step at a time):
 function describeCaller(session: SessionPayload, orders: Order[] | null | undefined, meta: SectorMeta | null): string {
   const lines: string[] = [];
   const { account } = session;
+  const loc = localeOf(meta);
   if (account.tier !== 'BASIC' || account.store_credit_cents > 0) {
-    lines.push(`Customer: ${account.tier} tier, $${(account.store_credit_cents / 100).toFixed(2)} store credit.`);
+    lines.push(`Customer: ${account.tier} tier, ${formatMoney(account.store_credit_cents, loc, { alwaysFraction: true })} store credit.`);
   }
   const active = (orders ?? []).filter(o => o.status !== 'CANCELLED').slice(0, 3);
   lines.push(`Customer's bookings: ${active.length
-    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt)} [${o.scheduledAt.slice(0, 16)}]` : ''} (${o.status.toLowerCase()})`).join('; ')
+    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt, undefined, undefined, loc.locale)} [${o.scheduledAt.slice(0, 16)}]` : ''} (${o.status.toLowerCase()})`).join('; ')
     : 'none'}.`);
-  lines.push(describeLocalNow(new Date(), meta?.timezone));
+  lines.push(describeLocalNow(new Date(), meta?.timezone, loc.locale));
   return lines.join('\n');
 }
 

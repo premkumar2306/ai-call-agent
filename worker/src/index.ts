@@ -66,7 +66,11 @@ app.get('/sectors', async (c) => {
   const sectors = await getSectors(c.env);
   return c.json({
     success: true,
-    data: Object.entries(sectors).map(([key, meta]) => ({ key, name: meta.name, model: meta.model })),
+    data: Object.entries(sectors).map(([key, meta]) => ({
+      key, name: meta.name, model: meta.model,
+      // How the admin UI shows this business's prices, dates and phone numbers.
+      currency: meta.currency, locale: meta.locale ?? 'en-US', countryCode: meta.countryCode ?? 'US',
+    })),
   });
 });
 
