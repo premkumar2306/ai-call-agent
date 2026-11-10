@@ -33,8 +33,8 @@ Workstreams run one at a time, in the order A, G, D, C, B, E, F, to stay within 
 |---|----|----|-------|----------------------|
 | A | [#68](https://github.com/premkumar2306/ai-call-agent/pull/68) | green | done, ready for review | Pick India in Settings → Country for an Indian business |
 | G | [#69](https://github.com/premkumar2306/ai-call-agent/pull/69) | green | done, ready for review | Apply `worker/seeds/demo_clinic_india.sql` to try the demo clinic; live Indian-voice test calls need a Mac |
-| D | — | — | in progress | — |
-| C | — | — | waiting | — |
+| D | [#70](https://github.com/premkumar2306/ai-call-agent/pull/70) | green | done, ready for review | Fill in `docs/privacy-notice-template.md` and publish it; set retention days and privacy URL in Settings |
+| C | — | — | in progress | — |
 | B | — | — | waiting | — |
 | E | — | — | waiting | — |
 | F | — | — | waiting | — |
