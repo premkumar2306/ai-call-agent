@@ -24,3 +24,17 @@ is configured to use the new feature.
 - `cd worker && npm run check` and `cd web && npm run build` pass before every push.
 - Add unit tests for new logic; update the README section your change affects.
 - When another workstream's PR merges first, rebase onto `main` and resolve conflicts.
+
+## Status
+
+Workstreams run one at a time, in the order A, G, D, C, B, E, F, to stay within the account's usage limit.
+
+| # | PR | CI | State | Owner must configure |
+|---|----|----|-------|----------------------|
+| A | [#68](https://github.com/premkumar2306/ai-call-agent/pull/68) | green | done, ready for review | Pick India in Settings → Country for an Indian business |
+| G | — | — | in progress | — |
+| D | — | — | waiting | — |
+| C | — | — | waiting | — |
+| B | — | — | waiting | — |
+| E | — | — | waiting | — |
+| F | — | — | waiting | — |
