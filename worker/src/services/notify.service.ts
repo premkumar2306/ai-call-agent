@@ -2,6 +2,7 @@ import { HTTP_TIMEOUT_MS } from '../config';
 import type { Env, Order, SectorMeta } from '../types';
 import { formatSlotLabel } from './tool-router.service';
 import { formatPhone, localeOf } from '../utils/locale';
+import { bookingDetailLines } from './verticals';
 
 // Tells people what the agent did: the business (email to the sector's
 // notify_email) and the caller (text to their callback number). Each channel
@@ -55,7 +56,7 @@ export function bookingSummary(order: Order, meta?: SectorMeta | null): string {
   return [
     `${order.productName} — ${when}`,
     `Customer: ${order.customerName ?? 'not given'}`,
-    order.vehicle ? `Vehicle: ${order.vehicle}` : '',
+    ...bookingDetailLines(order),
     `Callback: ${order.callbackPhone ? formatPhone(order.callbackPhone) : 'not given'}`,
     order.notes ? `Notes: ${order.notes}` : '',
     `Booking ref: ${order.id.slice(0, 8)}`,

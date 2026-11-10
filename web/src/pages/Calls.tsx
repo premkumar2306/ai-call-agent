@@ -37,6 +37,8 @@ interface BookingRow {
   scheduledAt: string | null;
   customerName: string | null;
   vehicle: string | null;
+  resourceName?: string | null;          // the doctor, for clinics
+  details?: Record<string, string> | null; // patient age, new/returning, reason…
   callbackPhone: string | null;
   notes: string | null;
   createdAt: number | string;
@@ -50,6 +52,15 @@ interface MessageRow {
   message: string;
   status: string;
   createdAt: number | string;
+}
+
+function bookingDetails(b: BookingRow): string {
+  const parts = [
+    b.resourceName ? `with ${b.resourceName}` : '',
+    b.vehicle ?? '',
+    ...Object.entries(b.details ?? {}).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`),
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : '—';
 }
 
 // Booking times are the business's wall clock; non-US businesses are shown in
@@ -223,6 +234,8 @@ export default function Calls({ base, adminKey }: Props) {
     businessFilter === 'all' ? rows : rows.filter(r => r.businessType === businessFilter);
   const visibleBookings = inBusiness(bookings).filter(b => b.status !== 'CANCELLED').slice(0, 30);
   const visibleMessages = inBusiness(messages).slice(0, 30);
+  // Clinics book a doctor and record patient details instead of a vehicle.
+  const hasDetails = visibleBookings.some(b => b.resourceName || (b.details && Object.keys(b.details).length));
 
   const markDone = (m: MessageRow) => {
     fetch(`${base}/admin/messages/${m.businessType}/${m.id}`, {
@@ -306,7 +319,7 @@ export default function Calls({ base, adminKey }: Props) {
               <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
                 <thead><tr>
                   <th style={th}>When</th><th style={th}>Service</th><th style={th}>Customer</th>
-                  <th style={th}>Vehicle</th><th style={th}>Callback</th><th style={th}>Status</th>
+                  <th style={th}>{hasDetails ? 'Details' : 'Vehicle'}</th><th style={th}>Callback</th><th style={th}>Status</th>
                 </tr></thead>
                 <tbody>
                   {visibleBookings.map(b => (
@@ -314,7 +327,7 @@ export default function Calls({ base, adminKey }: Props) {
                       <td style={td}>{formatSlot(b.scheduledAt, localeFor(b.businessType))}</td>
                       <td style={td}>{b.productName}{b.notes ? <div style={{ color: '#888', fontSize: 12 }}>{b.notes}</div> : null}</td>
                       <td style={td}>{b.customerName ?? '—'}</td>
-                      <td style={td}>{b.vehicle ?? '—'}</td>
+                      <td style={td}>{hasDetails ? bookingDetails(b) : b.vehicle ?? '—'}</td>
                       <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: '#a78bff' }}>{formatPhone(b.callbackPhone)}</a> : '—'}</td>
                       <td style={td}>{b.status.toLowerCase()}</td>
                     </tr>

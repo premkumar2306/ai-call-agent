@@ -8,6 +8,7 @@ import { getOrders } from './order.service';
 import { executeTool, getToolDefinitions, formatSlotLabel, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
 import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
+import { getVertical, VERTICALS, type Vertical } from './verticals';
 import type { CallCache } from './call-context';
 import type { Order, Product, SectorMeta } from '../types';
 
@@ -254,7 +255,8 @@ export const INTERRUPTED_MARK = '[caller interrupted]';
 
 export type Channel = 'voice' | 'chat';
 
-export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice'): string {
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general): string {
+  const v = vertical.prompt;
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
 - Open with a very short first sentence (one to five words, e.g. "Yes, we do." / "Sure." / "We're at 320 Lexington Drive."), so the caller hears you right away; then at most one more short sentence. Under 35 words in all, then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
@@ -269,9 +271,9 @@ export function buildAgentRules(businessType: string, bizName: string, channel: 
 
 USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
-- Price questions when the profile has no price ("price depends on the vehicle"): answer like a service writer, never "we don't publish prices". Two short sentences, like: "It depends on the vehicle — what are you driving? We've got an oil change special on right now, too." Once you know the vehicle, offer to book it in (the advisor confirms the exact price before any work starts) or have an advisor call back with the exact price.
-- If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so a service advisor calls them back (or connect them, if they'd rather talk now). Never invent facts, prices or policies.
-- Speak as the business ("we", "our shop"). The words "profile", "my information", "the system" and "the list" must never appear in what you say — the caller doesn't know they exist.
+${v.priceRule}
+${v.unknownRule}
+- Speak as the business ("we", "our ${vertical.place}"). The words "profile", "my information", "the system" and "the list" must never appear in what you say — the caller doesn't know they exist.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
 - Before a tool call say nothing, or at most a few words ("Let me check."). Never think aloud, and never say a date as YYYY-MM-DD.
 - Never say something is done or possible before the tool result says so: not "I'll connect you", "I can set that up for Friday", "you're booked" or "I've passed that on" ahead of the tool call. Say "Let me check." and let the result speak.
@@ -299,18 +301,18 @@ HEALTH:
 ${shared}
 
 BOOKING (live data — always use the tools, one step at a time):
-1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brakes, warning light → diagnostics). If the cause is unknown (a noise, a feeling), book the inspection or diagnostic service — not a repair — and put their symptoms in notes.
-2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns. If it says requested_open, book that requested_slot in the same turn — they already chose it.
-3. Once they've picked a time (not before — don't ask for details while they're still asking questions), get their name — and, if the business works on vehicles, the year, make and model — in one short question, if you don't already have them from this call. Their callback number is the one they're calling from; only ask for a number if book_appointment says it needs one.
+${v.booking1}
+${v.booking2}
+${v.booking3}
 3b. When they pick a time and you have those details, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Its reply is spoken to the caller as-is.
 4. Only offer or book times check_availability returned — never guess one ("9:30 may be open"). If they ask for another day or time, check availability for exactly that (preferred_date, preferred_time) and say plainly whether it's open.
-- Corrections after booking (name misheard, different number, other vehicle, symptoms): update_booking on that booking — not a message.
+${v.corrections}
 - Adding a service to an appointment they already have (one visit, several jobs): call book_appointment for the new service with the existing booking's exact datetime from "Customer's bookings" — no availability check, never a different time.
-5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.
+${v.afterBooking}
 - Existing appointments: list_bookings; to cancel, cancel_booking; to move one, check_availability for the new time, then reschedule_booking.
-- Wants a person, or needs something only staff can do: transfer_to_staff. If the shop is closed or there's no answer, take_message instead.
+${v.transfer}
 - Messages: get their name and what it's about first (their number is the one they're calling from unless they give another), then call take_message once. Never say a message is passed on before take_message succeeds. If they add or correct something, call take_message again with the complete message.
-- Questions you can't answer from the profile (exact quotes, coupons, special requests): offer to take_message so a service advisor calls them back, instead of telling them to call.`;
+${v.cantAnswer}${v.extra ? `\n\n${v.extra}` : ''}`;
 }
 
 function describeCaller(session: SessionPayload, orders: Order[] | null | undefined, meta: SectorMeta | null): string {
@@ -343,7 +345,7 @@ export function buildSystemPrompt(opts: {
 }): Anthropic.TextBlockParam[] {
   const bizName = opts.sectorMeta?.name ?? opts.businessType;
   const stable = opts.stable
-    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel)}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta))}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
   return [
     { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },

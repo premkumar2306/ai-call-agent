@@ -29,6 +29,7 @@ import { formatMoney, formatPhone, localeOf } from '../../utils/locale';
 import type { Env, Order, SectorMeta } from '../../types';
 import { CalendarError, type CalendarProvider, type BusyInterval, type CalendarInfo } from './types';
 import { googleCalendar } from './google';
+import { bookingDetailLines } from '../verticals';
 
 export { CalendarError, type BusyInterval, type CalendarInfo } from './types';
 
@@ -280,11 +281,11 @@ export async function syncBookingToCalendar(env: Env, order: Order, meta: Sector
     const eventId = await withToken(env, conn, (p, t) => p.createEvent(t, conn.calendarId, {
       // "Mogi:" prefix so the shop can search for phone bookings in Google
       // Calendar; "Mogi TEST:" for svt/ calls, so they're easy to tell apart.
-      title: `${test ? 'Mogi TEST' : 'Mogi'}: ${order.productName}${order.customerName ? ` — ${order.customerName}` : ''}${order.vehicle ? ` (${order.vehicle})` : ''}`,
+      title: `${test ? 'Mogi TEST' : 'Mogi'}: ${order.productName}${order.customerName ? ` — ${order.customerName}` : ''}${order.vehicle ? ` (${order.vehicle})` : ''}${order.resourceName ? ` with ${order.resourceName}` : ''}`,
       description: [
         'Booked by phone through Mogi.',
         order.customerName ? `Customer: ${order.customerName}` : '',
-        order.vehicle ? `Vehicle: ${order.vehicle}` : '',
+        ...bookingDetailLines(order),
         order.callbackPhone ? `Callback: ${formatPhone(order.callbackPhone)}` : '',
         order.notes ? `Notes: ${order.notes}` : '',
         `Reference: ${order.id.slice(0, 8)}`, price ? `Price: ${price}` : '', `Payment: ${order.paymentMethod}`,

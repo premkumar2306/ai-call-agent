@@ -16,6 +16,7 @@ export const sectors = sqliteTable('sectors', {
   about:        text('about'),
   notifyEmail:  text('notify_email'),
   capacity:     integer('capacity').notNull().default(1),
+  vertical:     text('vertical'),                       // services/verticals.ts key; NULL = general
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -73,6 +74,10 @@ export const orders = sqliteTable('orders', {
   vehicle:          text('vehicle'),
   callbackPhone:    text('callback_phone'),             // E.164, from caller ID or given on the call
   notes:            text('notes'),
+  resourceId:       text('resource_id'),                // resources.id (a clinic's doctor)
+  resourceName:     text('resource_name'),
+  endsAt:           text('ends_at'),                    // business-local end, set for resource bookings
+  details:          text('details', { mode: 'json' }).$type<Record<string, string>>(), // vertical booking fields
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -89,6 +94,26 @@ export const orders = sqliteTable('orders', {
   // only prior index leads with customerIdHashed, wrong column for this
   // lookup). See issue #7.
   index('idx_orders_business_type_scheduled').on(t.businessType, t.scheduledAt),
+  index('idx_orders_resource_scheduled').on(t.resourceId, t.scheduledAt),
+]);
+
+// People a booking is made with, each with their own weekly hours — a
+// clinic's doctors (OPD timings, slot length, consultation fee).
+export const resources = sqliteTable('resources', {
+  id:           text('id').primaryKey(),
+  businessType: text('business_type').notNull(),
+  name:         text('name').notNull(),
+  role:         text('role'),
+  hours:        text('hours', { mode: 'json' }).notNull().$type<Record<string, string>>(),
+  slotMinutes:  integer('slot_minutes').notNull().default(15),
+  feeCents:     integer('fee_cents'),
+  about:        text('about'),
+  categories:   text('categories', { mode: 'json' }).$type<string[]>(), // product categories they do; null = all
+  sortOrder:    integer('sort_order').notNull().default(0),
+  isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_resources_business_active').on(t.businessType, t.isActive),
 ]);
 
 // One external calendar per business. Only Google today; `provider` leaves
