@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { access, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,8 +20,7 @@ try {
   if (error.code !== 'ENOENT') throw error;
 }
 
-const existingTargets = JSON.parse(await readFile(join(campaignDirectory, 'targets.json'), 'utf8'));
-const candidates = existingTargets.map(fromExistingTarget);
+const candidates = [];
 
 for (let page = 1; page <= 17; page += 1) {
   const url = page === 1 ? healthFinderBase : `${healthFinderBase}?page=${page}`;
@@ -144,24 +143,6 @@ function parseLatrexa(html) {
       listingPages: [latrexaUrl]
     };
   }).filter((candidate) => candidate.clinicName && candidate.address);
-}
-
-function fromExistingTarget(target) {
-  return {
-    clinicName: target.clinicName,
-    area: target.area,
-    address: null,
-    publicPhone: normalizePhone(target.publicPhone),
-    leadName: target.leadName ?? null,
-    rating: null,
-    reviewCount: target.reviewCount ?? null,
-    reviewLabel: target.reviewLabel ?? null,
-    openingHours: target.openingHours ?? null,
-    branchCount: target.branchCount ?? null,
-    sourceProviders: ['Initial research batch'],
-    sourceUrls: target.sources ?? [],
-    listingPages: []
-  };
 }
 
 function mergeCandidates(candidates) {
