@@ -16,7 +16,8 @@ const args = process.argv.slice(2);
 const targetArgument = valueAfter('--target');
 const shouldGenerateAudio = args.includes('--audio');
 const audioEngine = valueAfter('--engine') ?? 'local';
-const targets = JSON.parse(await readFile(join(campaignDirectory, 'targets.json'), 'utf8'));
+const targetPayload = JSON.parse(await readFile(join(campaignDirectory, 'targets-500.json'), 'utf8'));
+const targets = targetPayload.targets;
 const selectedTargets = targetArgument
   ? targets.filter((target) => target.slug === targetArgument)
   : targets;
@@ -64,9 +65,11 @@ function buildDemo(target) {
 }
 
 function buildOutreach(target) {
+  const leadName = target.leadName || 'clinic team';
+  const afterHoursAngle = target.afterHoursAngle || 'missed and after-hours appointment requests';
   return [
-    `Hi ${target.leadName}, I made a 25-second independent mock demo for ${target.clinicName}.`,
-    `It shows how ${target.afterHoursAngle.toLowerCase()} could be captured in Hindi or English and confirmed on WhatsApp.`,
+    `Hi ${leadName}, I made a 25-second independent mock demo for ${target.clinicName}.`,
+    `It shows how ${afterHoursAngle.toLowerCase()} could be captured in Hindi or English and confirmed on WhatsApp.`,
     'It is not connected to your number. If useful, may I send the demo link and explain a free 14-day call-forwarding pilot?'
   ].join(' ');
 }
