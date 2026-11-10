@@ -51,6 +51,19 @@ export function countryDefaults(countryCode: string, currentTimezone?: string): 
   return { countryCode: code, currency: c.currency, locale: c.locale, timezone: keepZone ? currentTimezone! : c.timezone };
 }
 
+/**
+ * The country a new business is in when it didn't say: a business that bills
+ * in a country's currency or keeps its clock is there (INR or Asia/Kolkata →
+ * India). Anything else is the original US default.
+ */
+export function inferCountry(timezone?: string | null, currency?: string | null): string {
+  for (const [code, c] of Object.entries(COUNTRIES)) {
+    if (code === DEFAULT_LOCALE.countryCode) continue;
+    if (currency === c.currency || timezone === c.timezone || (code === 'IN' && timezone === 'Asia/Calcutta')) return code;
+  }
+  return DEFAULT_LOCALE.countryCode;
+}
+
 /** The locale fields of a sector, with defaults for anything unset. */
 export function localeOf(meta: { currency?: string | null; locale?: string | null; countryCode?: string | null } | null | undefined): BusinessLocale {
   return {

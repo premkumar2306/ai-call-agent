@@ -119,8 +119,55 @@ npm run dev
 # → http://localhost:5173
 ```
 
-Admin tabs (Customize, WhatsApp) need the `ADMIN_SECRET` value: enter it in the
-"Admin key" field in the header. It is kept in `sessionStorage` for the tab only.
+Sign in with any email address: without `RESEND_API_KEY` the local Worker hands the
+one-time code back to the UI (development only), so no email is needed. A new account
+goes straight to the onboarding wizard. To use the operator view instead, pick
+"Operator? Sign in with the admin key" and enter `ADMIN_SECRET` (`dev-admin-key` in
+`.dev.vars.example`); it is kept in `sessionStorage` for the tab only.
+
+---
+
+## Business accounts (self-serve signup)
+
+Businesses sign themselves up in the admin UI; the operator no longer has to create
+every `sectors` row by hand.
+
+- **Sign up / sign in** is one flow: enter an email, get a 6-digit code (sent with Resend),
+  enter it. The account is created the first time a code is verified, so the API never
+  reveals whether an address already has one. Codes expire after 10 minutes, are
+  single-use, die after 5 wrong attempts, and only an HMAC of each is stored. Sends are
+  rate-limited per IP (10 / 15 min) and per address (5 / hour); verifies per IP (30 / 15 min).
+- **Sessions** are signed tokens (`Authorization: Bearer`, 7 days, kept in `localStorage`).
+  They're signed with a key derived from `TOKEN_SECRET` that no other token type uses.
+  "Sign out" revokes every session of that user. Cookies aren't used because the UI
+  (pages.dev) and the Worker (workers.dev) are different sites.
+- **Onboarding wizard** (4 steps: business, hours, services, review) creates the sector
+  with a unique key (`<name-slug>_<random>`), its services, and makes the user its
+  owner. Booking/message emails default to the owner's address.
+- **Roles.** A user can belong to several businesses as `owner` or `staff`
+  (`business_members`). Staff see calls, bookings, transcripts and messages, and can mark
+  messages handled; owners can also edit business details, services, the
+  Customize config, the calendar connection, and the team.
+- **Business-scoped routes** (`/admin/sectors/:key`, `/admin/config/:key`,
+  `/admin/products/:key[/:id]`, `/admin/transcripts|bookings|messages/:key`,
+  `/admin/calendar/:key/*`, `/account/businesses/:key/members`) accept either the
+  operator's `X-Admin-Key` or a member's token (`withBusinessAccess` in
+  `src/middleware.ts`). Non-members get the same 403 whether or not the business exists.
+- **Operator-only routes** stay on `X-Admin-Key`: `GET/POST /admin/sectors`,
+  `/admin/default-business`, `/admin/stream-token` (svt), bulk `POST /admin/products`
+  and `/admin/vendors`. The admin key is still a superuser on every business route, so
+  scripts, CI and the svt workflow are unchanged.
+
+Account API (`src/routes/account.ts`): `POST /account/login/start {email}`,
+`POST /account/login/verify {email, code}`, `GET|PUT /account/me`, `POST /account/logout`,
+`POST /account/businesses` (wizard), and `GET|POST /account/businesses/:key/members`,
+`PATCH|DELETE /account/businesses/:key/members/:userId`. Tables are in
+`drizzle/0015_owner_accounts.sql` (`users`, `business_members`, `login_codes`, plus
+`sectors.kind`).
+
+A new business answers in the **Voice Test** tab straight away. Real phone calls still
+reach it only once a number is routed to it (the operator's Settings → Phone line, or
+per-number routing).
 
 ---
 
@@ -246,7 +293,8 @@ wrangler secret put CARTESIA_API_KEY
 wrangler secret put SARVAM_API_KEY        # only if a business uses Sarvam (Hindi / Hinglish) — see below
 # WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN
 # Optional notifications:
-wrangler secret put RESEND_API_KEY        # booking/message emails to sectors.notify_email
+wrangler secret put RESEND_API_KEY        # sign-in codes (required for business accounts) + booking/message emails
+# EMAIL_FROM (plain var or secret): a sender on a domain verified in Resend, e.g. "Avery <hello@yourdomain.com>"
 wrangler secret put TWILIO_ACCOUNT_SID    # confirmation texts, with TWILIO_SMS_FROM (an SMS-capable Twilio number)
 wrangler secret put TWILIO_SMS_FROM
 # Indian numbers (see "Indian phone numbers" below):
@@ -519,6 +567,7 @@ curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Typ
 | `worker/src/services/turn.service.ts` | Voice agent loop (streaming, prompt caching) |
 | `worker/src/services/tool-router.service.ts` | AI tool definitions (search, availability, booking) |
 | `worker/src/services/calendar/` | Per-business calendar integration: provider adapters (`google.ts`), connection storage, busy-time and event sync |
+| `worker/src/routes/account.ts`, `worker/src/services/accounts.ts` | Business-owner sign-in codes, owner tokens, memberships, onboarding |
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |

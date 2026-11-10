@@ -35,6 +35,7 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
       ttsProvider: row.ttsProvider as VoiceSettings['ttsProvider'],
       voiceId: row.voiceId ?? undefined,
     } }),
+    kind:       row.kind ?? undefined,
   };
 }
 
@@ -194,4 +195,15 @@ export async function updateSectorVoice(env: Env, key: string, voice: Partial<Vo
   const res = await db.update(sectorsTable).set({ ...cols, updatedAt: new Date() }).where(eq(sectorsTable.key, key)).returning({ key: sectorsTable.key });
   await env.CACHE.delete(CACHE_KEY);
   return res.length > 0;
+}
+
+/** Changes only the given columns of an existing sector. False if there's no such sector. */
+export async function updateSector(env: Env, key: string, patch: Partial<Pick<typeof sectorsTable.$inferInsert,
+  'name' | 'kind' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity'>>): Promise<boolean> {
+  const rows = await getDb(env.DB).update(sectorsTable)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(sectorsTable.key, key))
+    .returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return rows.length > 0;
 }

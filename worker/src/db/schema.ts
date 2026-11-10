@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex, primaryKey } from 'drizzle-orm/sqlite-core';
 
 export const sectors = sqliteTable('sectors', {
   key:          text('key').primaryKey(),
@@ -27,6 +27,7 @@ export const sectors = sqliteTable('sectors', {
   sttProvider:   text('stt_provider').notNull().default('deepgram'), // deepgram | sarvam
   ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
   voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
+  kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -227,3 +228,35 @@ export const phoneNumbers = sqliteTable('phone_numbers', {
   primaryKey({ columns: [t.number, t.provider] }),
   index('idx_phone_numbers_business').on(t.businessType),
 ]);
+
+// ── Owner accounts (drizzle/0015_owner_accounts.sql) ───────────────────────
+// Business owners and their staff sign in with an emailed one-time code.
+export const users = sqliteTable('users', {
+  id:             text('id').primaryKey(),
+  email:          text('email').notNull(),
+  name:           text('name'),
+  phone:          text('phone'),
+  sessionVersion: integer('session_version').notNull().default(1),
+  lastLoginAt:    integer('last_login_at', { mode: 'timestamp' }),
+  createdAt:      integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  uniqueIndex('idx_users_email').on(t.email),
+]);
+
+export const businessMembers = sqliteTable('business_members', {
+  businessKey: text('business_key').notNull(),
+  userId:      text('user_id').notNull(),
+  role:        text('role').notNull().default('staff'), // owner | staff
+  createdAt:   integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  primaryKey({ columns: [t.businessKey, t.userId] }),
+  index('idx_business_members_user').on(t.userId),
+]);
+
+export const loginCodes = sqliteTable('login_codes', {
+  identifier: text('identifier').primaryKey(),     // 'email:<address>'
+  codeHash:   text('code_hash').notNull(),         // HMAC, never the code
+  attempts:   integer('attempts').notNull().default(0),
+  expiresAt:  integer('expires_at', { mode: 'timestamp' }).notNull(),
+  createdAt:  integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+});

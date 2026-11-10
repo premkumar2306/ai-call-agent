@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 interface Props {
   sector: string;
   base: string;
-  adminKey: string;
+  auth: Record<string, string>;
   /** Result of the OAuth round trip, from the URL the provider sent us back to. */
   oauthResult?: { ok: boolean; reason?: string } | null;
 }
@@ -27,7 +27,7 @@ const btn: React.CSSProperties = { background: '#6c47ff', color: '#fff', border:
 const ghost: React.CSSProperties = { background: 'transparent', color: '#a78bff', border: '1px solid #6c47ff66', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
 const select: React.CSSProperties = { background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '8px 12px', borderRadius: 8, minWidth: 260 };
 
-export default function Calendar({ sector, base, adminKey, oauthResult }: Props) {
+export default function Calendar({ sector, base, auth, oauthResult }: Props) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [conn, setConn] = useState<Connection | null>(null);
   const [calendars, setCalendars] = useState<CalendarOption[]>([]);
@@ -37,7 +37,7 @@ export default function Calendar({ sector, base, adminKey, oauthResult }: Props)
     oauthResult ? { text: oauthResult.ok ? 'Calendar connected.' : `Couldn't connect: ${oauthResult.reason ?? 'unknown error'}`, ok: oauthResult.ok } : null,
   );
 
-  const headers = { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' };
+  const headers = { ...auth, 'Content-Type': 'application/json' };
 
   const call = async (path: string, init: RequestInit = {}) => {
     const res = await fetch(`${base}/admin/calendar/${encodeURIComponent(sector)}${path}`, { ...init, headers });
@@ -57,17 +57,17 @@ export default function Calendar({ sector, base, adminKey, oauthResult }: Props)
         call('/calendars').then(setCalendars).catch((e: Error) => setMsg({ text: e.message, ok: false }));
       }
     } catch (e: any) {
-      setMsg({ text: e.message === 'Admin key required' ? 'Enter the admin key (top right) to manage this.' : e.message, ok: false });
+      setMsg({ text: e.message, ok: false });
     } finally {
       setLoaded(true);
     }
   };
 
   useEffect(() => {
-    if (!adminKey) { setMsg({ text: 'Enter the admin key (top right) to manage this.', ok: false }); return; }
+    if (!Object.keys(auth).length) return;
     if (sector) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminKey, base, sector]);
+  }, [auth, base, sector]);
 
   const connect = async (provider: string) => {
     setBusy(true); setMsg(null);

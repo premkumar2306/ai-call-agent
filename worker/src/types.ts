@@ -44,6 +44,8 @@ export interface SectorMeta {
   // Phone-line language and STT/TTS providers (migration 0012). Absent on
   // sector lists cached before it shipped — resolveVoiceSettings() defaults.
   voice?: VoiceSettings;
+  // What kind of business (clinic, salon, auto_shop…), set by the onboarding wizard.
+  kind?: string;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */

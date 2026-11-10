@@ -3,10 +3,17 @@ import { jwtVerify } from 'jose';
 import type { Env, SessionPayload } from './types';
 import { timingSafeEqual, tokenSecretKey } from './config';
 import { getDefaultBusiness } from './services/line-config';
+import { getRole, roleAllows, verifyOwnerToken, type Role, type UserRow } from './services/accounts';
+
+// Who is calling a business-scoped route: the operator (ADMIN_SECRET) or a
+// signed-in business owner/staff member.
+export type Principal =
+  | { kind: 'admin' }
+  | { kind: 'user'; user: UserRow; role?: Role };
 
 export type HonoEnv = {
   Bindings: Env;
-  Variables: { session: SessionPayload };
+  Variables: { session: SessionPayload; principal: Principal };
 };
 
 // Bearer token → session
@@ -111,6 +118,60 @@ export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
   await next();
 }
 
+// ── Business-owner auth ────────────────────────────────────────────────────
+//
+// withBusinessAccess(role, param) guards a route whose path names a business
+// (`/:businessType`). It lets through:
+//   - the operator, with a valid X-Admin-Key (superuser, every business), or
+//   - a signed-in user (Authorization: Bearer <owner token>) who is a member of
+//     that business with at least `role` (owner ⊇ staff).
+// A wrong admin key is rejected outright rather than falling back to the
+// bearer token. Non-members get the same 403 whether or not the business
+// exists, so the response doesn't reveal which keys are real.
+
+function isAdmin(c: Context<HonoEnv>): boolean | null {
+  const key = c.req.header('x-admin-key');
+  if (key === undefined) return null; // not attempted
+  return !!c.env.ADMIN_SECRET && !!key && timingSafeEqual(key, c.env.ADMIN_SECRET);
+}
+
+async function ownerFromRequest(c: Context<HonoEnv>): Promise<UserRow | null> {
+  const auth = c.req.header('authorization');
+  if (!auth?.startsWith('Bearer ')) return null;
+  return verifyOwnerToken(c.env, auth.slice(7));
+}
+
+const signInRequired = (c: Context<HonoEnv>) =>
+  c.json({ success: false, error: 'Sign in required' }, 401);
+
+export function withBusinessAccess(role: Role, param = 'businessType') {
+  return async function (c: Context<HonoEnv>, next: Next) {
+    const admin = isAdmin(c);
+    if (admin === false) return c.json({ success: false, error: 'Admin key required' }, 401);
+    if (admin) {
+      c.set('principal', { kind: 'admin' });
+      return await next();
+    }
+    const user = await ownerFromRequest(c);
+    if (!user) return signInRequired(c);
+    const businessKey = c.req.param(param) ?? '';
+    const userRole = businessKey ? await getRole(c.env, user.id, businessKey) : null;
+    if (!roleAllows(userRole, role)) {
+      return c.json({ success: false, error: "You don't have access to this business" }, 403);
+    }
+    c.set('principal', { kind: 'user', user, role: userRole! });
+    await next();
+  };
+}
+
+// A signed-in user, for account routes that aren't about one business.
+export async function withOwner(c: Context<HonoEnv>, next: Next) {
+  const user = await ownerFromRequest(c);
+  if (!user) return signInRequired(c);
+  c.set('principal', { kind: 'user', user });
+  await next();
+}
+
 // ── Rate limiting (KV fixed-window counter) ────────────────────────────────
 //
 // ipRateLimit     — identify by CF-Connecting-IP; use before auth is established
@@ -119,7 +180,7 @@ export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
 // KV has no atomic increment, so concurrent requests can slightly overshoot
 // `max`. That's acceptable: the goal is capping third-party spend, not exact
 // quotas.
-async function hitLimit(env: Env, kvKey: string, max: number, windowSeconds: number): Promise<boolean> {
+export async function hitLimit(env: Env, kvKey: string, max: number, windowSeconds: number): Promise<boolean> {
   const raw = await env.CACHE.get(kvKey);
   const count = raw ? parseInt(raw, 10) : 0;
   if (count >= max) return true;

@@ -76,7 +76,9 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # DEEPGRAM_API_KEY, CARTESIA_API_KEY   (voice)
 # SARVAM_API_KEY        (Hindi / Hinglish voice via Sarvam AI — needed only by businesses whose
 #                        voice settings pick Sarvam STT or TTS; their calls fail closed without it)
-# Optional: MOGI_SECRET, RESEND_API_KEY, EMAIL_FROM, CARTESIA_VOICE_ID, CARTESIA_MODEL_ID
+# RESEND_API_KEY        (business-owner sign-in codes; without it /account/login/start returns 503 in production)
+# EMAIL_FROM            (sender on a Resend-verified domain, e.g. "Avery <hello@yourdomain.com>")
+# Optional: MOGI_SECRET, CARTESIA_VOICE_ID, CARTESIA_MODEL_ID
 #
 # WhatsApp (required if the /whatsapp webhook is in use):
 # WA_APP_SECRET         (Meta app secret → X-Hub-Signature-256)

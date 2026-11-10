@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { HonoEnv } from '../middleware';
-import { withAdminKey } from '../middleware';
+import { withBusinessAccess } from '../middleware';
 import { getSector, updatePrivacySettings, type PrivacySettings } from '../services/sector.service';
 import {
   DISCLOSURE_MAX_CHARS, defaultDisclosureText, disclosureEnabled, isIndianBusiness, validPrivacyUrl,
@@ -11,13 +11,15 @@ import { CONSENT_LOG_MIN_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, validRete
 // /admin/privacy/:businessType/* — DPDP settings and data-principal requests.
 // Admin-key protected like the rest of /admin. Phone numbers travel in POST
 // bodies, never in URLs, so they don't land in access logs.
+// Business owners manage their own business's privacy settings and caller
+// data requests; the operator's X-Admin-Key works for every business.
+const owner = withBusinessAccess('owner');
 const privacyAdminRouter = new Hono<HonoEnv>();
-privacyAdminRouter.use('*', withAdminKey);
 
 const bt = (c: { req: { param: (k: string) => string | undefined } }) => c.req.param('businessType') ?? '';
 
 // GET settings — the stored values plus what they resolve to.
-privacyAdminRouter.get('/:businessType/settings', async (c) => {
+privacyAdminRouter.get('/:businessType/settings', owner, async (c) => {
   const meta = await getSector(c.env, bt(c));
   if (!meta) return c.json({ success: false, error: 'Unknown business' }, 404);
   return c.json({
@@ -68,7 +70,7 @@ export function parsePrivacySettings(body: unknown): { settings: Partial<Privacy
 }
 
 // PUT settings — partial: { aiDisclosure?, disclosureText?, privacyNoticeUrl?, retentionDays? }
-privacyAdminRouter.put('/:businessType/settings', async (c) => {
+privacyAdminRouter.put('/:businessType/settings', owner, async (c) => {
   const parsed = parsePrivacySettings(await c.req.json().catch(() => null));
   if ('error' in parsed) return c.json({ success: false, error: parsed.error }, 400);
   const found = await updatePrivacySettings(c.env, bt(c), parsed.settings);
@@ -77,7 +79,7 @@ privacyAdminRouter.put('/:businessType/settings', async (c) => {
 });
 
 // POST export { phone } | { customerIdHashed } — everything stored about a caller.
-privacyAdminRouter.post('/:businessType/export', async (c) => {
+privacyAdminRouter.post('/:businessType/export', owner, async (c) => {
   const businessType = bt(c);
   if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: 'Unknown business' }, 404);
   const subject = await resolveSubject(c.env, await c.req.json().catch(() => null));
@@ -86,7 +88,7 @@ privacyAdminRouter.post('/:businessType/export', async (c) => {
 });
 
 // POST erase { phone | customerIdHashed, confirm: true } — removes the caller's personal data.
-privacyAdminRouter.post('/:businessType/erase', async (c) => {
+privacyAdminRouter.post('/:businessType/erase', owner, async (c) => {
   const businessType = bt(c);
   const meta = await getSector(c.env, businessType);
   if (!meta) return c.json({ success: false, error: 'Unknown business' }, 404);
@@ -99,7 +101,7 @@ privacyAdminRouter.post('/:businessType/erase', async (c) => {
 });
 
 // GET notices — recent call-start notice records (audit trail).
-privacyAdminRouter.get('/:businessType/notices', async (c) => {
+privacyAdminRouter.get('/:businessType/notices', owner, async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query('limit')) || 50, 1), 200);
   const { results = [] } = await c.env.DB.prepare(
     `SELECT id, channel, call_sid, notice_version, played_at, heard_fully, customer_id_hashed IS NULL AS erased
@@ -109,7 +111,7 @@ privacyAdminRouter.get('/:businessType/notices', async (c) => {
 });
 
 // GET requests — export/erasure requests handled for this business.
-privacyAdminRouter.get('/:businessType/requests', async (c) => {
+privacyAdminRouter.get('/:businessType/requests', owner, async (c) => {
   const { results = [] } = await c.env.DB.prepare(
     'SELECT id, kind, summary, created_at FROM data_requests WHERE business_type = ? ORDER BY created_at DESC LIMIT 100',
   ).bind(bt(c)).all();
