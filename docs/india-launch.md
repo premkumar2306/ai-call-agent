@@ -36,5 +36,5 @@ Workstreams run one at a time, in the order A, G, D, C, B, E, F, to stay within 
 | D | [#70](https://github.com/premkumar2306/ai-call-agent/pull/70) | green | done, ready for review | Fill in `docs/privacy-notice-template.md` and publish it; set retention days and privacy URL in Settings |
 | C | [#71](https://github.com/premkumar2306/ai-call-agent/pull/71) | green | done, ready for review | Exotel account with KYC, an Indian number, the Voicebot flow and `EXOTEL_*` secrets; then add the number in Settings. Needs a live test call |
 | B | [#72](https://github.com/premkumar2306/ai-call-agent/pull/72) | green | done, ready for review | Sarvam account and `SARVAM_API_KEY`; pick Hindi/Hinglish voice in Settings. Needs live test calls |
-| E | — | — | in progress | — |
-| F | — | — | waiting | — |
+| E | [#73](https://github.com/premkumar2306/ai-call-agent/pull/73) | green | done, ready for review | `RESEND_API_KEY` and `EMAIL_FROM` for sign-in emails. After merging, switch the other PRs' routes to `withBusinessAccess` (list in #73) |
+| F | — | — | in progress | — |
