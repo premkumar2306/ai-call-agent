@@ -28,6 +28,7 @@ import { toInstant, addMinutesLocal } from '../../utils/time';
 import type { Env, Order, SectorMeta } from '../../types';
 import { CalendarError, type CalendarProvider, type BusyInterval, type CalendarInfo } from './types';
 import { googleCalendar } from './google';
+import { bookingDetailLines } from '../verticals';
 
 export { CalendarError, type BusyInterval, type CalendarInfo } from './types';
 
@@ -273,17 +274,18 @@ export async function syncBookingToCalendar(env: Env, order: Order, meta: Sector
   const isLocal = !/(Z|[+-]\d{2}:\d{2})$/.test(order.scheduledAt);
   const localStart = order.scheduledAt.slice(0, 19).padEnd(19, ':00');
   // $0 means "quoted on the day" for some shops, so it's left off rather than shown as free.
-  const price = order.priceCents ? `$${(order.priceCents / 100).toFixed(2)}` : '';
+  const price = !order.priceCents ? ''
+    : `${meta?.currency === 'INR' ? '₹' : '$'}${(order.priceCents / 100).toFixed(2)}`;
   const test = order.customerIdHashed.startsWith('synthetic-latency-test');
   try {
     const eventId = await withToken(env, conn, (p, t) => p.createEvent(t, conn.calendarId, {
       // "Mogi:" prefix so the shop can search for phone bookings in Google
       // Calendar; "Mogi TEST:" for svt/ calls, so they're easy to tell apart.
-      title: `${test ? 'Mogi TEST' : 'Mogi'}: ${order.productName}${order.customerName ? ` — ${order.customerName}` : ''}${order.vehicle ? ` (${order.vehicle})` : ''}`,
+      title: `${test ? 'Mogi TEST' : 'Mogi'}: ${order.productName}${order.customerName ? ` — ${order.customerName}` : ''}${order.vehicle ? ` (${order.vehicle})` : ''}${order.resourceName ? ` with ${order.resourceName}` : ''}`,
       description: [
         'Booked by phone through Mogi.',
         order.customerName ? `Customer: ${order.customerName}` : '',
-        order.vehicle ? `Vehicle: ${order.vehicle}` : '',
+        ...bookingDetailLines(order),
         order.callbackPhone ? `Callback: ${order.callbackPhone}` : '',
         order.notes ? `Notes: ${order.notes}` : '',
         `Reference: ${order.id.slice(0, 8)}`, price ? `Price: ${price}` : '', `Payment: ${order.paymentMethod}`,

@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { eq, asc } from 'drizzle-orm';
 import { getDb } from '../db/client';
-import { sectors as sectorsTable } from '../db/schema';
-import type { Env, SectorMeta } from '../types';
+import { sectors as sectorsTable, resources as resourcesTable } from '../db/schema';
+import type { Env, Resource, SectorMeta } from '../types';
 
 const CACHE_KEY = 'sectors_list';
 const CACHE_TTL = 300; // 5 minutes
@@ -20,6 +20,21 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     about:      row.about ?? undefined,
     notifyEmail: row.notifyEmail ?? undefined,
     capacity:   row.capacity ?? 1,
+    // Only present when set, so a business without one reads exactly as before.
+    ...(row.vertical ? { vertical: row.vertical } : {}),
+  };
+}
+
+function rowToResource(row: typeof resourcesTable.$inferSelect): Resource {
+  return {
+    id:          row.id,
+    name:        row.name,
+    ...(row.role ? { role: row.role } : {}),
+    hours:       row.hours as Resource['hours'],
+    slotMinutes: row.slotMinutes > 0 ? row.slotMinutes : 15,
+    feeCents:    row.feeCents ?? null,
+    ...(row.about ? { about: row.about } : {}),
+    ...(Array.isArray(row.categories) && row.categories.length ? { categories: row.categories } : {}),
   };
 }
 
@@ -31,6 +46,14 @@ export async function getSectors(env: Env): Promise<Record<string, SectorMeta>> 
   const rows = await db.select().from(sectorsTable).where(eq(sectorsTable.isActive, true));
   const result: Record<string, SectorMeta> = {};
   for (const row of rows) result[row.key] = rowToMeta(row);
+  // Doctors (resources) ride along with their business; most have none.
+  const resourceRows = await db.select().from(resourcesTable)
+    .where(eq(resourcesTable.isActive, true))
+    .orderBy(asc(resourcesTable.sortOrder), asc(resourcesTable.name));
+  for (const r of resourceRows) {
+    const meta = result[r.businessType];
+    if (meta) (meta.resources ??= []).push(rowToResource(r));
+  }
 
   await env.CACHE.put(CACHE_KEY, JSON.stringify(result), { expirationTtl: CACHE_TTL });
   return result;
@@ -54,6 +77,7 @@ export async function upsertSector(env: Env, key: string, data: {
   about?: string;
   notifyEmail?: string;
   capacity?: number;
+  vertical?: string | null;
 }): Promise<void> {
   const db = getDb(env.DB);
   const now = new Date();
@@ -71,6 +95,7 @@ export async function upsertSector(env: Env, key: string, data: {
     about:      data.about,
     notifyEmail: data.notifyEmail,
     capacity:   data.capacity ?? 1,
+    vertical:   data.vertical ?? null,
     isActive:   true,
     createdAt:  now,
     updatedAt:  now,
@@ -91,10 +116,15 @@ export async function upsertSector(env: Env, key: string, data: {
       // admin form doesn't wipe them.
       ...(data.notifyEmail !== undefined ? { notifyEmail: data.notifyEmail } : {}),
       ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
+      ...(data.vertical !== undefined ? { vertical: data.vertical } : {}),
       isActive:   true,
       updatedAt:  now,
     },
   });
   // Invalidate cache
+  await env.CACHE.delete(CACHE_KEY);
+}
+
+export async function invalidateSectors(env: Env): Promise<void> {
   await env.CACHE.delete(CACHE_KEY);
 }

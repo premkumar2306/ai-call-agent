@@ -1,4 +1,5 @@
 import type { Product, SectorMeta } from '../types';
+import { getVertical } from './verticals';
 
 // Renders everything the database knows about a business — contact details,
 // weekly hours, and the full service catalog with ids and prices — as one
@@ -27,24 +28,60 @@ const DAY_LABEL: Record<string, string> = {
 // Quote)", "Custom pricing"). Saying "free" for the second is a costly lie.
 const QUOTE_RE = /\b(quote[sd]?|custom pricing|price varies|call for)\b/i;
 
-export function formatPrice(p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>): string {
+type PriceMeta = Pick<SectorMeta, 'currency' | 'vertical'> & { resources?: SectorMeta['resources'] };
+
+/** Spoken amount: "$89" (unchanged for USD), "500 rupees" for INR. */
+export function formatMoney(cents: number, currency?: string): string {
+  const amount = (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
+  if (currency === 'INR') return `${amount} rupees`;
+  return `$${amount}`;
+}
+
+export function formatPrice(
+  p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>,
+  meta?: PriceMeta | null,
+): string {
   if (p.priceCents === 0) {
-    return QUOTE_RE.test(`${p.name} ${p.description}`) ? 'price depends on the vehicle' : 'free';
+    return QUOTE_RE.test(`${p.name} ${p.description}`) ? getVertical(meta).quotePrice : 'free';
   }
-  const dollars = (c: number) => `$${(c / 100).toFixed(c % 100 === 0 ? 0 : 2)}`;
-  const regular = p.originalPriceCents > p.priceCents ? ` (regularly ${dollars(p.originalPriceCents)})` : '';
-  return `${dollars(p.priceCents)}${regular}`;
+  const money = (c: number) => formatMoney(c, meta?.currency);
+  const regular = p.originalPriceCents > p.priceCents ? ` (regularly ${money(p.originalPriceCents)})` : '';
+  return `${money(p.priceCents)}${regular}`;
+}
+
+/**
+ * Whether a product is priced by the doctor it's booked with (a clinic's
+ * consultation): the vertical says which categories, and the business must
+ * have doctors.
+ */
+export function isResourcePriced(p: Pick<Product, 'category'>, meta: PriceMeta | null | undefined): boolean {
+  const spec = getVertical(meta).resources;
+  return !!spec && !!meta?.resources?.length && spec.feeCategories.includes(p.category);
+}
+
+/** formatPrice, except a consultation reads as the doctor's fee. */
+export function priceText(
+  p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description' | 'category'>,
+  meta: PriceMeta | null | undefined,
+): string {
+  if (!isResourcePriced(p, meta)) return formatPrice(p, meta);
+  // Only the doctors who do it: a dental consultation is the dentist's fee.
+  const who = meta!.resources!.filter(r => !r.categories?.length || r.categories.includes(p.category));
+  const fees = (who.length ? who : meta!.resources!).map(r => r.feeCents);
+  if (fees[0] != null && fees.every(f => f === fees[0])) return fees[0] ? formatMoney(fees[0], meta?.currency) : 'free';
+  return getVertical(meta).resources!.feeText;
 }
 
 export function formatWeeklyHours(hours: SectorMeta['hours'] | undefined): string {
   if (!hours) return 'not listed';
   return DAY_ORDER
-    .map(d => `${DAY_LABEL[d]} ${(hours as Record<string, string | undefined>)[d]?.replace(/[–-]/, ' to ') ?? 'closed'}`)
+    // Every dash: split hours ("10am–1pm, 5pm–9pm") read as two ranges.
+    .map(d => `${DAY_LABEL[d]} ${(hours as Record<string, string | undefined>)[d]?.replace(/[–-]/g, ' to ') ?? 'closed'}`)
     .join('; ');
 }
 
-function formatProduct(p: Product, byId: Map<string, Product>): string {
-  const parts = [`- ${p.name} [id: ${p.id}] — ${formatPrice(p)}`];
+function formatProduct(p: Product, byId: Map<string, Product>, meta: SectorMeta | null | undefined): string {
+  const parts = [`- ${p.name} [id: ${p.id}] — ${priceText(p, meta)}`];
   if (p.durationMinutes) parts.push(`about ${p.durationMinutes} min`);
   if (p.type !== 'SERVICE_APPOINTMENT') parts.push(p.fulfillmentType === 'IN_STORE_PICKUP' ? 'part, pick up in store' : 'product');
   let line = parts.join(', ') + `. ${p.description}`;
@@ -65,6 +102,7 @@ export function buildBusinessProfile(
   if (meta?.website) lines.push(`Website: ${meta.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}`);
   lines.push(`Hours: ${formatWeeklyHours(meta?.hours)}${meta?.timezone ? ` (${meta.timezone} time)` : ''}`);
   if (meta?.about?.trim()) lines.push(`About: ${meta.about.trim()}`);
+  lines.push(...describeResources(meta));
 
   const active = products.filter(p => p.isActive);
   if (!active.length) {
@@ -88,9 +126,27 @@ export function buildBusinessProfile(
   lines.push('Services and prices (complete list — nothing else is offered):');
   for (const [category, list] of byCategory) {
     lines.push(`${category.replace(/_/g, ' ')}:`);
-    for (const p of list) lines.push(formatProduct(p, byId));
+    for (const p of list) lines.push(formatProduct(p, byId, meta));
   }
   return lines.join('\n');
+}
+
+// A clinic's doctors: who, when they sit (OPD hours), fee and slot length.
+// Nothing for businesses without resources.
+function describeResources(meta: SectorMeta | null | undefined): string[] {
+  const spec = getVertical(meta).resources;
+  if (!spec || !meta?.resources?.length) return [];
+  const lines = [`${spec.heading}:`];
+  for (const r of meta.resources) {
+    const parts = [`- ${r.name} [${spec.param}: ${r.id}]${r.role ? ` — ${r.role}` : ''}.`];
+    parts.push(`Hours: ${formatWeeklyHours(r.hours)}.`);
+    if (r.feeCents != null) parts.push(`${spec.feeLabel.charAt(0).toUpperCase() + spec.feeLabel.slice(1)}: ${r.feeCents ? formatMoney(r.feeCents, meta.currency) : 'free'}.`);
+    parts.push(`${r.slotMinutes}-minute appointments.`);
+    if (r.categories?.length) parts.push(`Books only: ${r.categories.map(c => c.replace(/_/g, ' ').toLowerCase()).join(', ')}.`);
+    if (r.about?.trim()) parts.push(r.about.trim());
+    lines.push(parts.join(' '));
+  }
+  return lines;
 }
 
 // "Now" as the business sees it, plus the next week's weekday → date map, so
