@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { formatMoney, type SectorLocale } from '../locale';
 
 interface Turn { role: 'user' | 'assistant'; content: string }
 interface ToolCall { name: string; input: unknown; result: unknown }
@@ -26,7 +27,7 @@ async function speak(base: string, token: string, text: string, onEnd?: () => vo
 // No shared secret sent from browser — JWT Bearer token is the only auth
 
 // Sectors are loaded from the worker at runtime — no hardcoding needed
-type SectorOption = { key: string; name: string };
+type SectorOption = { key: string; name: string } & SectorLocale;
 
 const s = {
   card:  { background: '#12121a', border: '1px solid #1e1e2e', borderRadius: 14, padding: 20 } as React.CSSProperties,
@@ -242,7 +243,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
           {session && (
             <div style={{ display: 'flex', gap: 6 }}>
               <span style={s.tag}>{session.tier}</span>
-              <span style={s.tag}>${(session.credit / 100).toFixed(2)} credit</span>
+              <span style={s.tag}>{formatMoney(session.credit, sectors.find(x => x.key === sector))} credit</span>
             </div>
           )}
         </div>
@@ -467,7 +468,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
                   ['Customer ID', customerId],
                   ['Business', sectors.find(s => s.key === sector)?.name ?? sector],
                   ['Tier', session?.tier],
-                  ['Store Credit', `$${((session?.credit ?? 0) / 100).toFixed(2)}`],
+                  ['Store Credit', formatMoney(session?.credit ?? 0, sectors.find(x => x.key === sector))],
                   ['Worker', base],
                   ['Turns', String(history.filter(m => m.role === 'user').length)],
                 ].map(([k, v]) => (

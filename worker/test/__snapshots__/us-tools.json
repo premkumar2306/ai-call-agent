@@ -1,0 +1,307 @@
+[
+  {
+    "name": "check_account",
+    "description": "Check the customer's balance, loyalty tier, and account status.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "search_services",
+    "description": "Search Advanced VTech services. Use whenever the customer asks \"what do you offer\", \"do you have X\", or anything about pricing.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "What the customer is asking about. E.g. \"oil change\", \"root canal\", \"3 bedroom\"."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "DIAGNOSTICS",
+            "MAINTENANCE",
+            "BRAKES",
+            "ALL"
+          ],
+          "description": "Optional filter by category."
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "get_service_detail",
+    "description": "Get full details (price, duration, description) for a specific service or listing.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "product_id": {
+          "type": "string",
+          "description": "ID from search_services results."
+        }
+      },
+      "required": [
+        "product_id"
+      ]
+    }
+  },
+  {
+    "name": "check_availability",
+    "description": "Get the next available appointment slots. Call this whenever the customer asks \"when can I come in\", \"what times are open\", or \"schedule me\".",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "service_id": {
+          "type": "string",
+          "description": "The [id] of the service being booked, so slots match its length."
+        },
+        "preferred_date": {
+          "type": "string",
+          "description": "YYYY-MM-DD, only if the customer named a day (\"tomorrow\", \"Friday\"). Resolve it with the dates in the system prompt."
+        },
+        "time_of_day": {
+          "type": "string",
+          "enum": [
+            "morning",
+            "afternoon",
+            "evening"
+          ],
+          "description": "Only if the customer said a part of the day."
+        },
+        "preferred_time": {
+          "type": "string",
+          "description": "HH:MM 24-hour, only if the customer named an exact time (\"at 10\" → 10:00). Use with preferred_date."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "get_business_hours",
+    "description": "Return Advanced VTech's hours of operation. Call this when customer asks \"are you open\", \"what are your hours\", \"open on Saturday\".",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "get_upsells",
+    "description": "Return an upgrade or add-on recommendation for a selected service. Call after a customer picks a service to offer a relevant upsell.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "product_id": {
+          "type": "string",
+          "description": "The service the customer just selected."
+        }
+      },
+      "required": [
+        "product_id"
+      ]
+    }
+  },
+  {
+    "name": "get_recommendations",
+    "description": "Return personalized service recommendations based on account tier and store credit.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "number",
+          "description": "Max results. Defaults to 3."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "book_appointment",
+    "description": "Book a service appointment once the customer has chosen a service and one of the times check_availability returned. Ask for a shipping address only for physical items.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "product_id": {
+          "type": "string"
+        },
+        "payment_method": {
+          "type": "string",
+          "enum": [
+            "CREDIT_CARD",
+            "DEBIT_CARD",
+            "STORE_CREDIT",
+            "INVOICE"
+          ],
+          "description": "Defaults to CREDIT_CARD (paid at the shop)."
+        },
+        "scheduled_at": {
+          "type": "string",
+          "description": "The exact `datetime` of the chosen slot from check_availability, e.g. \"2026-04-15T09:00:00\"."
+        },
+        "shipping_address": {
+          "type": "object",
+          "description": "Required only for physical items: { line1, city, state, zip }."
+        },
+        "customer_name": {
+          "type": "string",
+          "description": "The caller's name, as they said it."
+        },
+        "vehicle": {
+          "type": "string",
+          "description": "Year, make and model, for businesses that work on vehicles (e.g. \"2018 Honda Civic\")."
+        },
+        "callback_phone": {
+          "type": "string",
+          "description": "Only if the caller gives a different number than the one they're calling from, or caller ID is unavailable."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Anything the staff should know (symptoms, requests)."
+        }
+      },
+      "required": [
+        "product_id"
+      ]
+    }
+  },
+  {
+    "name": "reschedule_booking",
+    "description": "Move an existing booking to a new time. Check availability for the new time first.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "order_id": {
+          "type": "string",
+          "description": "The booking id from list_bookings."
+        },
+        "new_datetime": {
+          "type": "string",
+          "description": "Exact datetime from check_availability, e.g. \"2026-04-15T09:00:00\"."
+        }
+      },
+      "required": [
+        "order_id",
+        "new_datetime"
+      ]
+    }
+  },
+  {
+    "name": "update_booking",
+    "description": "Correct the caller's details on a booking already made in this call or listed in their bookings: name, vehicle, callback number or notes. Pass only what changed.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "order_id": {
+          "type": "string",
+          "description": "The booking id."
+        },
+        "customer_name": {
+          "type": "string"
+        },
+        "vehicle": {
+          "type": "string",
+          "description": "Year, make and model."
+        },
+        "callback_phone": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Symptoms or requests for the technician."
+        }
+      },
+      "required": [
+        "order_id"
+      ]
+    }
+  },
+  {
+    "name": "transfer_to_staff",
+    "description": "Connect the caller to a person at the business. Only when they ask for a person, or for something only staff can do. Call it without saying anything first — its reply is spoken for you.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "take_message",
+    "description": "Leave a message for staff to call the caller back (exact quotes, questions you can't answer, after hours). Only once you have their name and what it is about. One message per call: if they add or correct something, call it again with the complete message — it replaces the earlier one.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "caller_name": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string",
+          "description": "Everything they want passed on, in a sentence or two."
+        },
+        "callback_phone": {
+          "type": "string",
+          "description": "Only if different from the number they're calling from."
+        }
+      },
+      "required": [
+        "caller_name",
+        "message"
+      ]
+    }
+  },
+  {
+    "name": "get_booking_status",
+    "description": "Check the status of an existing booking or order.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "order_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ]
+    }
+  },
+  {
+    "name": "list_bookings",
+    "description": "List the customer's recent bookings.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "number",
+          "description": "Max results. Defaults to 5."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "cancel_booking",
+    "description": "Cancel a booking. Works on PENDING, ACCEPTED, and COMPLETE (confirmed) appointments — COMPLETE just means the booking is confirmed, not that the service has been performed. If you have the order_id use it. If not, pass product_name and the system will find it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "order_id": {
+          "type": "string",
+          "description": "The booking ID to cancel. Use if known."
+        },
+        "product_name": {
+          "type": "string",
+          "description": "Service name to cancel (e.g. \"oil change\"). Used when order_id is unknown."
+        }
+      },
+      "required": []
+    }
+  }
+]

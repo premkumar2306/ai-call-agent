@@ -5,6 +5,15 @@
 #
 # Usage (from worker/):  ./svt/run.sh            # every persona
 #                        ./svt/run.sh 3 5        # just these personas
+#        SVT_SET=india ./svt/run.sh              # the Indian callers (demo clinic)
+#        SVT_SET=india ./svt/run.sh 2            # just the Hindi switcher
+#
+# SVT_SET picks the persona set (svt/latency-test.mjs): `us` (default, the
+# weekly run: advanced_vtech) or `india` (demo_clinic_india: Indian English,
+# Hinglish, Hindi, an elderly slow speaker, a specific-doctor request and an
+# emergency). The india set uses the macOS en_IN/hi_IN voices (Rishi, Veena,
+# Lekha) when installed and says which fallback it used when not; its
+# results go to svt/results/india.
 # Needs ADMIN_KEY, ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — taken from the
 # environment (GitHub Actions) or else the repo-root .env (ADMIN_KEY from
 # AVERY_SECRET). Needs macOS `say` and ffmpeg, so CI runs on a macOS runner.
@@ -20,7 +29,12 @@
 # (default 2500).
 set -uo pipefail
 cd "$(dirname "$0")/.."
-OUT=${SVT_OUT:-svt/results}
+SET=${SVT_SET:-us}
+case "$SET" in
+  us)    OUT=${SVT_OUT:-svt/results};       ALL=$(seq 0 13) ;;
+  india) OUT=${SVT_OUT:-svt/results/india}; ALL=$(seq 0 5) ;;
+  *)     echo "SVT_SET must be us or india"; exit 2 ;;
+esac
 mkdir -p "$OUT"
 
 env_get() { [ -f ../.env ] && grep -E "^$1=" ../.env | tail -1 | cut -d= -f2- | tr -d "\"'"; }
@@ -31,14 +45,14 @@ for k in ADMIN_KEY ANTHROPIC_API_KEY DEEPGRAM_API_KEY; do
   [ -n "${!k}" ] || { echo "$k is not set"; exit 2; }
 done
 
-# 8–13 are the multi-turn complex cases (changes of mind, corrections, two cars, …).
-PERSONAS=("$@"); [ ${#PERSONAS[@]} -gt 0 ] || PERSONAS=($(seq 0 13))
+# us: 8–13 are the multi-turn complex cases (changes of mind, corrections, two cars, …).
+PERSONAS=("$@"); [ ${#PERSONAS[@]} -gt 0 ] || PERSONAS=($ALL)
 
 for p in "${PERSONAS[@]}"; do
   while [ "$(jobs -rp | wc -l)" -ge "${SVT_PARALLEL:-4}" ]; do sleep 2; done
   echo "calling as persona $p"
   # 7-minute cap per call (perl: macOS has no `timeout`).
-  ( perl -e 'alarm shift; exec @ARGV' 420 node svt/latency-test.mjs --persona "$p" > "$OUT/persona-$p.txt" 2>&1
+  ( perl -e 'alarm shift; exec @ARGV' 420 node svt/latency-test.mjs --set "$SET" --persona "$p" > "$OUT/persona-$p.txt" 2>&1
     echo $? > "$OUT/persona-$p.status" ) &
 done
 wait
@@ -48,7 +62,7 @@ SUMMARY="| persona | median wait | worst wait | result | issues |\n|---|---|---|
 for p in "${PERSONAS[@]}"; do
   log="$OUT/persona-$p.txt"; status=$(cat "$OUT/persona-$p.status" 2>/dev/null || echo 1)
   echo; echo "── persona $p ──"
-  grep -E "^Persona:|^  [0-9]+\. CALLER|^     \(|^median|^FAILED|^VERDICT|^  - " "$log"
+  grep -E "^Voice:|^Persona:|^  [0-9]+\. CALLER|^     \(|^median|^FAILED|^VERDICT|^  - " "$log"
   median=$(sed -nE 's/^median e2e ([0-9]+) ms, worst ([0-9]+) ms/\1/p' "$log")
   worst=$(sed -nE 's/^median e2e ([0-9]+) ms, worst ([0-9]+) ms/\2/p' "$log")
   # Every caller wait, for the overall median.
@@ -66,5 +80,6 @@ if [ ${#waits[@]} -gt 0 ]; then
 fi
 SUMMARY+="\nOverall median wait: **${overall} ms** over ${#waits[@]} turns."
 printf "\n%b\n" "$SUMMARY" | tee "$OUT/summary.md"
-[ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf "## Synthetic voice tests\n\n%b\n" "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+TITLE="Synthetic voice tests"; [ "$SET" = us ] || TITLE+=" ($SET)"
+[ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf "## %s\n\n%b\n" "$TITLE" "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 exit $failed

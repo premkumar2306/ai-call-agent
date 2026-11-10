@@ -34,6 +34,7 @@ Search strategy:
 | `categories` | 4–8 UPPER_SNAKE_CASE groupings |
 | `hours` | `{ "mon": "9am–5pm", … }` — omit closed days |
 | `timezone` | From city/state |
+| `vertical` | `clinic` for clinics and dental practices (doctors as resources, patient details, medical safety rules — see README *Verticals*); omit otherwise |
 
 ---
 
@@ -69,6 +70,27 @@ curl -s -X POST https://mogi-platform.premkumar-2ba.workers.dev/admin/vendors \
     { "id": "v-<key>-main", "name": "<Business Name>", "business_type": "<key>", "contact_email": "info@example.com" }
   ]'
 ```
+
+---
+
+### Clinics only — save the doctors
+
+With `"vertical": "clinic"`, also post each doctor with their own OPD hours (split sessions like
+`"10am–1pm, 5pm–9pm"`), slot length, consultation fee (`fee_cents`, minor units — paise for INR) and
+the product categories they book. Consultation products (category `CONSULTATION`,
+`CHILD_CONSULTATION` or `DENTAL_CONSULTATION`, `price_cents: 0`) are priced from the doctor's fee.
+
+```bash
+curl -s -X POST https://mogi-platform.premkumar-2ba.workers.dev/admin/resources \
+  -H "Content-Type: application/json" -H "X-Admin-Key: <admin key>" \
+  -d '[
+    { "id": "<key>-dr-rao", "business_type": "<key>", "name": "Dr. Ananya Rao", "role": "General physician",
+      "hours": { "mon": "10am–1pm, 5pm–9pm" }, "slot_minutes": 15, "fee_cents": 50000,
+      "categories": ["CONSULTATION", "FOLLOW_UP"] }
+  ]'
+```
+
+See `worker/seeds/demo_clinic_india.sql` for a complete example.
 
 ---
 

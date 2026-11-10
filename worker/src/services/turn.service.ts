@@ -1,13 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
 import { createAnthropic, MAX_TOOL_ROUNDS, VOICE_MODEL_TIMEOUT_MS, voiceModel } from '../config';
+import { formatMoney, localeOf } from '../utils/locale';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
 import { getOrders } from './order.service';
 import { executeTool, getToolDefinitions, formatSlotLabel, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
 import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
+import { getVertical, VERTICALS, type Vertical } from './verticals';
 import type { CallCache } from './call-context';
+import { languageRules, resolveVoiceSettings, type VoiceLanguage } from './voice-language';
 import type { Order, Product, SectorMeta } from '../types';
 
 // ── Call history stored in CART KV (1-hour TTL per call) ─────────────────────
@@ -85,10 +88,12 @@ const FIRST_CHUNK_MIN_CHARS = 12;
 const FIRST_CHUNK_MAX_CHARS = 90;
 
 // Pops the next complete sentence off the front of `buffer` (ending in
-// . ! or ? followed by whitespace or end-of-string). Returns null if the
-// buffer doesn't yet contain a full sentence.
+// . ! ? or the Devanagari danda । ॥, followed by whitespace or
+// end-of-string). Returns null if the buffer doesn't yet contain a full
+// sentence. (English text never contains a danda, so English chunking is
+// unchanged.)
 export function popSentence(buffer: string): { chunk: string; rest: string } | null {
-  const m = buffer.match(/[.!?]+(\s+|$)/);
+  const m = buffer.match(/[.!?।॥]+(\s+|$)/);
   if (!m || m.index === undefined) return null;
   const end = m.index + m[0].length;
   const chunk = buffer.slice(0, end).trim();
@@ -253,11 +258,12 @@ export const INTERRUPTED_MARK = '[caller interrupted]';
 
 export type Channel = 'voice' | 'chat';
 
-export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice'): string {
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en'): string {
+  const v = vertical.prompt;
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
 - Open with a very short first sentence (one to five words, e.g. "Yes, we do." / "Sure." / "We're at 320 Lexington Drive."), so the caller hears you right away; then at most one more short sentence. Under 35 words in all, then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
-- Plain spoken English: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
+- ${language === 'en' ? 'Plain spoken English' : 'Plain speech'}: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
 - At most one question per reply. Don't read out booking reference numbers unless asked.`
     : `WRITING (WhatsApp / web chat):
 - Two to four short sentences. You may use *bold* for service names and prices. No headers or long bullet lists.
@@ -268,9 +274,9 @@ export function buildAgentRules(businessType: string, bizName: string, channel: 
 
 USING WHAT YOU KNOW:
 - The BUSINESS PROFILE below is complete and authoritative. Answer anything about ${bizName} — services, prices, durations, address, phone, website, hours — straight from it. Give the specifics: name the service and say the price.
-- Price questions when the profile has no price ("price depends on the vehicle"): answer like a service writer, never "we don't publish prices". Two short sentences, like: "It depends on the vehicle — what are you driving? We've got an oil change special on right now, too." Once you know the vehicle, offer to book it in (the advisor confirms the exact price before any work starts) or have an advisor call back with the exact price.
-- If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so a service advisor calls them back (or connect them, if they'd rather talk now). Never invent facts, prices or policies.
-- Speak as the business ("we", "our shop"). The words "profile", "my information", "the system" and "the list" must never appear in what you say — the caller doesn't know they exist.
+${v.priceRule}
+${v.unknownRule}
+- Speak as the business ("we", "our ${vertical.place}"). The words "profile", "my information", "the system" and "the list" must never appear in what you say — the caller doesn't know they exist.
 - Never say you will check, look into, or get back on something unless you call the tool in the same reply. Nobody will follow up later.
 - Before a tool call say nothing, or at most a few words ("Let me check."). Never think aloud, and never say a date as YYYY-MM-DD.
 - Never say something is done or possible before the tool result says so: not "I'll connect you", "I can set that up for Friday", "you're booked" or "I've passed that on" ahead of the tool call. Say "Let me check." and let the result speak.
@@ -280,7 +286,8 @@ CONVERSATION:
 - Use what the ${who} already told you. Never ask for something they already said, and never ask the same question twice in a row — if you didn't understand, say what you did catch and ask something narrower.
 - ${channel === 'voice' ? 'Speech recognition makes mistakes. If words look garbled, make your best guess from context and confirm it in a few words.' : 'Typos happen. Make your best guess from context and confirm it briefly.'}
 - A reply of yours ending in "${INTERRUPTED_MARK}" was cut off — the ${who} only heard the part before it. Respond to what they said; don't restart the whole reply.
-- If asked, you are an AI assistant — never claim to be human. If they want a person, use transfer_to_staff.`;
+- If asked, you are an AI assistant — never claim to be human. If they want a person, use transfer_to_staff.${
+    channel === 'voice' && language !== 'en' ? `\n\n${languageRules(language)}` : ''}`;
 
   if (businessType === 'health_nav') {
     return `You are Mogi, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
@@ -298,31 +305,32 @@ HEALTH:
 ${shared}
 
 BOOKING (live data — always use the tools, one step at a time):
-1. Work out which service they need from the profile. Map symptoms to services yourself (squeaking brakes → brakes, warning light → diagnostics). If the cause is unknown (a noise, a feeling), book the inspection or diagnostic service — not a repair — and put their symptoms in notes.
-2. When they want to come in, call check_availability with the service's [id], plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns. If it says requested_open, book that requested_slot in the same turn — they already chose it.
-3. Once they've picked a time (not before — don't ask for details while they're still asking questions), get their name — and, if the business works on vehicles, the year, make and model — in one short question, if you don't already have them from this call. Their callback number is the one they're calling from; only ask for a number if book_appointment says it needs one.
+${v.booking1}
+${v.booking2}
+${v.booking3}
 3b. When they pick a time and you have those details, call book_appointment right away with that slot's exact datetime — don't ask "shall I book it?". Its reply is spoken to the caller as-is.
 4. Only offer or book times check_availability returned — never guess one ("9:30 may be open"). If they ask for another day or time, check availability for exactly that (preferred_date, preferred_time) and say plainly whether it's open.
-- Corrections after booking (name misheard, different number, other vehicle, symptoms): update_booking on that booking — not a message.
+${v.corrections}
 - Adding a service to an appointment they already have (one visit, several jobs): call book_appointment for the new service with the existing booking's exact datetime from "Customer's bookings" — no availability check, never a different time.
-5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.
+${v.afterBooking}
 - Existing appointments: list_bookings; to cancel, cancel_booking; to move one, check_availability for the new time, then reschedule_booking.
-- Wants a person, or needs something only staff can do: transfer_to_staff. If the shop is closed or there's no answer, take_message instead.
+${v.transfer}
 - Messages: get their name and what it's about first (their number is the one they're calling from unless they give another), then call take_message once. Never say a message is passed on before take_message succeeds. If they add or correct something, call take_message again with the complete message.
-- Questions you can't answer from the profile (exact quotes, coupons, special requests): offer to take_message so a service advisor calls them back, instead of telling them to call.`;
+${v.cantAnswer}${v.extra ? `\n\n${v.extra}` : ''}`;
 }
 
 function describeCaller(session: SessionPayload, orders: Order[] | null | undefined, meta: SectorMeta | null): string {
   const lines: string[] = [];
   const { account } = session;
+  const loc = localeOf(meta);
   if (account.tier !== 'BASIC' || account.store_credit_cents > 0) {
-    lines.push(`Customer: ${account.tier} tier, $${(account.store_credit_cents / 100).toFixed(2)} store credit.`);
+    lines.push(`Customer: ${account.tier} tier, ${formatMoney(account.store_credit_cents, loc, { alwaysFraction: true })} store credit.`);
   }
   const active = (orders ?? []).filter(o => o.status !== 'CANCELLED').slice(0, 3);
   lines.push(`Customer's bookings: ${active.length
-    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt)} [${o.scheduledAt.slice(0, 16)}]` : ''} (${o.status.toLowerCase()})`).join('; ')
+    ? active.map(o => `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt, undefined, undefined, loc.locale)} [${o.scheduledAt.slice(0, 16)}]` : ''} (${o.status.toLowerCase()})`).join('; ')
     : 'none'}.`);
-  lines.push(describeLocalNow(new Date(), meta?.timezone));
+  lines.push(describeLocalNow(new Date(), meta?.timezone, loc.locale));
   return lines.join('\n');
 }
 
@@ -341,7 +349,7 @@ export function buildSystemPrompt(opts: {
 }): Anthropic.TextBlockParam[] {
   const bizName = opts.sectorMeta?.name ?? opts.businessType;
   const stable = opts.stable
-    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel)}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language)}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
   return [
     { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },
@@ -452,7 +460,10 @@ export async function runTurn(
   // attempts let one stalled round go silent for 40s; fail inside that
   // window and apologise instead.
   const anthropic = createAnthropic(env, { timeoutMs: VOICE_MODEL_TIMEOUT_MS, maxRetries: 1 });
-  const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '');
+  // Tool replies are hand-written English: a Hindi / Hinglish line always
+  // has the model say them in the caller's language instead.
+  const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '')
+    && resolveVoiceSettings(sectorMeta).language === 'en';
 
   // Whether anything has been handed to TTS yet this turn. Governs whether
   // the next flush may break on a clause (first chunk) or must wait for a

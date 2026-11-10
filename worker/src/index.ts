@@ -10,23 +10,29 @@ import { catalogRouter } from './routes/catalog';
 import { ordersRouter } from './routes/orders';
 import { mogiRouter } from './routes/mogi';
 import { twilioRouter } from './routes/twilio';
+import { exotelRouter } from './routes/exotel';
+import { plivoRouter } from './routes/plivo';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
 import { isAllowedOrigin } from './utils/origins';
+import { privacyAdminRouter } from './routes/privacy';
+import { applyRetention } from './services/retention.service';
+import type { Env } from './types';
 
 export { CallRelay } from './durable-objects/call-relay';
 
 type AppEnv = HonoEnv & { Variables: { requestId: string } };
 const app = new Hono<AppEnv>();
 
-// Re-exported for tests (test/security.test.ts).
-export { isAllowedOrigin };
+// Re-exported for tests (test/security.test.ts, test/accounts.test.ts).
+export { isAllowedOrigin, app };
 
 app.use('*', requestId());
 // Skipped on the media-stream upgrade: its 101 response comes straight from
 // the Durable Object and its headers can't be modified.
-app.use('*', async (c, next) => (c.req.path === '/twilio/stream' ? next() : secureHeaders()(c, next)));
+const STREAM_PATHS = new Set(['/twilio/stream', '/exotel/stream', '/plivo/stream']);
+app.use('*', async (c, next) => (STREAM_PATHS.has(c.req.path) ? next() : secureHeaders()(c, next)));
 
 // ── CORS ───────────────────────────────────────────────────────────────────
 app.use('*', cors({
@@ -44,7 +50,10 @@ app.route('/catalog',  catalogRouter);
 app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);
 app.route('/twilio',   twilioRouter);
+app.route('/exotel',   exotelRouter);
+app.route('/plivo',    plivoRouter);
 app.route('/admin/calendar', calendarAdminRouter);
+app.route('/admin/privacy', privacyAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
@@ -68,7 +77,11 @@ app.get('/sectors', async (c) => {
   const sectors = await getSectors(c.env);
   return c.json({
     success: true,
-    data: Object.entries(sectors).map(([key, meta]) => ({ key, name: meta.name, model: meta.model })),
+    data: Object.entries(sectors).map(([key, meta]) => ({
+      key, name: meta.name, model: meta.model,
+      // How the admin UI shows this business's prices, dates and phone numbers.
+      currency: meta.currency, locale: meta.locale ?? 'en-US', countryCode: meta.countryCode ?? 'US',
+    })),
   });
 });
 
@@ -84,4 +97,10 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
-export default app;
+// Cron Triggers ([triggers] in wrangler.toml): daily data-retention sweep.
+// A no-op until a business sets sectors.retention_days.
+async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  ctx.waitUntil(applyRetention(env).then(() => undefined));
+}
+
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

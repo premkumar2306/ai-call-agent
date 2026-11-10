@@ -24,6 +24,11 @@
 // real win there was using the interim text rather than waiting for a final
 // Results message.)
 
+import {
+  type VoiceLanguage, wordsOf, endsSentence,
+  HINDI_BACKCHANNEL_WORDS, HINDI_DANGLING_WORDS, HINDI_DISCOURSE_WORDS,
+} from '../services/voice-language';
+
 export interface SttOptions {
   apiKey: string;
   /** True when an interim transcript is our own voice coming back (speakerphone echo) — no barge-in. */
@@ -60,6 +65,12 @@ export interface SttOptions {
    * the caller to carry on before it's answered anyway. Default 900.
    */
   incompleteHoldMs?: number;
+  /**
+   * Which language's word lists and punctuation the backchannel, echo and
+   * incomplete-sentence rules use. Default 'en' (today's rules, unchanged).
+   * Independent of `language`, which is what Deepgram is asked to recognise.
+   */
+  voiceLanguage?: VoiceLanguage;
   debug?: boolean;
 }
 
@@ -94,12 +105,20 @@ const DANGLING_WORDS = new Set([
  * rest of the sentence instead of being answered — answering a fragment is
  * what makes the assistant and caller talk over each other.
  */
-export function looksIncomplete(text: string): boolean {
+export function looksIncomplete(text: string, lang: VoiceLanguage = 'en'): boolean {
   const t = text.trim();
   if (!t) return false;
   if (/(\.\.\.|…)$/.test(t)) return true;
   // A number at the end ("…my number is 847-555-0123.") is a finished thought.
   const lastToken = t.split(/\s+/).pop() ?? '';
+  if (lang !== 'en') {
+    // Hindi / Hinglish: a dangling English or Hindi word ("मेरा", "aur").
+    // Missing punctuation alone doesn't count — Hindi STT output is often
+    // unpunctuated, and holding every utterance would add latency to all of
+    // them. The STT's own endpointing decides.
+    const last = wordsOf(t, lang).pop() ?? '';
+    return !/\d/.test(lastToken) && (DANGLING_WORDS.has(last) || HINDI_DANGLING_WORDS.has(last));
+  }
   const last = t.toLowerCase().replace(/[^a-z'\s]/g, ' ').trim().split(/\s+/).pop() ?? '';
   if (!/\d/.test(lastToken) && DANGLING_WORDS.has(last)) return true;
   return !/[.?!]["')]?$/.test(t);
@@ -111,7 +130,13 @@ const BACKCHANNEL_WORDS = new Set([
   'sure', 'alright', 'got', 'it', 'i', 'see', 'cool', 'great', 'nice', 'oh',
 ]);
 
-export function isBackchannel(text: string): boolean {
+export function isBackchannel(text: string, lang: VoiceLanguage = 'en'): boolean {
+  if (lang !== 'en') {
+    // "हाँ जी", "achha theek hai", "ok ji" — English and Hindi feedback mix freely.
+    const words = wordsOf(text.replace(/-/g, ''), lang);
+    return words.length > 0 && words.length <= 3
+      && words.every(w => BACKCHANNEL_WORDS.has(w) || HINDI_BACKCHANNEL_WORDS.has(w));
+  }
   const words = text.toLowerCase().replace(/[^a-z\s-]/g, '').replace(/-/g, '').split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length <= 3 && words.every(w => BACKCHANNEL_WORDS.has(w));
 }
@@ -120,7 +145,12 @@ export function isBackchannel(text: string): boolean {
 // while the assistant is quiet they're the start of a sentence, not a turn.
 const DISCOURSE_WORDS = new Set(['well', 'so', 'um', 'uh', 'umm', 'uhh', 'er', 'hmm', 'and', 'but', 'like', 'also', 'then', 'actually']);
 
-export function isDiscourseOnly(text: string): boolean {
+export function isDiscourseOnly(text: string, lang: VoiceLanguage = 'en'): boolean {
+  if (lang !== 'en') {
+    const words = wordsOf(text, lang);
+    return words.length > 0 && words.length <= 3
+      && words.every(w => DISCOURSE_WORDS.has(w) || HINDI_DISCOURSE_WORDS.has(w));
+  }
   const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length <= 3 && words.every(w => DISCOURSE_WORDS.has(w));
 }
@@ -132,8 +162,12 @@ export function isDiscourseOnly(text: string): boolean {
  * picking an option the assistant read out ("all four") isn't mistaken
  * for echo.
  */
-export function isEchoOf(heard: string, spoken: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, ' ').split(/\s+/).filter(Boolean);
+export function isEchoOf(heard: string, spoken: string, lang: VoiceLanguage = 'en'): boolean {
+  // Devanagari survives normalisation for Hindi lines; the English filter
+  // would reduce a Hindi echo to nothing and never match it.
+  const norm = lang === 'en'
+    ? (s: string) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, ' ').split(/\s+/).filter(Boolean)
+    : (s: string) => s.toLowerCase().replace(/[^\p{L}\p{M}\p{N}'\s]/gu, ' ').split(/\s+/).filter(Boolean);
   const h = norm(heard);
   if (h.length < 4) return false;
   const said = new Set(norm(spoken));
@@ -174,6 +208,7 @@ export async function createDeepgramSTT(
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
     endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, statementHoldMs = 400, isEcho, onActivity,
+    voiceLanguage: lang = 'en',
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -283,11 +318,12 @@ export async function createDeepgramSTT(
     // after a breath ("…one or two off the road at a time. Is there a fleet
     // discount?"); answering at the full stop talks over the question.
     // Questions and short answers ("Two works.") go straight through.
-    const statementHold = statementHoldMs > 0 && /[.!]["')]?$/.test(combined) && combined.split(/\s+/).length >= 4;
-    if ((incompleteHoldMs > 0 && looksIncomplete(combined)) || statementHold) {
+    const statementHold = statementHoldMs > 0 && endsSentence(combined, lang, '.!') && combined.split(/\s+/).length >= 4;
+    const incomplete = looksIncomplete(combined, lang);
+    if ((incompleteHoldMs > 0 && incomplete) || statementHold) {
       held = combined;
-      holdTimer = setTimeout(releaseHeld, looksIncomplete(combined) ? incompleteHoldMs : statementHoldMs);
-      if (debug) console.log(`[dg stt] holding ${statementHold && !looksIncomplete(combined) ? 'statement' : 'incomplete'} "${combined}"`);
+      holdTimer = setTimeout(releaseHeld, incomplete ? incompleteHoldMs : statementHoldMs);
+      if (debug) console.log(`[dg stt] holding ${statementHold && !incomplete ? 'statement' : 'incomplete'} "${combined}"`);
       return;
     }
     held = '';
@@ -342,7 +378,7 @@ export async function createDeepgramSTT(
             if (text !== lastInterim) {
               lastInterim = text;
               clearStable();
-            } else if (!stableTimer && /[.?!]["')]?$/.test(text) && !looksIncomplete(lastText)) {
+            } else if (!stableTimer && endsSentence(text, lang) && !looksIncomplete(lastText, lang)) {
               stableTimer = setTimeout(() => {
                 stableTimer = undefined;
                 if (isOpen && !finalized) {
@@ -353,7 +389,7 @@ export async function createDeepgramSTT(
             }
             // Barge-in once there are enough words to be a real interruption
             // — and not just the caller saying "mm-hmm" while listening.
-            if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text) && !isEcho?.(text)) announceSpeech('interim');
+            if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text, lang) && !isEcho?.(text)) announceSpeech('interim');
           } else if (!finalized) {
             // is_final but not (yet) speech_final, and we haven't already
             // finalized this utterance — keep lastText fresh as a fallback

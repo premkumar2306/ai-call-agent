@@ -3,7 +3,7 @@ import Dashboard from './pages/Dashboard';
 import VoiceTest from './pages/VoiceTest';
 import WhatsApp from './pages/WhatsApp';
 import Calls from './pages/Calls';
-import Settings from './pages/Settings';
+import Settings, { LocaleSettings } from './pages/Settings';
 import Calendar from './pages/Calendar';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
@@ -193,7 +193,12 @@ export default function App() {
           oauthResult={calendarRedirect?.business === sector ? calendarRedirect : null}
         />
       )}
-      {tab === 'Settings' && <Settings base={BASE} adminKey={adminKey} sectors={sectors} />}
+      {tab === 'Settings' && (
+        <div style={{ display: 'grid', gap: 24 }}>
+          <Settings base={BASE} adminKey={adminKey} sectors={sectors} />
+          <LocaleSettings base={BASE} adminKey={adminKey} sectors={sectors} />
+        </div>
+      )}
       {tab === 'Overview' && <Overview />}
     </>
   ));

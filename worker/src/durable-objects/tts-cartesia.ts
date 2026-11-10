@@ -6,7 +6,8 @@
 //
 //   cartesiaStart() — issues the HTTP request and resolves once headers are
 //     back. This is where TTFB is paid (~150-300ms).
-//   cartesiaDrain() — streams the body out to Twilio in real time.
+//   cartesiaDrain() — streams the body out to the caller (via the telephony
+//     adapter) in real time.
 //
 // Audio downloads faster than it plays, so draining chunk N occupies far less
 // wall-clock than Twilio spends playing it. Keeping the two separable lets
@@ -26,6 +27,12 @@ export interface CartesiaConfig {
   apiKey: string;
   voiceId?: string;
   modelId?: string;
+  /**
+   * Language of the transcript, e.g. 'hi' (sonic-3 and newer). Omitted from
+   * the request when unset, so English requests are unchanged. A Hindi line
+   * also needs a Hindi-native voiceId.
+   */
+  language?: string;
 }
 
 /** Issues the synthesis request. Resolves when response headers are available. */
@@ -47,6 +54,7 @@ export async function cartesiaStart(
       model_id: cfg.modelId ?? DEFAULT_CARTESIA_MODEL,
       transcript: text,
       voice: { mode: 'id', id: cfg.voiceId ?? DEFAULT_VOICE_ID },
+      ...(cfg.language ? { language: cfg.language } : {}),
       output_format: { container: 'raw', encoding: 'pcm_mulaw', sample_rate: 8000 },
     }),
   });
@@ -59,13 +67,15 @@ export async function cartesiaStart(
   return res;
 }
 
-/** Streams an already-started synthesis response out to the Twilio socket. */
+/**
+ * Streams an already-started synthesis response (μ-law 8 kHz) to `sendAudio`
+ * — CallRelay's telephony adapter, which frames it for the carrier. Stops
+ * early on abort, or when `sendAudio` returns false (the call's socket closed).
+ */
 export async function cartesiaDrain(
   res: Response | null,
-  streamSid: string,
-  twWs: WebSocket,
+  sendAudio: (mulaw: Uint8Array) => boolean,
   signal?: AbortSignal,
-  sendMark: boolean = true,
 ): Promise<void> {
   if (!res || !res.body) return;
 
@@ -74,20 +84,9 @@ export async function cartesiaDrain(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (signal?.aborted || twWs.readyState !== WebSocket.OPEN) break;
-      twWs.send(JSON.stringify({ event: 'media', streamSid, media: { payload: bytesToBase64(value) } }));
+      if (signal?.aborted || !sendAudio(value)) break;
     }
   } finally {
     reader.releaseLock();
   }
-
-  if (sendMark && !signal?.aborted && twWs.readyState === WebSocket.OPEN) {
-    twWs.send(JSON.stringify({ event: 'mark', streamSid, mark: { name: 'done' } }));
-  }
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
 }

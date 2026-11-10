@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SignJWT } from 'jose';
-import app from '../src/index';
+import { app } from '../src/index';
 import {
   LOGIN_CODE_MAX_ATTEMPTS, consumeLoginCode, emailIdentifier, generateLoginCode, isValidHoursRange,
   issueLoginCode, normalizeEmail, normalizePhoneE164, parseBusinessInput, parseBusinessPatch, roleAllows, slugify,

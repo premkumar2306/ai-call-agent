@@ -5,6 +5,7 @@ import { businessMembers, loginCodes, sectors, users, vendors, products } from '
 import { timingSafeEqual, tokenSecretKey } from '../config';
 import { parseHoursRange } from './tool-router.service';
 import type { Env } from '../types';
+import { COUNTRIES, inferCountry, isValidCountryCode, isValidLocale } from '../utils/locale';
 
 // Business-owner accounts: email one-time codes, owner session tokens, and
 // which businesses (sectors rows) a user may manage.
@@ -260,6 +261,10 @@ export interface BusinessInput {
   phone?: string;          // staff line for live transfers (E.164)
   timezone: string;
   currency: string;
+  // Country and locale (prices, dates, phone numbers); from the wizard, or
+  // inferred from currency/timezone so an INR business is set up as Indian.
+  countryCode: string;
+  locale: string;
   hours: Record<string, string>;
   about?: string;
   notifyEmail?: string;
@@ -312,6 +317,10 @@ export function parseBusinessInput(body: any): BusinessInput | string {
   if (!isValidTimezone(body.timezone)) return 'Choose a valid time zone';
   const currency = typeof body.currency === 'string' && /^[A-Z]{3}$/.test(body.currency) ? body.currency : null;
   if (!currency) return 'Choose a currency';
+  if (body.country_code !== undefined && !isValidCountryCode(body.country_code)) return 'Choose a supported country';
+  const countryCode: string = body.country_code ?? inferCountry(body.timezone, currency);
+  if (body.locale !== undefined && !isValidLocale(body.locale)) return 'Choose a valid language/format';
+  const locale: string = body.locale ?? COUNTRIES[countryCode].locale;
 
   const hours: Record<string, string> = {};
   if (!body.hours || typeof body.hours !== 'object') return 'Opening hours are required';
@@ -345,7 +354,7 @@ export function parseBusinessInput(body: any): BusinessInput | string {
   const services = parseServices(body.services);
   if (typeof services === 'string') return services;
 
-  return { name, kind, address, phone, timezone: body.timezone, currency, hours, about, notifyEmail, services };
+  return { name, kind, address, phone, timezone: body.timezone, currency, countryCode, locale, hours, about, notifyEmail, services };
 }
 
 export function slugify(name: string): string {
@@ -376,7 +385,7 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
       await db.batch([
         db.insert(sectors).values({
           key, name: input.name, model: 'service', categories: ['SERVICES'], hours: input.hours,
-          timezone: input.timezone, currency: input.currency, address: input.address, phone: input.phone,
+          timezone: input.timezone, currency: input.currency, countryCode: input.countryCode, locale: input.locale, address: input.address, phone: input.phone,
           about: input.about, notifyEmail: input.notifyEmail ?? owner.email, capacity: 1, kind: input.kind,
           isActive: true, createdAt: now, updatedAt: now,
         }),
@@ -407,7 +416,7 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
 export interface BusinessPatch {
   name?: string; kind?: string; address?: string | null; phone?: string | null; website?: string | null;
   timezone?: string; currency?: string; hours?: Record<string, string>; about?: string | null;
-  notifyEmail?: string | null; capacity?: number;
+  notifyEmail?: string | null; capacity?: number; countryCode?: string; locale?: string;
 }
 
 /** Partial update from the owner's Business tab. Only the fields present are changed; '' clears optional ones. */
@@ -433,6 +442,16 @@ export function parseBusinessPatch(body: any): BusinessPatch | string {
   if (body.currency !== undefined) {
     if (typeof body.currency !== 'string' || !/^[A-Z]{3}$/.test(body.currency)) return 'Choose a currency';
     out.currency = body.currency;
+  }
+  if (body.country_code !== undefined) {
+    if (!isValidCountryCode(body.country_code)) return 'Choose a supported country';
+    out.countryCode = body.country_code;
+    // A country switch brings its number/date format unless one is given.
+    if (body.locale === undefined) out.locale = COUNTRIES[body.country_code].locale;
+  }
+  if (body.locale !== undefined) {
+    if (!isValidLocale(body.locale)) return 'Choose a valid language/format';
+    out.locale = body.locale;
   }
   if (body.hours !== undefined) {
     if (!body.hours || typeof body.hours !== 'object') return 'Opening hours are not valid';

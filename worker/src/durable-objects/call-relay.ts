@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Env, SessionPayload } from '../types';
+import type { Env, SectorMeta, SessionPayload } from '../types';
 import { buildDefaultTwilioSession } from '../middleware';
 import { runTurn, amendInterruptedReply, retractLastExchange } from '../services/turn.service';
 import { getSector } from '../services/sector.service';
@@ -8,15 +8,29 @@ import { getOrders } from '../services/order.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
+import { callStartNotice, recordConsent } from '../services/disclosure';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
-import { createDeepgramSTT, createDeepgramFluxSTT, fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
-import { verifyStreamToken } from '../utils/stream-token';
-import { getOrCreateCustomer } from '../utils/identity';
-import { isProduction } from '../config';
-import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesia';
+import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
+import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
+import { DEFAULT_VOICE, isDefaultVoice, resolveVoiceSettings, sttDiffers, voiceLines, type VoiceSettings } from '../services/voice-language';
+import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
+import { callerIdentity, getOrCreateCustomer } from '../utils/identity';
+import { customerHashSalt, isProduction } from '../config';
+import { cartesiaDrain } from './tts-cartesia';
+import {
+  createTelephonyAdapter, isTelephonyProvider, PREAUTH_HEADER, PROVIDER_HEADER,
+  type CallStart, type TelephonyAdapter, type TelephonyProvider,
+} from '../telephony';
+import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/phone-numbers';
 
-// One CallRelay instance per phone call: Twilio Media Streams → Deepgram STT
+// One CallRelay instance per phone call: carrier media stream → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
+//
+// The carrier's WebSocket protocol (Twilio Media Streams, Exotel Voicebot,
+// Plivo Audio Streams) lives entirely in a TelephonyAdapter (src/telephony/):
+// this class only sees start/media/mark/stop events and hands back μ-law
+// 8 kHz audio, marks and clears. "Twilio marks" below means the adapter's
+// marks (Plivo calls them checkpoints).
 //
 // Turn-taking model:
 //
@@ -37,8 +51,8 @@ import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesi
 //    isn't dropped — it's prepended to the next one, so "I need an oil
 //    change… for my Civic on Friday" reaches the model as one request.
 
-const FILLERS = ['One moment.', 'Let me check.', 'Just a second.'];
-const STILL_WORKING = ['Still checking, thanks for waiting.', 'Almost there.'];
+// Fillers, re-prompts and the greeting are per language: voiceLines() in
+// services/voice-language.ts (the English lines are the original ones).
 
 // Don't honour a barge-in within this long of the assistant starting to
 // speak. Guards against the leading edge of our own audio echoing back on a
@@ -105,13 +119,22 @@ interface ActiveTurn {
 }
 
 export class CallRelay extends DurableObject<Env> {
+  // The carrier's media-stream socket (named for Twilio, the first carrier).
   private twWs?: WebSocket;
+  private telephony: TelephonyAdapter = createTelephonyAdapter('twilio');
+  // Stream credentials that arrived on the upgrade request rather than in the
+  // start event: Exotel's ?t= token or a route-verified Basic auth (preauth),
+  // Plivo's ?token=.
+  private urlToken?: string;
+  private preauthenticated = false;
   private stt: Stt = { sendAudio: () => {}, close: () => {} };
   private session?: SessionPayload;
   private urlBusinessType?: string;
   private callSid = 'relay';
-  private streamSid = '';
   private transcriptFlushed = false;
+  // The call-start AI/transcription notice, when the business has it on
+  // (services/disclosure.ts). Logged to consent_records when the call ends.
+  private notice?: { text: string; startedAt: Date; chunk: SpokenChunk; recorded: boolean };
   // Call-lifetime cache: sector metadata, product list, tool defs, history,
   // orders and booked-slot set all live here instead of round-tripping to
   // KV/D1 on every turn. See worker/src/services/call-context.ts.
@@ -145,12 +168,20 @@ export class CallRelay extends DurableObject<Env> {
   private lastAudioEndAt = 0;
   private metrics: TurnMetric[] = [];
 
-  private get ttsConfig(): CartesiaConfig {
-    return {
-      apiKey: this.env.CARTESIA_API_KEY!,
-      voiceId: this.env.CARTESIA_VOICE_ID,
-      modelId: this.env.CARTESIA_MODEL_ID,
-    };
+  // Phone-line language + STT/TTS providers. Every call starts on the
+  // default (English, Deepgram, Cartesia) — exactly the pipeline the US
+  // business has always used, with no extra lookup before the greeting.
+  // When the sector lookup (made on every call anyway) says the business
+  // uses something else, applyVoice() switches over: see the 'start' event.
+  private voice: VoiceSettings = DEFAULT_VOICE;
+  private lines = voiceLines('en');
+  private tts?: TtsProvider;
+  private sttGen = 0;
+  // Settles once the business's voice settings are known (or the lookup failed).
+  private voiceReady: Promise<void> = Promise.resolve();
+
+  private get ttsProvider(): TtsProvider {
+    return this.tts ??= createTts(this.env, this.voice);
   }
 
   // The assistant is thinking or audible — the window in which caller speech
@@ -167,6 +198,10 @@ export class CallRelay extends DurableObject<Env> {
     // string from <Stream url="...">, so the 'start' event's customParameters
     // (set via <Parameter> in the TwiML) is the source of truth for real calls.
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
+    const cfg = streamConfig(request);
+    this.telephony = createTelephonyAdapter(cfg.provider);
+    this.urlToken = cfg.urlToken;
+    this.preauthenticated = cfg.preauthenticated;
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -180,13 +215,12 @@ export class CallRelay extends DurableObject<Env> {
   // connection never opens a (billed) Deepgram session. Startup overlaps the
   // greeting TTS, so the caller doesn't notice the delay.
   private startStt() {
-    // DG_MODEL=flux-* switches to Deepgram's end-of-turn model (same callbacks).
-    const create = /^flux/.test(this.env.DG_MODEL ?? '') ? createDeepgramFluxSTT : createDeepgramSTT;
-    create(
+    // A restart (applyVoice) supersedes an earlier socket still connecting.
+    const gen = ++this.sttGen;
+    createStt(
+      this.env,
+      this.voice,
       {
-        apiKey: this.env.DEEPGRAM_API_KEY ?? '',
-        model: this.env.DG_MODEL,
-        language: this.env.DG_LANGUAGE,
         endpointingMs: numEnv(this.env.DG_ENDPOINTING_MS),
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
@@ -202,13 +236,39 @@ export class CallRelay extends DurableObject<Env> {
     )
       .then(s => {
         // The call may already have ended while Deepgram was connecting.
-        if (this.twWs?.readyState !== WebSocket.OPEN) { s.close(); return; }
+        if (this.twWs?.readyState !== WebSocket.OPEN || gen !== this.sttGen) { s.close(); return; }
         this.stt = s;
       })
-      .catch((e) => {
+      .catch(async (e) => {
+        // The default socket failing doesn't matter if the business turns
+        // out to use another provider — that one is starting instead.
+        await this.voiceReady;
+        if (gen !== this.sttGen) return;
         console.error('[stt startup]', e?.message || e);
         if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1011, 'STT startup failed');
       });
+  }
+
+  // Switches the call to the business's voice settings once the sector
+  // lookup lands. A no-op for default settings (the US business).
+  private applyVoice(voice: VoiceSettings) {
+    if (isDefaultVoice(voice) || this.twWs?.readyState !== WebSocket.OPEN) return;
+    const missing = missingVoiceSecret(this.env, voice);
+    if (missing) {
+      // Fail closed: a Hindi line must not quietly run on English providers.
+      console.error(`[call] ${this.callSid.slice(-8)} voice config needs ${missing} — ending call`);
+      this.reject(`missing ${missing}`);
+      return;
+    }
+    console.log(`[call] ${this.callSid.slice(-8)} voice ${voice.language} stt=${voice.sttProvider} tts=${voice.ttsProvider}`);
+    this.voice = voice;
+    this.lines = voiceLines(voice.language);
+    this.tts = createTts(this.env, voice);
+    if (sttDiffers(voice)) {
+      this.stt.close();
+      this.stt = { sendAudio: () => {}, close: () => {} };
+      this.startStt();
+    }
   }
 
   private heardText(turn: ActiveTurn): string {
@@ -216,8 +276,8 @@ export class CallRelay extends DurableObject<Env> {
     return turn.chunks.filter(c => c.played && !c.filler).map(c => c.text).join(' ');
   }
 
-  // Stops the assistant: aborts generation and synthesis, and tells Twilio
-  // to drop audio it has buffered but not yet played.
+  // Stops the assistant: aborts generation and synthesis, and tells the
+  // carrier to drop audio it has buffered but not yet played.
   private bargeIn() {
     const turn = this.active;
     if (turn && !turn.closed) {
@@ -238,9 +298,15 @@ export class CallRelay extends DurableObject<Env> {
       if (turn.committed && !turn.greeting && !turn.retracted) amendInterruptedReply(this.cache, this.heardText(turn));
     }
     this.pendingMarks.clear();
-    if (this.twWs && this.twWs.readyState === WebSocket.OPEN) {
-      this.twWs.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
-    }
+    this.sendToCarrier(this.telephony.clear());
+  }
+
+  // Sends adapter-built frames; false once the socket has closed.
+  private sendToCarrier(frames: string[]): boolean {
+    const ws = this.twWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    for (const f of frames) ws.send(f);
+    return true;
   }
 
   // Fired the moment Deepgram reports speech — before any transcript exists,
@@ -264,7 +330,7 @@ export class CallRelay extends DurableObject<Env> {
     const now = Date.now();
     if (this.pendingMarks.size === 0 && now - this.lastAudioEndAt > ECHO_TAIL_MS) return false;
     const spoken = this.spokenLog.filter(s => now - s.at < 20_000).map(s => s.text).join(' ');
-    return isEchoOf(text, spoken);
+    return isEchoOf(text, spoken, this.voice.language);
   }
 
   private handleTranscript(text: string) {
@@ -277,7 +343,7 @@ export class CallRelay extends DurableObject<Env> {
 
     // "Well," / "Um, so" with the assistant quiet: the caller is starting a
     // sentence. Keep it for their next utterance instead of answering it.
-    if (!this.agentActive && isDiscourseOnly(text)) {
+    if (!this.agentActive && isDiscourseOnly(text, this.voice.language)) {
       console.log(`[turn] holding filler words: "${text}"`);
       this.carryOver = joinUtterances(this.carryOver, text);
       return;
@@ -288,7 +354,7 @@ export class CallRelay extends DurableObject<Env> {
     // asked them something, in which case "yeah" is the answer. Only played
     // audio and the chunk playing now count: a question still queued behind
     // it hasn't been asked yet.
-    if (this.agentActive && isBackchannel(text)) {
+    if (this.agentActive && isBackchannel(text, this.voice.language)) {
       const playing = this.pendingMarks.values().next().value as SpokenChunk | undefined;
       const asked = this.active?.chunks.some(c => !c.filler && (c.played || c === playing) && c.text.includes('?'));
       if (!asked) {
@@ -326,11 +392,11 @@ export class CallRelay extends DurableObject<Env> {
     if (!chunk.filler && !turn.firstAudioAt) turn.firstAudioAt = now;
     this.spokenLog = this.spokenLog.filter(s => now - s.at < 20_000);
     this.spokenLog.push({ text: chunk.text, at: now });
-    await cartesiaDrain(res, this.streamSid, ws, signal, false);
+    await cartesiaDrain(res, (audio) => this.sendToCarrier(this.telephony.audio(audio)), signal);
     if (signal.aborted || ws.readyState !== WebSocket.OPEN) return;
     const name = `m${++this.markSeq}`;
     this.pendingMarks.set(name, chunk);
-    ws.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name } }));
+    this.sendToCarrier(this.telephony.mark(name));
   }
 
   private startTurn(greeting: boolean): ActiveTurn {
@@ -381,8 +447,8 @@ export class CallRelay extends DurableObject<Env> {
       turn.chunks.push(chunk);
       unsent++;
       const queuedAt = Date.now();
-      const started = cartesiaStart(this.ttsConfig, textToSay, signal).catch((e) => {
-        if (e?.name !== 'AbortError') console.error('[cartesia start]', e?.message || e);
+      const started = this.ttsProvider.start(textToSay, signal).catch((e) => {
+        if (e?.name !== 'AbortError') console.error(`[${this.ttsProvider.name} start]`, e?.message || e);
         return null;
       });
       chunkChain = chunkChain.then(async () => {
@@ -414,7 +480,7 @@ export class CallRelay extends DurableObject<Env> {
       if (unsent > 0 || this.pendingMarks.size > 0) { quietSince = now; return; }
       if (fillers >= MAX_FILLERS) return;
       if (now - quietSince < (realChunkSeen || fillers ? GAP_FILLER_MS : FILLER_GRACE_MS)) return;
-      const pool = fillers === 0 && !realChunkSeen ? FILLERS : STILL_WORKING;
+      const pool = fillers === 0 && !realChunkSeen ? this.lines.fillers : this.lines.stillWorking;
       console.log(`[${tag}] dead air ${now - quietSince}ms — filler`);
       queue(pool[fillers % pool.length], true);
       fillers++;
@@ -454,6 +520,7 @@ export class CallRelay extends DurableObject<Env> {
   // runTurn() skips its per-turn D1 transcript write when a call cache is in
   // play; this is the one write for the call.
   private async flushTranscript(): Promise<void> {
+    await this.flushNotice();
     if (this.transcriptFlushed || !this.session || this.cache.history.length === 0) return;
     this.transcriptFlushed = true;
     try {
@@ -467,6 +534,23 @@ export class CallRelay extends DurableObject<Env> {
     } catch (e: any) {
       console.error('[transcript flush]', e?.message || e);
     }
+  }
+
+  // Audit trail: the notice was played, and whether the caller heard it to
+  // the end (Twilio reached its mark) or talked over it / hung up.
+  private async flushNotice(): Promise<void> {
+    const n = this.notice;
+    if (!n || n.recorded || !this.session) return;
+    n.recorded = true;
+    await recordConsent(this.env, {
+      businessType: this.session.businessType,
+      channel: 'voice',
+      callSid: this.callSid,
+      customerIdHashed: this.session.sub,
+      noticeText: n.text,
+      playedAt: n.startedAt,
+      heardFully: n.chunk.played,
+    });
   }
 
   private callerActive() {
@@ -503,10 +587,9 @@ export class CallRelay extends DurableObject<Env> {
     if (now - this.quietSince < (numEnv(this.env.VOICE_SILENCE_REPROMPT_MS) ?? SILENCE_REPROMPT_MS)) return;
     this.quietSince = now;
     if (this.silencePrompts++ === 0) {
-      this.speakCanned(['Are you still there?']);
+      this.speakCanned([this.lines.stillThere]);
     } else {
-      const name = this.cache.sectorMeta?.name;
-      this.speakCanned([`I haven't heard anything, so I'll hang up now. Thanks for calling${name ? ` ${name}` : ''}. Goodbye!`]);
+      this.speakCanned([this.lines.goodbye(this.cache.sectorMeta?.name)]);
       this.hangupWhenDone = true;
     }
   }
@@ -520,7 +603,7 @@ export class CallRelay extends DurableObject<Env> {
     for (const text of lines) {
       const chunk: SpokenChunk = { text, played: false, filler: false };
       turn.chunks.push(chunk);
-      const started = cartesiaStart(this.ttsConfig, text, signal).catch(() => null);
+      const started = this.ttsProvider.start(text, signal).catch(() => null);
       chain = chain.then(() => this.playChunk(turn, chunk, started));
     }
     chain
@@ -528,11 +611,7 @@ export class CallRelay extends DurableObject<Env> {
       .finally(() => this.endTurn(turn));
   }
 
-  private greet(businessType: string | undefined, sectorPromise: Promise<{ name: string } | null>) {
-    const capabilityHint = businessType === 'health_nav'
-      ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
-      : 'I can answer questions about our services and prices, or book you in — what can I do for you?';
-
+  private greet(businessType: string | undefined, sectorPromise: Promise<SectorMeta | null>) {
     // The greeting is a turn of its own so a caller who talks over it
     // actually cuts it off. It isn't part of the model's history.
     // A greeting saved in the admin UI (Settings → admin_config:<business>
@@ -547,78 +626,80 @@ export class CallRelay extends DurableObject<Env> {
       : Promise.resolve(null);
     const turn = this.startTurn(true);
     const { signal } = turn.abort;
-    const say = (text: string) => {
+    const speak = (text: string, started?: Promise<Response | null>) => {
       const chunk: SpokenChunk = { text, played: false, filler: false };
       turn.chunks.push(chunk);
-      return this.playChunk(turn, chunk, cartesiaStart(this.ttsConfig, text, signal).catch(() => null));
+      return { chunk, done: this.playChunk(turn, chunk, started ?? this.ttsProvider.start(text, signal).catch(() => null)) };
     };
+    const say = (text: string, started?: Promise<Response | null>) => speak(text, started).done;
     // Opener first (no dependency on the lookup), then the part that needs
-    // the business name.
-    say('Thanks for calling!')
+    // the business name. The opener is synthesized in the default voice
+    // before the business's voice settings are known; if by the time its
+    // audio is ready the business turned out to use another voice
+    // (applyVoice ran), it's dropped and said in that voice instead.
+    const startVoice = this.voice;
+    let openerDropped = false;
+    const opener = this.lines.opener;
+    const openerAudio = this.ttsProvider.start(opener, signal).catch(() => null).then(async (res) => {
+      if (this.voice === startVoice) return res;
+      openerDropped = true;
+      await res?.body?.cancel().catch(() => {});
+      return null;
+    });
+    say(opener, openerAudio)
       .then(async () => {
         if (signal.aborted) return;
         const [sectorMeta, custom] = await Promise.all([sectorPromise, savedGreeting]);
         if (signal.aborted) return;
+        const lines = this.lines;
+        // AI / transcription notice (DPDP), before anything else is said, in
+        // the business's voice language. Off unless the business has it on —
+        // see services/disclosure.ts.
+        const notice = callStartNotice(sectorMeta);
+        if (notice) {
+          const { chunk, done } = speak(openerDropped ? `${lines.opener} ${notice}` : notice);
+          this.notice = { text: notice, startedAt: new Date(), chunk, recorded: false };
+          openerDropped = false;
+          await done;
+          if (signal.aborted) return;
+        }
         const storeName = sectorMeta?.name ?? businessType ?? 'us';
-        await say(custom
-          ? `${custom.greeting} I'm ${custom.agentName || 'Mogi'}, the virtual assistant.`
-          : `You've reached ${storeName}. I'm Mogi, the virtual assistant. ${capabilityHint}`);
+        const body = custom
+          ? lines.customGreeting(custom.greeting, custom.agentName)
+          : lines.greeting(storeName, lines.capabilityHint(businessType));
+        await say(openerDropped ? `${lines.opener} ${body}` : body);
       })
       .catch(e => { if (e?.name !== 'AbortError') console.error('[greeting]', e?.message || e); })
       .finally(() => this.endTurn(turn));
   }
 
   async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
-    let msg: any;
-    try {
-      msg = JSON.parse(message as string);
-    } catch (e: any) {
-      console.error('[twilio] invalid message', e?.message || e);
-      return;
-    }
+    const ev = this.telephony.parse(message);
+    if (!ev) return;   // connected, dtmf, unparseable
 
-    if (msg.event === 'media') {
+    if (ev.type === 'media') {
       // Always forward — even while the assistant speaks — so STT can detect barge-in.
-      const bytes = base64ToBytes(msg.media.payload);
-      this.stt.sendAudio(bytes.buffer as ArrayBuffer);
+      this.stt.sendAudio(ev.audio.buffer.slice(ev.audio.byteOffset, ev.audio.byteOffset + ev.audio.byteLength) as ArrayBuffer);
       this.checkSilence();
 
-    } else if (msg.event === 'mark') {
-      // Twilio reached this point in playback.
-      const chunk = this.pendingMarks.get(msg.mark?.name);
+    } else if (ev.type === 'mark') {
+      // The carrier reached this point in playback.
+      const chunk = this.pendingMarks.get(ev.name);
       if (chunk) {
         chunk.played = true;
-        this.pendingMarks.delete(msg.mark.name);
+        this.pendingMarks.delete(ev.name);
         if (this.pendingMarks.size === 0) this.lastAudioEndAt = Date.now();
       }
 
-    } else if (msg.event === 'start') {
+    } else if (ev.type === 'start') {
       this.callStartedAt = Date.now();
-      this.callSid = msg.start.callSid;
+      this.callSid = ev.start.callSid;
       this.cache.callSid = this.callSid;
-      this.streamSid = msg.start.streamSid;
-      console.log(`[call] ${this.callSid.slice(-8)}`);
+      console.log(`[call] ${this.callSid.slice(-8)}${this.telephony.provider === 'twilio' ? '' : ` (${this.telephony.provider})`}`);
 
-      // The WebSocket itself is unauthenticated; the signed token minted by
-      // /twilio/inbound (which *is* Twilio-signature-checked) proves this
-      // stream came from a real inbound call. Outside production, a missing
-      // token is tolerated so scripts/simulate-call.mjs keeps working.
-      const params = msg.start.customParameters ?? {};
-      let businessType: string | undefined;
-      let callerHash: string | undefined;
-      let callerPhone: string | undefined;
-      if (params.streamToken) {
-        const claims = await verifyStreamToken(this.env, params.streamToken);
-        if (!claims) { this.reject('invalid stream token'); return; }
-        businessType = claims.businessType;
-        callerHash = claims.callerHash;
-        callerPhone = claims.callerPhone;
-      } else if (isProduction(this.env)) {
-        this.reject('missing stream token');
-        return;
-      } else {
-        businessType = params.businessType ?? this.urlBusinessType;
-      }
+      const auth = await this.authenticate(ev.start);
+      if ('rejected' in auth) { this.reject(auth.rejected); return; }
+      const { businessType, callerHash, callerPhone } = auth;
 
       this.startStt();
       this.session = buildDefaultTwilioSession(this.env, businessType) ?? undefined;
@@ -631,6 +712,8 @@ export class CallRelay extends DurableObject<Env> {
         ? getSector(this.env, businessType).catch(() => null)
         : Promise.resolve(null);
       sectorPromise.then(m => { if (m) this.cache.sectorMeta = m; });
+      // Hindi / Sarvam businesses switch provider here (no-op for the default).
+      this.voiceReady = sectorPromise.then(m => this.applyVoice(resolveVoiceSettings(m)));
 
       this.greet(businessType, sectorPromise);
       this.quietSince = Date.now();
@@ -658,10 +741,60 @@ export class CallRelay extends DurableObject<Env> {
           .catch(e => console.error('[calendarBusy prefetch]', e?.message || e));
       }
 
-    } else if (msg.event === 'stop') {
+    } else if (ev.type === 'stop') {
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
     }
+  }
+
+  // The WebSocket itself is unauthenticated; a credential minted by a
+  // signature-checked webhook proves the stream came from a real inbound call
+  // and says which business answers it. Outside production a missing
+  // credential is tolerated so scripts/simulate-call.mjs keeps working.
+  //
+  //   Twilio — JWT streamToken in the start event's customParameters
+  //            (minted by /twilio/inbound).
+  //   Exotel — compact ?t= token bound to this call_sid (minted by
+  //            /exotel/voicebot), or a static stream URL whose Basic auth the
+  //            route already checked; the business then comes from the called
+  //            number. The caller is the start event's `from`.
+  //   Plivo  — JWT ?token= on the stream URL (minted by /plivo/answer).
+  private async authenticate(start: CallStart): Promise<
+    { businessType?: string; callerHash?: string; callerPhone?: string } | { rejected: string }
+  > {
+    const provider = this.telephony.provider;
+    const params = start.params;
+
+    if (provider === 'exotel') {
+      const country = PROVIDER_COUNTRY.exotel;
+      let businessType: string | undefined;
+      let from = start.from;
+      if (this.urlToken) {
+        const claims = await verifyCompactStreamToken(this.env, this.urlToken);
+        if (!claims) return { rejected: 'invalid stream token' };
+        if (claims.callSid !== start.callSid) return { rejected: 'stream token is for another call' };
+        businessType = claims.businessType;
+        from = claims.from ?? from;
+      } else if (this.preauthenticated || !isProduction(this.env)) {
+        businessType = (await businessForNumber(this.env, 'exotel', start.to))
+          ?? this.env.EXOTEL_DEFAULT_BUSINESS_TYPE
+          ?? (isProduction(this.env) ? undefined : params.businessType ?? this.urlBusinessType);
+        if (!businessType) return { rejected: `no business for ${start.to ?? 'unknown number'}` };
+      } else {
+        return { rejected: 'missing stream token' };
+      }
+      const id = await callerIdentity(from, start.callSid || crypto.randomUUID(), customerHashSalt(this.env), (raw) => normalizeE164(raw, country));
+      return { businessType, ...id };
+    }
+
+    const token = provider === 'plivo' ? this.urlToken ?? params.streamToken : params.streamToken;
+    if (token) {
+      const claims = await verifyStreamToken(this.env, token);
+      if (!claims) return { rejected: 'invalid stream token' };
+      return claims;
+    }
+    if (isProduction(this.env)) return { rejected: 'missing stream token' };
+    return { businessType: params.businessType ?? this.urlBusinessType };
   }
 
   private reject(reason: string) {
@@ -677,8 +810,25 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {
-    console.error('[twilio ws]', (error as any)?.message || error);
+    console.error(`[${this.telephony.provider} ws]`, (error as any)?.message || error);
   }
+}
+
+/**
+ * What the stream route told CallRelay about an upgrade request: the
+ * carrier protocol (PROVIDER_HEADER, set by /twilio|exotel|plivo/stream,
+ * which overwrite anything the client sent), a credential carried in the URL
+ * (Exotel ?t=, Plivo ?token=), and whether the route already authenticated
+ * the socket (Exotel static URL with Basic auth).
+ */
+export function streamConfig(request: Request): { provider: TelephonyProvider; urlToken?: string; preauthenticated: boolean } {
+  const url = new URL(request.url);
+  const header = request.headers.get(PROVIDER_HEADER);
+  const provider: TelephonyProvider = isTelephonyProvider(header) ? header : 'twilio';
+  const urlToken = provider === 'exotel' ? url.searchParams.get('t') ?? undefined
+    : provider === 'plivo' ? url.searchParams.get('token') ?? undefined
+    : undefined;
+  return { provider, urlToken, preauthenticated: provider === 'exotel' && request.headers.get(PREAUTH_HEADER) === '1' };
 }
 
 export function joinUtterances(a: string, b: string): string {
@@ -688,11 +838,4 @@ export function joinUtterances(a: string, b: string): string {
 function numEnv(v: string | undefined): number | undefined {
   const n = v === undefined || v === '' ? NaN : Number(v);
   return Number.isFinite(n) ? n : undefined;
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
 }
