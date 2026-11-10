@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { getDb } from '../db/client';
 import { sectors as sectorsTable } from '../db/schema';
 import type { Env, SectorMeta } from '../types';
+import { resolveVoiceSettings, type VoiceSettings } from './voice-language';
 
 const CACHE_KEY = 'sectors_list';
 const CACHE_TTL = 300; // 5 minutes
@@ -20,6 +21,12 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     about:      row.about ?? undefined,
     notifyEmail: row.notifyEmail ?? undefined,
     capacity:   row.capacity ?? 1,
+    voice: resolveVoiceSettings({ voice: {
+      language: row.voiceLanguage as VoiceSettings['language'],
+      sttProvider: row.sttProvider as VoiceSettings['sttProvider'],
+      ttsProvider: row.ttsProvider as VoiceSettings['ttsProvider'],
+      voiceId: row.voiceId ?? undefined,
+    } }),
   };
 }
 
@@ -54,6 +61,7 @@ export async function upsertSector(env: Env, key: string, data: {
   about?: string;
   notifyEmail?: string;
   capacity?: number;
+  voice?: Partial<VoiceSettings>;
 }): Promise<void> {
   const db = getDb(env.DB);
   const now = new Date();
@@ -71,6 +79,7 @@ export async function upsertSector(env: Env, key: string, data: {
     about:      data.about,
     notifyEmail: data.notifyEmail,
     capacity:   data.capacity ?? 1,
+    ...voiceColumns(data.voice),
     isActive:   true,
     createdAt:  now,
     updatedAt:  now,
@@ -91,10 +100,32 @@ export async function upsertSector(env: Env, key: string, data: {
       // admin form doesn't wipe them.
       ...(data.notifyEmail !== undefined ? { notifyEmail: data.notifyEmail } : {}),
       ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
+      ...voiceColumns(data.voice),
       isActive:   true,
       updatedAt:  now,
     },
   });
   // Invalidate cache
   await env.CACHE.delete(CACHE_KEY);
+}
+
+// Only the voice fields that were given (voiceId: undefined clears it).
+function voiceColumns(v: Partial<VoiceSettings> | undefined) {
+  if (!v) return {};
+  return {
+    ...(v.language !== undefined ? { voiceLanguage: v.language } : {}),
+    ...(v.sttProvider !== undefined ? { sttProvider: v.sttProvider } : {}),
+    ...(v.ttsProvider !== undefined ? { ttsProvider: v.ttsProvider } : {}),
+    ...('voiceId' in v ? { voiceId: v.voiceId ?? null } : {}),
+  };
+}
+
+/** Updates only a sector's voice settings. False when the sector doesn't exist. */
+export async function updateSectorVoice(env: Env, key: string, voice: Partial<VoiceSettings>): Promise<boolean> {
+  const db = getDb(env.DB);
+  const cols = voiceColumns(voice);
+  if (!Object.keys(cols).length) return !!(await getSector(env, key));
+  const res = await db.update(sectorsTable).set({ ...cols, updatedAt: new Date() }).where(eq(sectorsTable.key, key)).returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return res.length > 0;
 }

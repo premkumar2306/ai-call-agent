@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { eq, and, desc, ne } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
-import { getSectors, getSector, upsertSector } from '../services/sector.service';
+import { getSectors, getSector, upsertSector, updateSectorVoice } from '../services/sector.service';
+import { parseVoiceInput, resolveVoiceSettings } from '../services/voice-language';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
@@ -85,6 +86,9 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
   if (!body?.key || !body?.name || !body?.hours) {
     return c.json({ success: false, error: 'key, name, and hours are required' }, 400);
   }
+  // Optional voice settings: voice_language, stt_provider, tts_provider, voice_id.
+  const voice = parseVoiceInput(body, resolveVoiceSettings(await getSector(c.env, body.key)), !!c.env.SARVAM_API_KEY);
+  if (!voice.ok) return c.json({ success: false, error: voice.error }, 400);
   await upsertSector(c.env, body.key, {
     name:         body.name,
     model:        body.model ?? 'service',
@@ -98,8 +102,33 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     about:        typeof body.about === 'string' ? body.about.slice(0, 4000) : undefined,
     notifyEmail:  typeof body.notify_email === 'string' && /^[^\s@]+@[^\s@]+$/.test(body.notify_email) ? body.notify_email : undefined,
     capacity:     Number.isInteger(body.capacity) && body.capacity >= 1 && body.capacity <= 50 ? body.capacity : undefined,
+    voice:        voice.value,
   });
   return c.json({ success: true, data: { key: body.key, name: body.name } });
+});
+
+// GET /admin/sectors/:key/voice — phone-line language + STT/TTS providers
+adminRouter.get('/sectors/:key/voice', withAdminKey, async (c) => {
+  const meta = await getSector(c.env, c.req.param('key') ?? '');
+  if (!meta) return c.json({ success: false, error: 'Sector not found' }, 404);
+  return c.json({ success: true, data: { ...resolveVoiceSettings(meta), sarvamConfigured: !!c.env.SARVAM_API_KEY } });
+});
+
+// PUT /admin/sectors/:key/voice { voice_language?, stt_provider?, tts_provider?, voice_id? }
+// Changes only the voice settings (POST /admin/sectors replaces the whole sector).
+adminRouter.put('/sectors/:key/voice', withAdminKey, async (c) => {
+  const key = c.req.param('key') ?? '';
+  const meta = await getSector(c.env, key);
+  if (!meta) return c.json({ success: false, error: 'Sector not found' }, 404);
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object') return c.json({ success: false, error: 'JSON body required' }, 400);
+  const current = resolveVoiceSettings(meta);
+  const voice = parseVoiceInput(body, current, !!c.env.SARVAM_API_KEY);
+  if (!voice.ok) return c.json({ success: false, error: voice.error }, 400);
+  await updateSectorVoice(c.env, key, voice.value);
+  const updated = { ...current, ...voice.value };
+  if ('voiceId' in voice.value && !voice.value.voiceId) delete updated.voiceId;
+  return c.json({ success: true, data: updated });
 });
 
 // GET /admin/sectors/:key — get one sector

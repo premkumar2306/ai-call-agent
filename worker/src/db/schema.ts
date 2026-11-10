@@ -14,6 +14,11 @@ export const sectors = sqliteTable('sectors', {
   about:        text('about'),
   notifyEmail:  text('notify_email'),
   capacity:     integer('capacity').notNull().default(1),
+  // Phone-line language + providers (0012). Defaults = English, Deepgram, Cartesia.
+  voiceLanguage: text('voice_language').notNull().default('en'),   // en | hi | hi-en
+  sttProvider:   text('stt_provider').notNull().default('deepgram'), // deepgram | sarvam
+  ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
+  voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),

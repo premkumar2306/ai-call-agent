@@ -12,8 +12,8 @@ AI-powered voice assistant for multi-vertical businesses (auto shop, clinic, rea
 Caller → Twilio → Cloudflare Worker (Hono API)
                         ├── /twilio/inbound  → <Connect><Stream> TwiML
                         ├── /twilio/stream   → CallRelay Durable Object (1 per call)
-                        │                        ├── Deepgram (STT)
-                        │                        ├── Cartesia (TTS)
+                        │                        ├── Deepgram or Sarvam (STT)
+                        │                        ├── Cartesia or Sarvam (TTS)
                         │                        └── runTurn() ─┐
                         ├── Anthropic Claude (voice AI) ────────┘
                         ├── D1 Database (products, orders, transcripts)
@@ -220,6 +220,7 @@ wrangler secret put TWILIO_AUTH_TOKEN     # Twilio console
 wrangler secret put TWILIO_WEBHOOK_URL    # public base URL Twilio calls
 wrangler secret put DEEPGRAM_API_KEY
 wrangler secret put CARTESIA_API_KEY
+wrangler secret put SARVAM_API_KEY        # only if a business uses Sarvam (Hindi / Hinglish) — see below
 # WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN
 # Optional notifications:
 wrangler secret put RESEND_API_KEY        # booking/message emails to sectors.notify_email
@@ -230,6 +231,52 @@ wrangler secret put TWILIO_SMS_FROM
 Set where a business's booking and message emails go, and how many different
 customers' visits may start at the same time (bays), with `POST /admin/sectors`
 (`notify_email`, `capacity`).
+
+### Hindi and Hinglish calls (optional, per business)
+
+Each business answers in `en` (default), `hi` (Hindi) or `hi-en` (Hinglish — callers mixing
+Hindi and English), and picks its speech providers. Set it in the admin UI (**Settings → Voice &
+language**), with `PUT /admin/sectors/:key/voice`, or with the same fields on `POST /admin/sectors`:
+
+```bash
+curl -X PUT "$WORKER/admin/sectors/sharma_clinic/voice" -H "X-Admin-Key: $ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_language":"hi-en","stt_provider":"sarvam","tts_provider":"sarvam","voice_id":"priya"}'
+```
+
+| Field | Values | Notes |
+|-------|--------|-------|
+| `voice_language` | `en` · `hi` · `hi-en` | The agent replies in the language the caller is using. |
+| `stt_provider` | `deepgram` · `sarvam` | Sarvam Saaras (`hi-IN`; Hinglish uses `codemix` mode). Deepgram uses nova-3 `language=hi` for Hindi and `language=multi` (code-switching) for Hinglish — cheaper, less tuned for Indian accents. |
+| `tts_provider` | `cartesia` · `sarvam` | Sarvam Bulbul (`bulbul:v3`, 8 kHz µ-law streamed straight to Twilio). Cartesia with `language: "hi"` needs a Hindi-native `voice_id`. |
+| `voice_id` | provider voice | Bulbul speaker (lowercase, e.g. `priya`) or Cartesia voice id. Empty = provider default. |
+
+Sarvam needs `SARVAM_API_KEY`. It **fails closed per business**: saving a Sarvam setting without the
+key is refused, and a call to a business that selects Sarvam is ended if the key is missing, rather
+than silently falling back to English providers. Businesses that don't select Sarvam never need it.
+Optional vars: `SARVAM_STT_MODEL` (default `saaras:v3`), `SARVAM_TTS_MODEL` (`bulbul:v3`),
+`SARVAM_TTS_SPEAKER`, `SARVAM_TTS_CODEC` (`linear16` if the µ-law stream misbehaves),
+`SARVAM_HIGH_VAD_SENSITIVITY=1`.
+
+What changes on a Hindi / Hinglish line:
+
+- **Prompt.** A LANGUAGE section is added to the system prompt: reply in the caller's language,
+  Hindi in Devanagari with English words in Latin script (how both TTS providers read mixed text),
+  sentences ended with `।` or `?`, prices/times/phone numbers as digits (`₹1,500`, `4:30 बजे`).
+  English businesses get the exact prompt they had before.
+- **Chunking.** `।` and `॥` end a sentence for TTS chunking, like `.`.
+- **Turn-taking.** "हाँ", "अच्छा", "जी", "hmm", "theek hai" count as backchannels (no barge-in);
+  "तो…", "matlab…" are held as sentence starts; a transcript ending in "और", "का", "मेरा"… waits
+  for the rest. Echo detection compares Devanagari words.
+- **Canned lines.** Greeting, fillers and silence re-prompts are in Hindi.
+- **Tool replies** are always phrased by the model (`VOICE_DIRECT_TOOL_REPLY` is ignored), since the
+  tools' ready-made sentences are English — one extra model round on tool turns.
+- **Barge-in with Sarvam STT** happens when the caller's transcript arrives (Sarvam sends no interim
+  results), or on Sarvam's speech-start event if `VOICE_BARGE_IN_ON_VAD=1`.
+
+Every call starts on the default English pipeline and switches once the business's settings load
+(during the greeting's first words), so English businesses pay no extra lookup. Providers are
+adapters behind one interface (`worker/src/durable-objects/voice-providers.ts`).
 
 ### Calendar integration (optional)
 
@@ -285,7 +332,9 @@ admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requi
 |------|---------|
 | `worker/src/config.ts` | Model id, Anthropic client timeouts, fail-closed secret helpers |
 | `worker/src/routes/twilio.ts` | Twilio webhooks (signature-verified) and stream TwiML |
-| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: Deepgram STT → `runTurn()` → Cartesia TTS |
+| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: STT → `runTurn()` → TTS, barge-in |
+| `worker/src/durable-objects/voice-providers.ts` | STT/TTS provider interface: Deepgram, Cartesia, Sarvam (`stt-sarvam.ts`, `tts-sarvam.ts`) |
+| `worker/src/services/voice-language.ts` | Per-business voice language settings, Hindi word lists, canned lines, prompt language rules |
 | `worker/src/services/turn.service.ts` | Voice agent loop (streaming, prompt caching) |
 | `worker/src/services/tool-router.service.ts` | AI tool definitions (search, availability, booking) |
 | `worker/src/services/calendar/` | Per-business calendar integration: provider adapters (`google.ts`), connection storage, busy-time and event sync |
@@ -314,7 +363,7 @@ what ships.
 |-----|---------|--------|
 | `VOICE_MODEL` | `claude-haiku-5-5` | Overrides the model used on live calls only (`DEFAULT_VOICE_MODEL` in `src/config.ts`). `ANTHROPIC_MODEL` covers the other agent surfaces. |
 | `DG_MODEL` | `nova-3` | Deepgram model. |
-| `DG_LANGUAGE` | `en` | Set to `multi` for multilingual callers (slower). |
+| `DG_LANGUAGE` | `en` | Set to `multi` for multilingual callers (slower). Applies to English businesses; Hindi / Hinglish businesses set their language per business (see "Hindi and Hinglish calls"). |
 | `DG_MODEL` | `nova-3` | `flux-general-en` switches to Deepgram's end-of-turn model. Measured slower here (median 1.9s vs 1.5s) and it doesn't format numbers, so it's off. |
 | `DG_ENDPOINTING_MS` | `250` | Silence before an utterance is considered finished. A pause mid-sentence that ends an utterance early is safe: the next fragment is merged into it (see below). |
 | `DG_BARGE_IN_MIN_WORDS` | `2` | Recognised words (excluding "uh huh"/"okay"-style backchannels) before the caller's speech cuts the assistant off. |

@@ -26,6 +26,12 @@ export interface CartesiaConfig {
   apiKey: string;
   voiceId?: string;
   modelId?: string;
+  /**
+   * Language of the transcript, e.g. 'hi' (sonic-3 and newer). Omitted from
+   * the request when unset, so English requests are unchanged. A Hindi line
+   * also needs a Hindi-native voiceId.
+   */
+  language?: string;
 }
 
 /** Issues the synthesis request. Resolves when response headers are available. */
@@ -47,6 +53,7 @@ export async function cartesiaStart(
       model_id: cfg.modelId ?? DEFAULT_CARTESIA_MODEL,
       transcript: text,
       voice: { mode: 'id', id: cfg.voiceId ?? DEFAULT_VOICE_ID },
+      ...(cfg.language ? { language: cfg.language } : {}),
       output_format: { container: 'raw', encoding: 'pcm_mulaw', sample_rate: 8000 },
     }),
   });

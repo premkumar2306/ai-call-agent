@@ -9,11 +9,13 @@ import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
-import { createDeepgramSTT, createDeepgramFluxSTT, fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
+import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
+import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
+import { DEFAULT_VOICE, isDefaultVoice, resolveVoiceSettings, sttDiffers, voiceLines, type VoiceSettings } from '../services/voice-language';
 import { verifyStreamToken } from '../utils/stream-token';
 import { getOrCreateCustomer } from '../utils/identity';
 import { isProduction } from '../config';
-import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesia';
+import { cartesiaDrain } from './tts-cartesia';
 
 // One CallRelay instance per phone call: Twilio Media Streams → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
@@ -37,8 +39,8 @@ import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesi
 //    isn't dropped — it's prepended to the next one, so "I need an oil
 //    change… for my Civic on Friday" reaches the model as one request.
 
-const FILLERS = ['One moment.', 'Let me check.', 'Just a second.'];
-const STILL_WORKING = ['Still checking, thanks for waiting.', 'Almost there.'];
+// Fillers, re-prompts and the greeting are per language: voiceLines() in
+// services/voice-language.ts (the English lines are the original ones).
 
 // Don't honour a barge-in within this long of the assistant starting to
 // speak. Guards against the leading edge of our own audio echoing back on a
@@ -145,12 +147,20 @@ export class CallRelay extends DurableObject<Env> {
   private lastAudioEndAt = 0;
   private metrics: TurnMetric[] = [];
 
-  private get ttsConfig(): CartesiaConfig {
-    return {
-      apiKey: this.env.CARTESIA_API_KEY!,
-      voiceId: this.env.CARTESIA_VOICE_ID,
-      modelId: this.env.CARTESIA_MODEL_ID,
-    };
+  // Phone-line language + STT/TTS providers. Every call starts on the
+  // default (English, Deepgram, Cartesia) — exactly the pipeline the US
+  // business has always used, with no extra lookup before the greeting.
+  // When the sector lookup (made on every call anyway) says the business
+  // uses something else, applyVoice() switches over: see the 'start' event.
+  private voice: VoiceSettings = DEFAULT_VOICE;
+  private lines = voiceLines('en');
+  private tts?: TtsProvider;
+  private sttGen = 0;
+  // Settles once the business's voice settings are known (or the lookup failed).
+  private voiceReady: Promise<void> = Promise.resolve();
+
+  private get ttsProvider(): TtsProvider {
+    return this.tts ??= createTts(this.env, this.voice);
   }
 
   // The assistant is thinking or audible — the window in which caller speech
@@ -180,13 +190,12 @@ export class CallRelay extends DurableObject<Env> {
   // connection never opens a (billed) Deepgram session. Startup overlaps the
   // greeting TTS, so the caller doesn't notice the delay.
   private startStt() {
-    // DG_MODEL=flux-* switches to Deepgram's end-of-turn model (same callbacks).
-    const create = /^flux/.test(this.env.DG_MODEL ?? '') ? createDeepgramFluxSTT : createDeepgramSTT;
-    create(
+    // A restart (applyVoice) supersedes an earlier socket still connecting.
+    const gen = ++this.sttGen;
+    createStt(
+      this.env,
+      this.voice,
       {
-        apiKey: this.env.DEEPGRAM_API_KEY ?? '',
-        model: this.env.DG_MODEL,
-        language: this.env.DG_LANGUAGE,
         endpointingMs: numEnv(this.env.DG_ENDPOINTING_MS),
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
@@ -202,13 +211,39 @@ export class CallRelay extends DurableObject<Env> {
     )
       .then(s => {
         // The call may already have ended while Deepgram was connecting.
-        if (this.twWs?.readyState !== WebSocket.OPEN) { s.close(); return; }
+        if (this.twWs?.readyState !== WebSocket.OPEN || gen !== this.sttGen) { s.close(); return; }
         this.stt = s;
       })
-      .catch((e) => {
+      .catch(async (e) => {
+        // The default socket failing doesn't matter if the business turns
+        // out to use another provider — that one is starting instead.
+        await this.voiceReady;
+        if (gen !== this.sttGen) return;
         console.error('[stt startup]', e?.message || e);
         if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1011, 'STT startup failed');
       });
+  }
+
+  // Switches the call to the business's voice settings once the sector
+  // lookup lands. A no-op for default settings (the US business).
+  private applyVoice(voice: VoiceSettings) {
+    if (isDefaultVoice(voice) || this.twWs?.readyState !== WebSocket.OPEN) return;
+    const missing = missingVoiceSecret(this.env, voice);
+    if (missing) {
+      // Fail closed: a Hindi line must not quietly run on English providers.
+      console.error(`[call] ${this.callSid.slice(-8)} voice config needs ${missing} — ending call`);
+      this.reject(`missing ${missing}`);
+      return;
+    }
+    console.log(`[call] ${this.callSid.slice(-8)} voice ${voice.language} stt=${voice.sttProvider} tts=${voice.ttsProvider}`);
+    this.voice = voice;
+    this.lines = voiceLines(voice.language);
+    this.tts = createTts(this.env, voice);
+    if (sttDiffers(voice)) {
+      this.stt.close();
+      this.stt = { sendAudio: () => {}, close: () => {} };
+      this.startStt();
+    }
   }
 
   private heardText(turn: ActiveTurn): string {
@@ -264,7 +299,7 @@ export class CallRelay extends DurableObject<Env> {
     const now = Date.now();
     if (this.pendingMarks.size === 0 && now - this.lastAudioEndAt > ECHO_TAIL_MS) return false;
     const spoken = this.spokenLog.filter(s => now - s.at < 20_000).map(s => s.text).join(' ');
-    return isEchoOf(text, spoken);
+    return isEchoOf(text, spoken, this.voice.language);
   }
 
   private handleTranscript(text: string) {
@@ -277,7 +312,7 @@ export class CallRelay extends DurableObject<Env> {
 
     // "Well," / "Um, so" with the assistant quiet: the caller is starting a
     // sentence. Keep it for their next utterance instead of answering it.
-    if (!this.agentActive && isDiscourseOnly(text)) {
+    if (!this.agentActive && isDiscourseOnly(text, this.voice.language)) {
       console.log(`[turn] holding filler words: "${text}"`);
       this.carryOver = joinUtterances(this.carryOver, text);
       return;
@@ -288,7 +323,7 @@ export class CallRelay extends DurableObject<Env> {
     // asked them something, in which case "yeah" is the answer. Only played
     // audio and the chunk playing now count: a question still queued behind
     // it hasn't been asked yet.
-    if (this.agentActive && isBackchannel(text)) {
+    if (this.agentActive && isBackchannel(text, this.voice.language)) {
       const playing = this.pendingMarks.values().next().value as SpokenChunk | undefined;
       const asked = this.active?.chunks.some(c => !c.filler && (c.played || c === playing) && c.text.includes('?'));
       if (!asked) {
@@ -381,8 +416,8 @@ export class CallRelay extends DurableObject<Env> {
       turn.chunks.push(chunk);
       unsent++;
       const queuedAt = Date.now();
-      const started = cartesiaStart(this.ttsConfig, textToSay, signal).catch((e) => {
-        if (e?.name !== 'AbortError') console.error('[cartesia start]', e?.message || e);
+      const started = this.ttsProvider.start(textToSay, signal).catch((e) => {
+        if (e?.name !== 'AbortError') console.error(`[${this.ttsProvider.name} start]`, e?.message || e);
         return null;
       });
       chunkChain = chunkChain.then(async () => {
@@ -414,7 +449,7 @@ export class CallRelay extends DurableObject<Env> {
       if (unsent > 0 || this.pendingMarks.size > 0) { quietSince = now; return; }
       if (fillers >= MAX_FILLERS) return;
       if (now - quietSince < (realChunkSeen || fillers ? GAP_FILLER_MS : FILLER_GRACE_MS)) return;
-      const pool = fillers === 0 && !realChunkSeen ? FILLERS : STILL_WORKING;
+      const pool = fillers === 0 && !realChunkSeen ? this.lines.fillers : this.lines.stillWorking;
       console.log(`[${tag}] dead air ${now - quietSince}ms — filler`);
       queue(pool[fillers % pool.length], true);
       fillers++;
@@ -503,10 +538,9 @@ export class CallRelay extends DurableObject<Env> {
     if (now - this.quietSince < (numEnv(this.env.VOICE_SILENCE_REPROMPT_MS) ?? SILENCE_REPROMPT_MS)) return;
     this.quietSince = now;
     if (this.silencePrompts++ === 0) {
-      this.speakCanned(['Are you still there?']);
+      this.speakCanned([this.lines.stillThere]);
     } else {
-      const name = this.cache.sectorMeta?.name;
-      this.speakCanned([`I haven't heard anything, so I'll hang up now. Thanks for calling${name ? ` ${name}` : ''}. Goodbye!`]);
+      this.speakCanned([this.lines.goodbye(this.cache.sectorMeta?.name)]);
       this.hangupWhenDone = true;
     }
   }
@@ -520,7 +554,7 @@ export class CallRelay extends DurableObject<Env> {
     for (const text of lines) {
       const chunk: SpokenChunk = { text, played: false, filler: false };
       turn.chunks.push(chunk);
-      const started = cartesiaStart(this.ttsConfig, text, signal).catch(() => null);
+      const started = this.ttsProvider.start(text, signal).catch(() => null);
       chain = chain.then(() => this.playChunk(turn, chunk, started));
     }
     chain
@@ -529,10 +563,6 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   private greet(businessType: string | undefined, sectorPromise: Promise<{ name: string } | null>) {
-    const capabilityHint = businessType === 'health_nav'
-      ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
-      : 'I can answer questions about our services and prices, or book you in — what can I do for you?';
-
     // The greeting is a turn of its own so a caller who talks over it
     // actually cuts it off. It isn't part of the model's history.
     // A greeting saved in the admin UI (Settings → admin_config:<business>
@@ -547,22 +577,36 @@ export class CallRelay extends DurableObject<Env> {
       : Promise.resolve(null);
     const turn = this.startTurn(true);
     const { signal } = turn.abort;
-    const say = (text: string) => {
+    const say = (text: string, started?: Promise<Response | null>) => {
       const chunk: SpokenChunk = { text, played: false, filler: false };
       turn.chunks.push(chunk);
-      return this.playChunk(turn, chunk, cartesiaStart(this.ttsConfig, text, signal).catch(() => null));
+      return this.playChunk(turn, chunk, started ?? this.ttsProvider.start(text, signal).catch(() => null));
     };
     // Opener first (no dependency on the lookup), then the part that needs
-    // the business name.
-    say('Thanks for calling!')
+    // the business name. The opener is synthesized in the default voice
+    // before the business's voice settings are known; if by the time its
+    // audio is ready the business turned out to use another voice
+    // (applyVoice ran), it's dropped and said in that voice instead.
+    const startVoice = this.voice;
+    let openerDropped = false;
+    const opener = this.lines.opener;
+    const openerAudio = this.ttsProvider.start(opener, signal).catch(() => null).then(async (res) => {
+      if (this.voice === startVoice) return res;
+      openerDropped = true;
+      await res?.body?.cancel().catch(() => {});
+      return null;
+    });
+    say(opener, openerAudio)
       .then(async () => {
         if (signal.aborted) return;
         const [sectorMeta, custom] = await Promise.all([sectorPromise, savedGreeting]);
         if (signal.aborted) return;
         const storeName = sectorMeta?.name ?? businessType ?? 'us';
-        await say(custom
-          ? `${custom.greeting} I'm ${custom.agentName || 'Mogi'}, the virtual assistant.`
-          : `You've reached ${storeName}. I'm Mogi, the virtual assistant. ${capabilityHint}`);
+        const lines = this.lines;
+        const body = custom
+          ? lines.customGreeting(custom.greeting, custom.agentName)
+          : lines.greeting(storeName, lines.capabilityHint(businessType));
+        await say(openerDropped ? `${lines.opener} ${body}` : body);
       })
       .catch(e => { if (e?.name !== 'AbortError') console.error('[greeting]', e?.message || e); })
       .finally(() => this.endTurn(turn));
@@ -631,6 +675,8 @@ export class CallRelay extends DurableObject<Env> {
         ? getSector(this.env, businessType).catch(() => null)
         : Promise.resolve(null);
       sectorPromise.then(m => { if (m) this.cache.sectorMeta = m; });
+      // Hindi / Sarvam businesses switch provider here (no-op for the default).
+      this.voiceReady = sectorPromise.then(m => this.applyVoice(resolveVoiceSettings(m)));
 
       this.greet(businessType, sectorPromise);
       this.quietSince = Date.now();
