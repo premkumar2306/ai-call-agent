@@ -160,6 +160,8 @@ export interface UsageInput {
   businessType: string;
   channel: 'voice' | 'whatsapp';
   provider?: string | null;
+  sttProvider?: string | null;
+  ttsProvider?: string | null;
   sourceId: string;
   startedAt: number;     // unix seconds
   endedAt?: number;
@@ -185,7 +187,8 @@ export async function recordUsage(env: Env, u: UsageInput): Promise<void> {
     const ttsChars = u.ttsChars ?? 0;
     const period = billingPeriod(new Date(u.startedAt * 1000));
     const cost = estimateCostUsdMicros({
-      channel: u.channel, provider: u.provider, durationSeconds: duration, sttSeconds, ttsChars, llmModel: u.llmModel, llm,
+      channel: u.channel, provider: u.provider, sttProvider: u.sttProvider, ttsProvider: u.ttsProvider,
+      durationSeconds: duration, sttSeconds, ttsChars, llmModel: u.llmModel, llm,
     }, costRates(env.BILLING_COST_RATES));
     await getDb(env.DB).insert(usageRecords).values({
       id: crypto.randomUUID(),

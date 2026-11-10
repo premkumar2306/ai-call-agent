@@ -126,17 +126,22 @@ export interface LlmRate { inputPerMTok: number; outputPerMTok: number; cacheRea
 export interface CostRates {
   usdToInr: number;
   telephonyPerMinute: Record<string, number>; // by provider
-  sttPerSecond: number;
-  ttsPerChar: number;
+  sttPerSecond: number;              // default STT provider (Deepgram)
+  ttsPerChar: number;                // default TTS provider (Cartesia)
+  sttPerSecondByProvider: Record<string, number>;
+  ttsPerCharByProvider: Record<string, number>;
   whatsappPerConversation: number;
   llm: Record<string, LlmRate>; // by model id; 'default' for unknown models
 }
 
 export const DEFAULT_COST_RATES: CostRates = {
   usdToInr: 88,
-  telephonyPerMinute: { twilio: 0.0085, exotel: 0.006, default: 0.0085 },
+  telephonyPerMinute: { twilio: 0.0085, exotel: 0.006, plivo: 0.006, default: 0.0085 },
   sttPerSecond: 0.0077 / 60,     // Deepgram nova-3 streaming
   ttsPerChar: 0.00003,           // Cartesia sonic
+  // Sarvam (Hindi lines): ~₹30/hour STT, ~₹15 per 10K characters TTS, at ₹88/USD.
+  sttPerSecondByProvider: { deepgram: 0.0077 / 60, sarvam: 30 / 88 / 3600 },
+  ttsPerCharByProvider: { cartesia: 0.00003, sarvam: 15 / 88 / 10_000 },
   whatsappPerConversation: 0,    // service conversations are free on Meta
   llm: {
     'claude-haiku-5-5': { inputPerMTok: 0.10, outputPerMTok: 0.50, cacheReadPerMTok: 0.01, cacheWritePerMTok: 0.125 },
@@ -153,6 +158,8 @@ export function costRates(override?: string): CostRates {
     return {
       ...DEFAULT_COST_RATES, ...o,
       telephonyPerMinute: { ...DEFAULT_COST_RATES.telephonyPerMinute, ...(o.telephonyPerMinute ?? {}) },
+      sttPerSecondByProvider: { ...DEFAULT_COST_RATES.sttPerSecondByProvider, ...(o.sttPerSecondByProvider ?? {}) },
+      ttsPerCharByProvider: { ...DEFAULT_COST_RATES.ttsPerCharByProvider, ...(o.ttsPerCharByProvider ?? {}) },
       llm: { ...DEFAULT_COST_RATES.llm, ...(o.llm ?? {}) },
     };
   } catch {
@@ -165,7 +172,9 @@ export interface LlmUsage { input: number; output: number; cacheRead: number; ca
 
 export interface UsageForCost {
   channel: 'voice' | 'whatsapp';
-  provider?: string | null;
+  provider?: string | null;      // telephony
+  sttProvider?: string | null;   // deepgram | sarvam
+  ttsProvider?: string | null;   // cartesia | sarvam
   durationSeconds: number;
   sttSeconds: number;
   ttsChars: number;
@@ -177,7 +186,9 @@ export function estimateCostUsdMicros(u: UsageForCost, rates: CostRates = DEFAUL
   const llmRate = (u.llmModel && rates.llm[u.llmModel]) || rates.llm.default;
   const llm = (u.llm.input * llmRate.inputPerMTok + u.llm.output * llmRate.outputPerMTok
     + u.llm.cacheRead * llmRate.cacheReadPerMTok + u.llm.cacheWrite * llmRate.cacheWritePerMTok) / 1e6;
-  let usd = llm + u.sttSeconds * rates.sttPerSecond + u.ttsChars * rates.ttsPerChar;
+  const sttRate = (u.sttProvider ? rates.sttPerSecondByProvider[u.sttProvider] : undefined) ?? rates.sttPerSecond;
+  const ttsRate = (u.ttsProvider ? rates.ttsPerCharByProvider[u.ttsProvider] : undefined) ?? rates.ttsPerChar;
+  let usd = llm + u.sttSeconds * sttRate + u.ttsChars * ttsRate;
   if (u.channel === 'voice') {
     const perMin = rates.telephonyPerMinute[u.provider ?? 'default'] ?? rates.telephonyPerMinute.default ?? 0;
     usd += billableMinutes(u.durationSeconds) * perMin;

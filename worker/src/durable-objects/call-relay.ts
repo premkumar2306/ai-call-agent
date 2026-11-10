@@ -573,6 +573,8 @@ export class CallRelay extends DurableObject<Env> {
       businessType: this.session.businessType,
       channel: 'voice',
       provider: this.telephony.provider,
+      sttProvider: this.voice.sttProvider,
+      ttsProvider: this.voice.ttsProvider,
       sourceId: this.callSid,
       startedAt: Math.floor(this.streamStartedAt / 1000),
       endedAt: Math.floor(endedAt / 1000),

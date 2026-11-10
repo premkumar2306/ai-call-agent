@@ -162,6 +162,15 @@ describe('provider cost estimate', () => {
       + (10_000 * 0.10 + 1_000 * 0.50 + 100_000 * 0.01 + 2_000 * 0.125) / 1e6;
     expect(micros).toBe(Math.round(expected * 1e6));
   });
+  it('prices Sarvam STT/TTS at its own rates', () => {
+    const base = { channel: 'voice' as const, provider: 'plivo', durationSeconds: 60, sttSeconds: 60, ttsChars: 1000, llm: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    const r = DEFAULT_COST_RATES;
+    expect(estimateCostUsdMicros({ ...base, sttProvider: 'sarvam', ttsProvider: 'sarvam' }))
+      .toBe(Math.round((0.006 + 60 * r.sttPerSecondByProvider.sarvam + 1000 * r.ttsPerCharByProvider.sarvam) * 1e6));
+    // Unknown providers fall back to the default rates.
+    expect(estimateCostUsdMicros({ ...base, sttProvider: 'x', ttsProvider: null }))
+      .toBe(Math.round((0.006 + 60 * r.sttPerSecond + 1000 * r.ttsPerChar) * 1e6));
+  });
   it('falls back to default model rates and merges overrides', () => {
     const rates = costRates('{"usdToInr": 90, "telephonyPerMinute": {"exotel": 0.01}}');
     expect(rates.usdToInr).toBe(90);

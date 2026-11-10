@@ -503,7 +503,7 @@ a plan**; nothing is charged, emailed or limited before that, and the US
 (a transfer to staff stops the meter), billed per started minute; STT seconds, TTS
 characters and Anthropic tokens; and an estimated provider cost in micro-USD
 (`DEFAULT_COST_RATES` in `src/services/billing/pricing.ts`, override with the
-`BILLING_COST_RATES` var). WhatsApp counts 24-hour conversations per customer
+`BILLING_COST_RATES` var; telephony, STT and TTS are priced per provider: Twilio/Exotel/Plivo, Deepgram/Sarvam, Cartesia/Sarvam). WhatsApp counts 24-hour conversations per customer
 separately (not billed by the plans). Usage rolls up by calendar month in India time.
 `svt/` synthetic callers are costed but never billed.
 
