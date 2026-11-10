@@ -10,13 +10,24 @@ import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { createDeepgramSTT, createDeepgramFluxSTT, fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
-import { verifyStreamToken } from '../utils/stream-token';
-import { getOrCreateCustomer } from '../utils/identity';
-import { isProduction } from '../config';
+import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
+import { callerIdentity, getOrCreateCustomer } from '../utils/identity';
+import { customerHashSalt, isProduction } from '../config';
 import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesia';
+import {
+  createTelephonyAdapter, isTelephonyProvider, PREAUTH_HEADER, PROVIDER_HEADER,
+  type CallStart, type TelephonyAdapter,
+} from '../telephony';
+import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/phone-numbers';
 
-// One CallRelay instance per phone call: Twilio Media Streams → Deepgram STT
+// One CallRelay instance per phone call: carrier media stream → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
+//
+// The carrier's WebSocket protocol (Twilio Media Streams, Exotel Voicebot,
+// Plivo Audio Streams) lives entirely in a TelephonyAdapter (src/telephony/):
+// this class only sees start/media/mark/stop events and hands back μ-law
+// 8 kHz audio, marks and clears. "Twilio marks" below means the adapter's
+// marks (Plivo calls them checkpoints).
 //
 // Turn-taking model:
 //
@@ -105,12 +116,18 @@ interface ActiveTurn {
 }
 
 export class CallRelay extends DurableObject<Env> {
+  // The carrier's media-stream socket (named for Twilio, the first carrier).
   private twWs?: WebSocket;
+  private telephony: TelephonyAdapter = createTelephonyAdapter('twilio');
+  // Stream credentials that arrived on the upgrade request rather than in the
+  // start event: Exotel's ?t= token or a route-verified Basic auth (preauth),
+  // Plivo's ?token=.
+  private urlToken?: string;
+  private preauthenticated = false;
   private stt: Stt = { sendAudio: () => {}, close: () => {} };
   private session?: SessionPayload;
   private urlBusinessType?: string;
   private callSid = 'relay';
-  private streamSid = '';
   private transcriptFlushed = false;
   // Call-lifetime cache: sector metadata, product list, tool defs, history,
   // orders and booked-slot set all live here instead of round-tripping to
@@ -167,6 +184,12 @@ export class CallRelay extends DurableObject<Env> {
     // string from <Stream url="...">, so the 'start' event's customParameters
     // (set via <Parameter> in the TwiML) is the source of truth for real calls.
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
+    // Set by the route that accepted the upgrade (/twilio|exotel|plivo/stream),
+    // which overwrites anything the client sent.
+    const provider = request.headers.get(PROVIDER_HEADER);
+    this.telephony = createTelephonyAdapter(isTelephonyProvider(provider) ? provider : 'twilio');
+    this.urlToken = url.searchParams.get(this.telephony.provider === 'exotel' ? 't' : 'token') ?? undefined;
+    this.preauthenticated = this.telephony.provider === 'exotel' && request.headers.get(PREAUTH_HEADER) === '1';
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -216,8 +239,8 @@ export class CallRelay extends DurableObject<Env> {
     return turn.chunks.filter(c => c.played && !c.filler).map(c => c.text).join(' ');
   }
 
-  // Stops the assistant: aborts generation and synthesis, and tells Twilio
-  // to drop audio it has buffered but not yet played.
+  // Stops the assistant: aborts generation and synthesis, and tells the
+  // carrier to drop audio it has buffered but not yet played.
   private bargeIn() {
     const turn = this.active;
     if (turn && !turn.closed) {
@@ -238,9 +261,15 @@ export class CallRelay extends DurableObject<Env> {
       if (turn.committed && !turn.greeting && !turn.retracted) amendInterruptedReply(this.cache, this.heardText(turn));
     }
     this.pendingMarks.clear();
-    if (this.twWs && this.twWs.readyState === WebSocket.OPEN) {
-      this.twWs.send(JSON.stringify({ event: 'clear', streamSid: this.streamSid }));
-    }
+    this.sendToCarrier(this.telephony.clear());
+  }
+
+  // Sends adapter-built frames; false once the socket has closed.
+  private sendToCarrier(frames: string[]): boolean {
+    const ws = this.twWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    for (const f of frames) ws.send(f);
+    return true;
   }
 
   // Fired the moment Deepgram reports speech — before any transcript exists,
@@ -326,11 +355,11 @@ export class CallRelay extends DurableObject<Env> {
     if (!chunk.filler && !turn.firstAudioAt) turn.firstAudioAt = now;
     this.spokenLog = this.spokenLog.filter(s => now - s.at < 20_000);
     this.spokenLog.push({ text: chunk.text, at: now });
-    await cartesiaDrain(res, this.streamSid, ws, signal, false);
+    await cartesiaDrain(res, (audio) => this.sendToCarrier(this.telephony.audio(audio)), signal);
     if (signal.aborted || ws.readyState !== WebSocket.OPEN) return;
     const name = `m${++this.markSeq}`;
     this.pendingMarks.set(name, chunk);
-    ws.send(JSON.stringify({ event: 'mark', streamSid: this.streamSid, mark: { name } }));
+    this.sendToCarrier(this.telephony.mark(name));
   }
 
   private startTurn(greeting: boolean): ActiveTurn {
@@ -569,56 +598,32 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
-    let msg: any;
-    try {
-      msg = JSON.parse(message as string);
-    } catch (e: any) {
-      console.error('[twilio] invalid message', e?.message || e);
-      return;
-    }
+    const ev = this.telephony.parse(message);
+    if (!ev) return;   // connected, dtmf, unparseable
 
-    if (msg.event === 'media') {
+    if (ev.type === 'media') {
       // Always forward — even while the assistant speaks — so STT can detect barge-in.
-      const bytes = base64ToBytes(msg.media.payload);
-      this.stt.sendAudio(bytes.buffer as ArrayBuffer);
+      this.stt.sendAudio(ev.audio.buffer.slice(ev.audio.byteOffset, ev.audio.byteOffset + ev.audio.byteLength) as ArrayBuffer);
       this.checkSilence();
 
-    } else if (msg.event === 'mark') {
-      // Twilio reached this point in playback.
-      const chunk = this.pendingMarks.get(msg.mark?.name);
+    } else if (ev.type === 'mark') {
+      // The carrier reached this point in playback.
+      const chunk = this.pendingMarks.get(ev.name);
       if (chunk) {
         chunk.played = true;
-        this.pendingMarks.delete(msg.mark.name);
+        this.pendingMarks.delete(ev.name);
         if (this.pendingMarks.size === 0) this.lastAudioEndAt = Date.now();
       }
 
-    } else if (msg.event === 'start') {
+    } else if (ev.type === 'start') {
       this.callStartedAt = Date.now();
-      this.callSid = msg.start.callSid;
+      this.callSid = ev.start.callSid;
       this.cache.callSid = this.callSid;
-      this.streamSid = msg.start.streamSid;
-      console.log(`[call] ${this.callSid.slice(-8)}`);
+      console.log(`[call] ${this.callSid.slice(-8)}${this.telephony.provider === 'twilio' ? '' : ` (${this.telephony.provider})`}`);
 
-      // The WebSocket itself is unauthenticated; the signed token minted by
-      // /twilio/inbound (which *is* Twilio-signature-checked) proves this
-      // stream came from a real inbound call. Outside production, a missing
-      // token is tolerated so scripts/simulate-call.mjs keeps working.
-      const params = msg.start.customParameters ?? {};
-      let businessType: string | undefined;
-      let callerHash: string | undefined;
-      let callerPhone: string | undefined;
-      if (params.streamToken) {
-        const claims = await verifyStreamToken(this.env, params.streamToken);
-        if (!claims) { this.reject('invalid stream token'); return; }
-        businessType = claims.businessType;
-        callerHash = claims.callerHash;
-        callerPhone = claims.callerPhone;
-      } else if (isProduction(this.env)) {
-        this.reject('missing stream token');
-        return;
-      } else {
-        businessType = params.businessType ?? this.urlBusinessType;
-      }
+      const auth = await this.authenticate(ev.start);
+      if ('rejected' in auth) { this.reject(auth.rejected); return; }
+      const { businessType, callerHash, callerPhone } = auth;
 
       this.startStt();
       this.session = buildDefaultTwilioSession(this.env, businessType) ?? undefined;
@@ -658,10 +663,60 @@ export class CallRelay extends DurableObject<Env> {
           .catch(e => console.error('[calendarBusy prefetch]', e?.message || e));
       }
 
-    } else if (msg.event === 'stop') {
+    } else if (ev.type === 'stop') {
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
     }
+  }
+
+  // The WebSocket itself is unauthenticated; a credential minted by a
+  // signature-checked webhook proves the stream came from a real inbound call
+  // and says which business answers it. Outside production a missing
+  // credential is tolerated so scripts/simulate-call.mjs keeps working.
+  //
+  //   Twilio — JWT streamToken in the start event's customParameters
+  //            (minted by /twilio/inbound).
+  //   Exotel — compact ?t= token bound to this call_sid (minted by
+  //            /exotel/voicebot), or a static stream URL whose Basic auth the
+  //            route already checked; the business then comes from the called
+  //            number. The caller is the start event's `from`.
+  //   Plivo  — JWT ?token= on the stream URL (minted by /plivo/answer).
+  private async authenticate(start: CallStart): Promise<
+    { businessType?: string; callerHash?: string; callerPhone?: string } | { rejected: string }
+  > {
+    const provider = this.telephony.provider;
+    const params = start.params;
+
+    if (provider === 'exotel') {
+      const country = PROVIDER_COUNTRY.exotel;
+      let businessType: string | undefined;
+      let from = start.from;
+      if (this.urlToken) {
+        const claims = await verifyCompactStreamToken(this.env, this.urlToken);
+        if (!claims) return { rejected: 'invalid stream token' };
+        if (claims.callSid !== start.callSid) return { rejected: 'stream token is for another call' };
+        businessType = claims.businessType;
+        from = claims.from ?? from;
+      } else if (this.preauthenticated || !isProduction(this.env)) {
+        businessType = (await businessForNumber(this.env, 'exotel', start.to))
+          ?? this.env.EXOTEL_DEFAULT_BUSINESS_TYPE
+          ?? (isProduction(this.env) ? undefined : params.businessType ?? this.urlBusinessType);
+        if (!businessType) return { rejected: `no business for ${start.to ?? 'unknown number'}` };
+      } else {
+        return { rejected: 'missing stream token' };
+      }
+      const id = await callerIdentity(from, start.callSid || crypto.randomUUID(), customerHashSalt(this.env), (raw) => normalizeE164(raw, country));
+      return { businessType, ...id };
+    }
+
+    const token = provider === 'plivo' ? this.urlToken ?? params.streamToken : params.streamToken;
+    if (token) {
+      const claims = await verifyStreamToken(this.env, token);
+      if (!claims) return { rejected: 'invalid stream token' };
+      return claims;
+    }
+    if (isProduction(this.env)) return { rejected: 'missing stream token' };
+    return { businessType: params.businessType ?? this.urlBusinessType };
   }
 
   private reject(reason: string) {
@@ -677,7 +732,7 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {
-    console.error('[twilio ws]', (error as any)?.message || error);
+    console.error(`[${this.telephony.provider} ws]`, (error as any)?.message || error);
   }
 }
 
@@ -688,11 +743,4 @@ export function joinUtterances(a: string, b: string): string {
 function numEnv(v: string | undefined): number | undefined {
   const n = v === undefined || v === '' ? NaN : Number(v);
   return Number.isFinite(n) ? n : undefined;
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
 }

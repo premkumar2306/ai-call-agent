@@ -9,6 +9,8 @@ import { catalogRouter } from './routes/catalog';
 import { ordersRouter } from './routes/orders';
 import { mogiRouter } from './routes/mogi';
 import { twilioRouter } from './routes/twilio';
+import { exotelRouter } from './routes/exotel';
+import { plivoRouter } from './routes/plivo';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
@@ -25,7 +27,8 @@ export { isAllowedOrigin };
 app.use('*', requestId());
 // Skipped on the media-stream upgrade: its 101 response comes straight from
 // the Durable Object and its headers can't be modified.
-app.use('*', async (c, next) => (c.req.path === '/twilio/stream' ? next() : secureHeaders()(c, next)));
+const STREAM_PATHS = new Set(['/twilio/stream', '/exotel/stream', '/plivo/stream']);
+app.use('*', async (c, next) => (STREAM_PATHS.has(c.req.path) ? next() : secureHeaders()(c, next)));
 
 // ── CORS ───────────────────────────────────────────────────────────────────
 app.use('*', cors({
@@ -42,6 +45,8 @@ app.route('/catalog',  catalogRouter);
 app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);
 app.route('/twilio',   twilioRouter);
+app.route('/exotel',   exotelRouter);
+app.route('/plivo',    plivoRouter);
 app.route('/admin/calendar', calendarAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/oauth',    oauthRouter);

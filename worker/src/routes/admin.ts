@@ -7,6 +7,8 @@ import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
 import { removeBookingFromCalendar } from '../services/calendar';
+import { deletePhoneNumber, listPhoneNumbers, normalizeE164, PROVIDER_COUNTRY, upsertPhoneNumber } from '../services/phone-numbers';
+import { isTelephonyProvider, TELEPHONY_PROVIDERS } from '../telephony/types';
 import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
@@ -71,6 +73,42 @@ adminRouter.put('/default-business', withAdminKey, async (c) => {
   }
   await setDefaultBusiness(c.env, businessType || null);
   return c.json({ success: true, data: { selected: businessType || null } });
+});
+
+// ── Phone numbers → business (phone_numbers, migration 0013) ─────────────────
+
+// GET /admin/phone-numbers — every mapped number
+adminRouter.get('/phone-numbers', withAdminKey, async (c) => {
+  return c.json({ success: true, data: await listPhoneNumbers(c.env) });
+});
+
+// PUT /admin/phone-numbers { number, provider, businessType, label? } — map (or remap) a number
+adminRouter.put('/phone-numbers', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const provider = body?.provider;
+  if (!isTelephonyProvider(provider)) {
+    return c.json({ success: false, error: `provider must be one of ${TELEPHONY_PROVIDERS.join(', ')}` }, 400);
+  }
+  const number = normalizeE164(typeof body?.number === 'string' ? body.number : null, PROVIDER_COUNTRY[provider]);
+  if (!number) return c.json({ success: false, error: 'number must be a phone number, e.g. +918047123456' }, 400);
+  const businessType = body?.businessType;
+  if (typeof businessType !== 'string' || !(await getSector(c.env, businessType))) {
+    return c.json({ success: false, error: `Unknown business: ${businessType}` }, 404);
+  }
+  const label = typeof body?.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : null;
+  await upsertPhoneNumber(c.env, { number, provider, businessType, label });
+  return c.json({ success: true, data: { number, provider, businessType, label } });
+});
+
+// DELETE /admin/phone-numbers/:provider/:number — unmap (number URL-encoded, e.g. %2B9180…)
+adminRouter.delete('/phone-numbers/:provider/:number', withAdminKey, async (c) => {
+  const provider = c.req.param('provider');
+  if (!isTelephonyProvider(provider)) return c.json({ success: false, error: 'Unknown provider' }, 400);
+  const number = normalizeE164(decodeURIComponent(c.req.param('number') ?? ''), PROVIDER_COUNTRY[provider]);
+  if (!number || !(await deletePhoneNumber(c.env, provider, number))) {
+    return c.json({ success: false, error: 'Number not mapped' }, 404);
+  }
+  return c.json({ success: true, data: { number, provider } });
 });
 
 // GET /admin/sectors — list all sectors from DB
