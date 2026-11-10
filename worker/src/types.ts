@@ -22,6 +22,13 @@ export interface SectorMeta {
   notifyEmail?: string;
   // Different customers' visits that may start at the same time. Default 1.
   capacity?: number;
+  // DPDP / AI disclosure (services/disclosure.ts). aiDisclosure undefined =
+  // automatic: on for businesses in India, off elsewhere.
+  aiDisclosure?: boolean;
+  disclosureText?: string;
+  privacyNoticeUrl?: string;
+  // Days to keep transcripts and staff messages (services/retention.ts).
+  retentionDays?: number;
 }
 
 export interface WeeklyHours {

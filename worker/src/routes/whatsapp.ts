@@ -47,6 +47,7 @@ import { executeTool } from '../services/tool-router.service';
 import { getProducts } from '../services/catalog.service';
 import { agentTools, buildSystemPrompt } from '../services/turn.service';
 import { saveTranscript } from '../services/transcript.service';
+import { whatsappNotice, recordConsent } from '../services/disclosure';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
 import { getDefaultBusiness } from '../services/line-config';import type { Env, SessionPayload } from '../types';
 import {
@@ -397,8 +398,16 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
     ], 30);
     await saveWaHistory(env, phoneHash, businessType, updatedHistory);
 
-    // 22. Send reply
-    await sendWaReply(env, message.from, replyText);
+    // 22. Send reply. A new conversation (no history in the last 24h) also
+    // gets the AI/privacy notice when the business has it on (DPDP).
+    const notice = history.length === 0 ? whatsappNotice(sectorMeta) : null;
+    await sendWaReply(env, message.from, notice ? `${replyText}\n\n${notice}` : replyText);
+    if (notice) {
+      await recordConsent(env, {
+        businessType, channel: 'whatsapp', callSid: `wa:${phoneHash.slice(0, 8)}`,
+        customerIdHashed: phoneHash, noticeText: notice, playedAt: new Date(),
+      });
+    }
 
     // 23. Transcript (already off the response path — see waitUntil above)
     await saveTranscript(env, {

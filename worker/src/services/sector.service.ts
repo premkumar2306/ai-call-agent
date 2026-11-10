@@ -20,6 +20,10 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     about:      row.about ?? undefined,
     notifyEmail: row.notifyEmail ?? undefined,
     capacity:   row.capacity ?? 1,
+    aiDisclosure:     row.aiDisclosure ?? undefined,
+    disclosureText:   row.disclosureText ?? undefined,
+    privacyNoticeUrl: row.privacyNoticeUrl ?? undefined,
+    retentionDays:    row.retentionDays ?? undefined,
   };
 }
 
@@ -97,4 +101,26 @@ export async function upsertSector(env: Env, key: string, data: {
   });
   // Invalidate cache
   await env.CACHE.delete(CACHE_KEY);
+}
+
+export interface PrivacySettings {
+  aiDisclosure: boolean | null;     // null = automatic (on in India)
+  disclosureText: string | null;    // null = built-in wording
+  privacyNoticeUrl: string | null;
+  retentionDays: number | null;     // null = keep
+}
+
+// Partial update of the DPDP settings (POST /admin/privacy/:key/settings).
+// Only the keys present are written; null clears a setting.
+export async function updatePrivacySettings(env: Env, key: string, settings: Partial<PrivacySettings>): Promise<boolean> {
+  const set: Partial<typeof sectorsTable.$inferInsert> = {};
+  if ('aiDisclosure' in settings) set.aiDisclosure = settings.aiDisclosure;
+  if ('disclosureText' in settings) set.disclosureText = settings.disclosureText;
+  if ('privacyNoticeUrl' in settings) set.privacyNoticeUrl = settings.privacyNoticeUrl;
+  if ('retentionDays' in settings) set.retentionDays = settings.retentionDays;
+  if (!Object.keys(set).length) return true;
+  const rows = await getDb(env.DB).update(sectorsTable).set({ ...set, updatedAt: new Date() })
+    .where(eq(sectorsTable.key, key)).returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return rows.length > 0;
 }

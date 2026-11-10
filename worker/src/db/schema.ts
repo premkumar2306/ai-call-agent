@@ -14,6 +14,11 @@ export const sectors = sqliteTable('sectors', {
   about:        text('about'),
   notifyEmail:  text('notify_email'),
   capacity:     integer('capacity').notNull().default(1),
+  // DPDP (0014): null = automatic (on in India), true/false = forced.
+  aiDisclosure:     integer('ai_disclosure', { mode: 'boolean' }),
+  disclosureText:   text('disclosure_text'),
+  privacyNoticeUrl: text('privacy_notice_url'),
+  retentionDays:    integer('retention_days'),            // null = keep
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -129,6 +134,7 @@ export const transcripts = sqliteTable('transcripts', {
 }, (t) => [
   index('idx_transcripts_customer_business_type').on(t.customerIdHashed, t.businessType),
   index('idx_transcripts_call_sid').on(t.callSid),
+  index('idx_transcripts_business_updated').on(t.businessType, t.updatedAt),
 ]);
 
 // Messages a caller left for staff ("have someone call me about a quote").
@@ -140,7 +146,39 @@ export const callMessages = sqliteTable('call_messages', {
   callbackPhone: text('callback_phone'),
   message:       text('message').notNull(),
   status:        text('status').notNull().default('NEW'),
+  customerIdHashed: text('customer_id_hashed'),
   createdAt:     integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 }, (t) => [
   index('idx_call_messages_business_created').on(t.businessType, t.createdAt),
+  index('idx_call_messages_customer').on(t.customerIdHashed),
+]);
+
+// When the call-start notice (AI assistant, transcription) was given — the
+// audit trail for DPDP notice. See services/disclosure.ts.
+export const consentRecords = sqliteTable('consent_records', {
+  id:               text('id').primaryKey(),
+  businessType:     text('business_type').notNull(),
+  channel:          text('channel').notNull(),            // voice | whatsapp
+  callSid:          text('call_sid'),
+  customerIdHashed: text('customer_id_hashed'),           // null after erasure
+  noticeVersion:    text('notice_version').notNull(),
+  noticeText:       text('notice_text').notNull(),
+  playedAt:         integer('played_at', { mode: 'timestamp' }).notNull(),
+  heardFully:       integer('heard_fully', { mode: 'boolean' }),
+  createdAt:        integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_consent_records_business_played').on(t.businessType, t.playedAt),
+  index('idx_consent_records_customer').on(t.customerIdHashed),
+]);
+
+// Data-principal requests (export / erasure) handled via /admin/privacy.
+export const dataRequests = sqliteTable('data_requests', {
+  id:               text('id').primaryKey(),
+  businessType:     text('business_type').notNull(),
+  kind:             text('kind').notNull(),               // export | erase
+  customerIdHashed: text('customer_id_hashed').notNull(),
+  summary:          text('summary', { mode: 'json' }),
+  createdAt:        integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_data_requests_business_created').on(t.businessType, t.createdAt),
 ]);
