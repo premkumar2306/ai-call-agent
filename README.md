@@ -9,9 +9,11 @@ AI-powered voice assistant for multi-vertical businesses (auto shop, clinic, rea
 ## Architecture
 
 ```
-Caller → Twilio → Cloudflare Worker (Hono API)
-                        ├── /twilio/inbound  → <Connect><Stream> TwiML
-                        ├── /twilio/stream   → CallRelay Durable Object (1 per call)
+Caller → Twilio (US) ─┐
+Caller → Exotel (IN) ─┼→ Cloudflare Worker (Hono API)
+Caller → Plivo  (IN) ─┘     ├── /twilio/inbound, /exotel/voicebot, /plivo/answer → stream URL + signed token
+                        ├── /{twilio,exotel,plivo}/stream → CallRelay Durable Object (1 per call)
+                        │                        ├── telephony adapter (carrier protocol ⇄ μ-law 8 kHz)
                         │                        ├── Deepgram (STT)
                         │                        ├── Cartesia (TTS)
                         │                        └── runTurn() ─┐
@@ -202,6 +204,11 @@ The simulator speaks Twilio's Media Streams protocol to `/twilio/stream`. In pro
 the stream must carry the signed `streamToken` that `/twilio/inbound` puts in the TwiML,
 so the simulator only works against a Worker running with `NODE_ENV=development`.
 
+`PROVIDER=exotel npm run simulate-call` speaks Exotel's Voicebot protocol to `/exotel/stream`
+instead (16-bit PCM, `stream_sid`, caller in the start event; `FROM=`/`TO=` set the numbers) and
+checks every frame it gets back has Exotel's framing. `test/call-relay-telephony.test.ts` drives a
+real `CallRelay` through fake Exotel and Twilio sockets offline.
+
 ---
 
 ## Deploying
@@ -241,6 +248,10 @@ wrangler secret put CARTESIA_API_KEY
 wrangler secret put RESEND_API_KEY        # booking/message emails to sectors.notify_email
 wrangler secret put TWILIO_ACCOUNT_SID    # confirmation texts, with TWILIO_SMS_FROM (an SMS-capable Twilio number)
 wrangler secret put TWILIO_SMS_FROM
+# Indian numbers (see "Indian phone numbers" below):
+wrangler secret put EXOTEL_WEBHOOK_SECRET # Exotel; random, also typed into the Exotel call flow URLs
+wrangler secret put PLIVO_AUTH_TOKEN      # Plivo, with PLIVO_WEBHOOK_URL
+wrangler secret put PLIVO_WEBHOOK_URL
 ```
 
 Set where a business's booking and message emails go, and how many different
@@ -271,6 +282,69 @@ Omitted locale fields keep their saved values; invalid ones are rejected with a 
 says prices the Indian way ("fifteen hundred rupees", "one lakh fifty thousand rupees"), reads Indian
 callback numbers back digit by digit, and emails, calendar events and the Calls tab show `+91 98765 43210`.
 The defaults produce exactly the same prompt and messages as before locales existed (`worker/src/utils/locale.ts`).
+### Indian phone numbers (Exotel, or Plivo)
+
+Twilio can't easily provide Indian numbers, and Indian calls must stay India-to-India, so
+Indian numbers come from **Exotel** (or **Plivo**). Both stream call audio to the same
+`CallRelay` as Twilio: the carrier's WebSocket protocol is a *telephony adapter*
+(`worker/src/telephony/`) that turns its frames into start/media/mark/stop events and μ-law
+8 kHz audio, so STT, the agent loop, TTS, barge-in and transfer work the same on every carrier.
+
+| | Twilio | Exotel (Voicebot applet) | Plivo (Audio Stream) |
+|---|---|---|---|
+| Audio | μ-law 8 kHz | 16-bit PCM 8 kHz (transcoded to/from μ-law at the adapter) | μ-law 8 kHz |
+| Playback tracking | `mark` | `mark` | `checkpoint` → `playedStream` |
+| Barge-in | `clear` | `clear` | `clearAudio` |
+| Stream auth | JWT in `<Parameter>` | short token in the URL, bound to the CallSid (Exotel caps the query at 256 chars) — or Basic auth on a static URL | JWT in the URL |
+| Webhook auth | `X-Twilio-Signature` | shared `EXOTEL_WEBHOOK_SECRET` (Exotel doesn't sign) | `X-Plivo-Signature-V3` |
+| Transfer to staff | `<Dial>` after the stream | Passthru → Connect applet | `<Dial>` after the stream |
+
+**Which business answers.** Map each number in the admin UI (**Settings → Phone numbers**) or
+with `PUT /admin/phone-numbers {number, provider, businessType, label?}` (`GET` lists,
+`DELETE /admin/phone-numbers/:provider/:number` unmaps). Numbers are stored E.164; Indian
+numbers can be entered as `080…`, `98…` or `+91…`. This works for Twilio numbers too: a mapped
+Twilio number answers as its business; unmapped ones keep the **Phone line** default and
+`TWILIO_DEFAULT_BUSINESS_TYPE` exactly as before. Unmapped Exotel/Plivo numbers use
+`EXOTEL_DEFAULT_BUSINESS_TYPE` / `PLIVO_DEFAULT_BUSINESS_TYPE` (vars), or are refused if unset.
+
+**Caller identity.** The caller's number is normalised to E.164 (`09876543210` → `+919876543210`)
+and hashed with the same key Twilio and WhatsApp use, so an Indian caller is one customer across
+voice and WhatsApp. Withheld numbers get a per-call identity.
+
+#### Exotel setup
+
+1. Complete Exotel KYC and rent an ExoPhone. Ask Exotel to enable **AgentStream / Voicebot** on the account.
+2. Set the secret (any long random string) and, optionally, a default business:
+   ```bash
+   openssl rand -hex 24 | tee /dev/stderr | wrangler secret put EXOTEL_WEBHOOK_SECRET   # note the value for step 3
+   ```
+   `EXOTEL_DEFAULT_BUSINESS_TYPE` goes in `wrangler.toml` `[vars]` (or map every ExoPhone instead).
+3. In Exotel **App Bazaar**, create a flow, with `<secret>` from step 2 and `<worker>` your Worker host:
+   - **Voicebot** applet, URL `https://<worker>/exotel/voicebot?key=<secret>` (the dynamic-URL option:
+     it returns `{"url":"wss://<worker>/exotel/stream?t=…"}` with a token bound to the call).
+     If your account only takes a static WebSocket URL, use
+     `wss://avery:<secret>@<worker>/exotel/stream` instead; the business then comes from the called number.
+     Leave the sample rate at the default 8 kHz (don't add `?sample-rate=`).
+   - **Passthru** applet after it: `https://<worker>/exotel/after-stream?key=<secret>`. It returns
+     **200** when the caller asked for a person and **302** otherwise.
+   - On 200 → **Connect** applet whose *dial whom* is the dynamic URL `https://<worker>/exotel/connect?key=<secret>`
+     (returns the business's phone from `sectors.phone` — must be an Indian number). On 302 → **Hangup**.
+4. Assign the flow to the ExoPhone, then map the ExoPhone to a business in **Settings → Phone numbers**.
+
+`?key=` can be replaced by Basic auth (`https://avery:<secret>@<worker>/…`) wherever Exotel accepts
+it, which keeps the secret out of request logs. In production every `/exotel/*` request without the
+secret is rejected (and all of them are rejected if `EXOTEL_WEBHOOK_SECRET` isn't set).
+
+#### Plivo setup
+
+Create a Plivo application with Answer URL `POST https://<worker>/plivo/answer`, attach your Indian
+number, set `PLIVO_AUTH_TOKEN` and `PLIVO_WEBHOOK_URL` (`https://<worker>`), and map the number in
+**Settings → Phone numbers** (or set `PLIVO_DEFAULT_BUSINESS_TYPE`). `/plivo/answer` returns a
+bidirectional `<Stream>` and, after it, a `<Redirect>` to `/plivo/after-stream` (transfer or hang up).
+
+**Not yet tested on a live call:** the Exotel and Plivo protocol details come from the carriers' docs
+and reference bots, and are covered by unit tests and the simulator, but no real Exotel/Plivo call has
+gone through them yet. Check the first live call's logs (`npx wrangler tail`).
 
 ### Calendar integration (optional)
 
@@ -389,7 +463,10 @@ curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Typ
 |------|---------|
 | `worker/src/config.ts` | Model id, Anthropic client timeouts, fail-closed secret helpers |
 | `worker/src/routes/twilio.ts` | Twilio webhooks (signature-verified) and stream TwiML |
-| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: Deepgram STT → `runTurn()` → Cartesia TTS |
+| `worker/src/routes/exotel.ts`, `plivo.ts` | Indian carriers: stream URL, auth, transfer-to-staff endpoints |
+| `worker/src/telephony/` | Telephony adapters: each carrier's media-stream protocol (Twilio, Exotel, Plivo) behind one interface |
+| `worker/src/services/phone-numbers.ts` | Called number → business routing (`phone_numbers` table) |
+| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: carrier adapter → Deepgram STT → `runTurn()` → Cartesia TTS |
 | `worker/src/services/turn.service.ts` | Voice agent loop (streaming, prompt caching) |
 | `worker/src/services/tool-router.service.ts` | AI tool definitions (search, availability, booking) |
 | `worker/src/services/calendar/` | Per-business calendar integration: provider adapters (`google.ts`), connection storage, busy-time and event sync |
@@ -439,11 +516,13 @@ what ships.
   Fill in `about` via `POST /admin/sectors` for anything else callers ask (warranty, payment, parking…).
 - **Memory.** Each turn sends the model's full message history, including tool calls and results, so it
   keeps the service ids and exact slot datetimes it found. (`call:{sid}` in KV keeps the plain transcript.)
-- **Barge-in.** Every audio chunk is followed by a Twilio `mark`; the assistant counts as speaking until
-  Twilio reports playback reached the last mark, not merely until audio was sent. When the caller cuts in,
+- **Barge-in.** Every audio chunk is followed by a carrier mark (Twilio/Exotel `mark`, Plivo `checkpoint`); the assistant counts as speaking until
+  the carrier reports playback reached the last mark, not merely until audio was sent. When the caller cuts in,
   history records only what they actually heard, ending in `[caller interrupted]`.
 - **Split utterances.** Turns run one at a time. If the caller keeps talking before hearing any reply, the
   running turn is abandoned and their words are merged into the next utterance.
+- **Carriers.** All carrier-specific framing lives in `worker/src/telephony/` (see "Indian phone
+  numbers"); `CallRelay` itself only sees start/media/mark/stop events and μ-law 8 kHz audio.
 - **Caller identity.** `/twilio/inbound` hashes the caller's number (same key as WhatsApp) into the stream
   token; callers no longer share `TWILIO_DEFAULT_CUSTOMER_HASH`. Withheld numbers get a per-call identity.
   The raw number also rides in the token as the default callback number for bookings and messages.

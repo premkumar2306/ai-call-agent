@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { COUNTRIES, countryDefaults } from '../locale';
 import PrivacySettings from './PrivacySettings';
+import PhoneNumbers from './PhoneNumbers';
 
 interface Props {
   base: string;
@@ -57,11 +58,11 @@ export default function Settings({ base, adminKey, sectors }: Props) {
   };
 
   return (
-    <>
+    <div style={{ display: 'grid', gap: 16 }}>
     <div style={card}>
       <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Phone line</h2>
       <p style={{ margin: '0 0 16px', color: '#888', fontSize: 13 }}>
-        Which business answers inbound calls (and WhatsApp messages without a number-specific mapping). Takes effect on the next call.
+        Which business answers inbound Twilio calls on numbers not mapped below (and WhatsApp messages without a number-specific mapping). Takes effect on the next call.
       </p>
       {state && (
         <p style={{ margin: '0 0 12px', fontSize: 13, color: '#aaa' }}>
@@ -99,7 +100,8 @@ export default function Settings({ base, adminKey, sectors }: Props) {
       {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
     </div>
     <PrivacySettings base={base} adminKey={adminKey} sectors={sectors} />
-    </>
+    <PhoneNumbers base={base} adminKey={adminKey} sectors={sectors} />
+    </div>
   );
 }
 

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
 
 export const sectors = sqliteTable('sectors', {
   key:          text('key').primaryKey(),
@@ -208,4 +208,17 @@ export const dataRequests = sqliteTable('data_requests', {
   createdAt:        integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 }, (t) => [
   index('idx_data_requests_business_created').on(t.businessType, t.createdAt),
+]);
+
+// Called number → business, per carrier (drizzle/0013_phone_numbers.sql).
+export const phoneNumbers = sqliteTable('phone_numbers', {
+  number:       text('number').notNull(),          // E.164
+  provider:     text('provider').notNull(),        // twilio | exotel | plivo
+  businessType: text('business_type').notNull(),
+  label:        text('label'),
+  createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  primaryKey({ columns: [t.number, t.provider] }),
+  index('idx_phone_numbers_business').on(t.businessType),
 ]);

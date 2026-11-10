@@ -170,6 +170,18 @@ export interface Env {
   /** @deprecated Use TWILIO_DEFAULT_BUSINESS_TYPE */
   TWILIO_DEFAULT_SECTOR?: string;
   TWILIO_DEFAULT_CUSTOMER_HASH?: string; // hashed ID for the anonymous caller
+  // Exotel (Indian numbers, routes/exotel.ts). EXOTEL_WEBHOOK_SECRET is a
+  // secret: Exotel doesn't sign webhooks, so every /exotel/* URL configured in
+  // the call flow carries it (Basic auth or ?key=). Required in production.
+  EXOTEL_WEBHOOK_SECRET?: string;
+  /** Business for ExoPhones with no phone_numbers row. Unset = such calls are refused. */
+  EXOTEL_DEFAULT_BUSINESS_TYPE?: string;
+  // Plivo (routes/plivo.ts). PLIVO_AUTH_TOKEN verifies X-Plivo-Signature-V3;
+  // PLIVO_WEBHOOK_URL is the public base URL Plivo calls. Both required in production.
+  PLIVO_AUTH_TOKEN?: string;
+  PLIVO_WEBHOOK_URL?: string;
+  /** Business for Plivo numbers with no phone_numbers row. */
+  PLIVO_DEFAULT_BUSINESS_TYPE?: string;
   // WhatsApp Cloud API (all secrets — set via `wrangler secret put`)
   WA_APP_SECRET?: string;            // Meta app secret for X-Hub-Signature-256 verification
   WA_VERIFY_TOKEN?: string;          // Arbitrary token used in Meta webhook registration
