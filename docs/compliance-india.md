@@ -29,8 +29,10 @@ Admin UI: **Settings → Privacy & data**. API: `/admin/privacy/:businessType/*`
 - **Call-start notice.** Right after "Thanks for calling!", Avery says the caller is talking to
   an AI assistant and that the call is transcribed. Default wording:
   *"Just so you know, you're speaking with an AI assistant, and this call is transcribed so we
-  can help you. Our privacy notice is linked in any text we send you."* You can replace it (e.g.
-  in Hindi), up to 400 characters. Setting: *Automatic* (on when the business is in India — its
+  can help you. Our privacy notice is linked in any text we send you."* Businesses whose phone line
+  speaks Hindi or Hinglish (voice language `hi` / `hi-en`) get a Hindi (Devanagari) or Hinglish
+  version of this default instead. You can replace it with your own wording, up to 400 characters;
+  your wording is used whatever the language. Setting: *Automatic* (on when the business is in India — its
   country is IN, or its timezone is Asia/Kolkata or currency INR), *Always on*, or *Off*.
 - **Privacy notice link.** With the notice on and a privacy notice URL set, booking confirmation
   texts and the first WhatsApp reply of a conversation include `Privacy notice: <url>`. The first

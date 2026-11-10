@@ -264,7 +264,8 @@ with `X-Admin-Key`). Everything is off for existing businesses; see
 [`docs/compliance-india.md`](docs/compliance-india.md) for what this does and doesn't cover.
 
 - **Call-start notice** (`sectors.ai_disclosure`, `disclosure_text`): after "Thanks for calling!"
-  Avery says the caller is talking to an AI assistant and the call is transcribed. NULL = automatic:
+  Avery says the caller is talking to an AI assistant and the call is transcribed (default wording
+  in English, Hindi or Hinglish to match the business's voice language). NULL = automatic:
   on for businesses in India (country IN, or timezone `Asia/Kolkata` / currency INR), off elsewhere.
   Each notice is logged in `consent_records` (wording version, time, heard to the end or not).
 - **Privacy notice link** (`privacy_notice_url`): added to booking confirmation texts and the first

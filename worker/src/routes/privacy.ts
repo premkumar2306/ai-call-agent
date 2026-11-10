@@ -3,7 +3,7 @@ import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
 import { getSector, updatePrivacySettings, type PrivacySettings } from '../services/sector.service';
 import {
-  DEFAULT_DISCLOSURE_TEXT, DISCLOSURE_MAX_CHARS, disclosureEnabled, isIndianBusiness, validPrivacyUrl,
+  DISCLOSURE_MAX_CHARS, defaultDisclosureText, disclosureEnabled, isIndianBusiness, validPrivacyUrl,
 } from '../services/disclosure';
 import { resolveSubject, exportSubjectData, eraseSubjectData } from '../services/data-rights.service';
 import { CONSENT_LOG_MIN_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, validRetentionDays } from '../services/retention.service';
@@ -27,7 +27,7 @@ privacyAdminRouter.get('/:businessType/settings', async (c) => {
       disclosureEffective: disclosureEnabled(meta),
       inIndia: isIndianBusiness(meta),
       disclosureText: meta.disclosureText ?? null,
-      defaultDisclosureText: DEFAULT_DISCLOSURE_TEXT,
+      defaultDisclosureText: defaultDisclosureText(meta),
       disclosureMaxChars: DISCLOSURE_MAX_CHARS,
       privacyNoticeUrl: meta.privacyNoticeUrl ?? null,
       retentionDays: meta.retentionDays ?? null,

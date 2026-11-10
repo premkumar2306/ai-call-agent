@@ -10,9 +10,38 @@ import type { Env, SectorMeta } from '../types';
 // Off for existing businesses unless switched on: sectors.ai_disclosure NULL
 // means "automatic", which is on only for businesses in India.
 
-export const DEFAULT_DISCLOSURE_TEXT =
-  "Just so you know, you're speaking with an AI assistant, and this call is transcribed so we can help you. " +
-  'Our privacy notice is linked in any text we send you.';
+export type NoticeLanguage = 'en' | 'hi' | 'hi-en';
+
+// Built-in wording per phone-line language, so a Hindi voice doesn't read
+// English words. A business's own disclosure_text always wins.
+export const DEFAULT_DISCLOSURE_TEXTS: Record<NoticeLanguage, string> = {
+  en: "Just so you know, you're speaking with an AI assistant, and this call is transcribed so we can help you. " +
+    'Our privacy notice is linked in any text we send you.',
+  hi: 'आपकी जानकारी के लिए, आप एक AI सहायक से बात कर रहे हैं, और आपकी मदद के लिए इस कॉल को लिखित रूप में दर्ज किया जा रहा है। ' +
+    'हमारी गोपनीयता सूचना का लिंक हमारे भेजे हर मैसेज में है।',
+  'hi-en': 'Aapki jaankari ke liye, aap ek AI assistant se baat kar rahe hain, aur aapki help ke liye yeh call transcribe ki ja rahi hai. ' +
+    'Hamari privacy notice ka link hamare har message mein hai.',
+};
+export const DEFAULT_DISCLOSURE_TEXT = DEFAULT_DISCLOSURE_TEXTS.en;
+
+const WHATSAPP_NOTICE_TEXTS: Record<NoticeLanguage, string> = {
+  en: "You're chatting with an AI assistant. Messages are stored so we can help you.",
+  hi: 'आप एक AI सहायक से चैट कर रहे हैं। आपकी मदद के लिए मैसेज सहेजे जाते हैं।',
+  'hi-en': 'Aap ek AI assistant se chat kar rahe hain. Aapki help ke liye messages save kiye jaate hain.',
+};
+
+/**
+ * The business's phone-line language: `voice.language` once the Indic voice
+ * workstream (#72) adds it, else English.
+ */
+export function noticeLanguage(meta: object | null | undefined): NoticeLanguage {
+  const lang = (meta as { voice?: { language?: string } | null } | null | undefined)?.voice?.language;
+  return lang === 'hi' || lang === 'hi-en' ? lang : 'en';
+}
+
+export function defaultDisclosureText(meta: SectorMeta | null | undefined): string {
+  return DEFAULT_DISCLOSURE_TEXTS[noticeLanguage(meta)];
+}
 
 // Upper bound on a custom notice, so a pasted policy doesn't become a
 // minute of audio before the caller can speak.
@@ -40,7 +69,7 @@ export function disclosureEnabled(meta: CountryAware | null | undefined): boolea
 
 export function disclosureText(meta: SectorMeta | null | undefined): string {
   const custom = meta?.disclosureText?.trim();
-  return custom ? custom.slice(0, DISCLOSURE_MAX_CHARS) : DEFAULT_DISCLOSURE_TEXT;
+  return custom ? custom.slice(0, DISCLOSURE_MAX_CHARS) : defaultDisclosureText(meta);
 }
 
 /** The text to speak at call start, or null when the notice is off. */
@@ -62,7 +91,7 @@ export function whatsappNotice(meta: CountryAware | null | undefined): string | 
   if (!disclosureEnabled(meta)) return null;
   const base = meta?.disclosureText?.trim()
     ? disclosureText(meta)
-    : "You're chatting with an AI assistant. Messages are stored so we can help you.";
+    : WHATSAPP_NOTICE_TEXTS[noticeLanguage(meta)];
   return `${base}${privacyLinkSuffix(meta)}`.trim();
 }
 

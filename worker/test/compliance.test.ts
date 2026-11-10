@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import type { Env, SectorMeta } from '../src/types';
 import {
-  DEFAULT_DISCLOSURE_TEXT, callStartNotice, disclosureEnabled, isIndianBusiness, noticeVersion,
+  DEFAULT_DISCLOSURE_TEXT, DEFAULT_DISCLOSURE_TEXTS, callStartNotice, noticeLanguage, disclosureEnabled, isIndianBusiness, noticeVersion,
   privacyLinkSuffix, recordConsent, validPrivacyUrl, whatsappNotice,
 } from '../src/services/disclosure';
 import {
@@ -53,6 +53,26 @@ describe('call-start disclosure', () => {
     expect(await noticeVersion('a')).toBe(await noticeVersion('a'));
     expect(await noticeVersion('a')).not.toBe(await noticeVersion('b'));
     expect(await noticeVersion('a')).toMatch(/^[0-9a-f]{12}$/);
+  });
+});
+
+describe('notice language', () => {
+  const withLang = (language: string) => ({ ...IN, voice: { language } }) as unknown as SectorMeta;
+  it('follows the phone-line language, English by default', () => {
+    expect(noticeLanguage(IN)).toBe('en');
+    expect(callStartNotice(IN)).toBe(DEFAULT_DISCLOSURE_TEXTS.en);
+    expect(callStartNotice(withLang('hi'))).toBe(DEFAULT_DISCLOSURE_TEXTS.hi);
+    expect(callStartNotice(withLang('hi'))).toMatch(/[\u0900-\u097F]/); // Devanagari
+    expect(callStartNotice(withLang('hi-en'))).toBe(DEFAULT_DISCLOSURE_TEXTS['hi-en']);
+    expect(callStartNotice(withLang('fr'))).toBe(DEFAULT_DISCLOSURE_TEXTS.en);
+  });
+  it('a custom notice still wins, and WhatsApp follows the language too', () => {
+    expect(callStartNotice({ ...withLang('hi'), disclosureText: 'Custom.' })).toBe('Custom.');
+    expect(whatsappNotice(withLang('hi-en'))).toMatch(/^Aap ek AI assistant/);
+    expect(whatsappNotice(withLang('hi'))).toMatch(/[\u0900-\u097F]/);
+  });
+  it('every default fits the length cap', () => {
+    for (const t of Object.values(DEFAULT_DISCLOSURE_TEXTS)) expect(t.length).toBeLessThanOrEqual(400);
   });
 });
 
