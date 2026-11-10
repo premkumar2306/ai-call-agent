@@ -50,7 +50,7 @@ Fixes made while merging:
 - signup sets country/locale (explicit, or inferred from INR / Asia/Kolkata), so an Indian business
   gets +91 numbers and the DPDP notice;
 - privacy, voice, doctors and billing routes accept a business owner's login as well as the admin key;
-- usage records name the real carrier (Twilio, Exotel or Plivo).
+- usage records name the real carrier (Twilio, Exotel or Plivo), and cost estimates price Sarvam and Plivo.
 
 Still to do by the owner: Sarvam, Exotel, Razorpay and Resend accounts and secrets; live test calls;
-publishing the privacy notice. Sarvam STT/TTS costs are not yet in the billing cost estimate.
+publishing the privacy notice.
