@@ -1,4 +1,5 @@
 import type { Product, SectorMeta } from '../types';
+import { DEFAULT_LOCALE, formatMoney, localeGuidance, localeOf, spokenMoney, type BusinessLocale } from '../utils/locale';
 
 // Renders everything the database knows about a business — contact details,
 // weekly hours, and the full service catalog with ids and prices — as one
@@ -27,13 +28,25 @@ const DAY_LABEL: Record<string, string> = {
 // Quote)", "Custom pricing"). Saying "free" for the second is a costly lie.
 const QUOTE_RE = /\b(quote[sd]?|custom pricing|price varies|call for)\b/i;
 
-export function formatPrice(p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>): string {
+type Priced = Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>;
+
+// Prices are stored in the currency's minor unit (cents, paise) and written
+// per the business locale: "$89.99" (US, unchanged), "₹1,50,000" (en-IN).
+export function formatPrice(p: Priced, loc: BusinessLocale = DEFAULT_LOCALE): string {
+  return describePrice(p, c => formatMoney(c, loc));
+}
+
+/** As formatPrice, but as the voice should say it ("fifteen hundred rupees"). */
+export function formatSpokenPrice(p: Priced, loc: BusinessLocale = DEFAULT_LOCALE): string {
+  return describePrice(p, c => spokenMoney(c, loc));
+}
+
+function describePrice(p: Priced, money: (minor: number) => string): string {
   if (p.priceCents === 0) {
     return QUOTE_RE.test(`${p.name} ${p.description}`) ? 'price depends on the vehicle' : 'free';
   }
-  const dollars = (c: number) => `$${(c / 100).toFixed(c % 100 === 0 ? 0 : 2)}`;
-  const regular = p.originalPriceCents > p.priceCents ? ` (regularly ${dollars(p.originalPriceCents)})` : '';
-  return `${dollars(p.priceCents)}${regular}`;
+  const regular = p.originalPriceCents > p.priceCents ? ` (regularly ${money(p.originalPriceCents)})` : '';
+  return `${money(p.priceCents)}${regular}`;
 }
 
 export function formatWeeklyHours(hours: SectorMeta['hours'] | undefined): string {
@@ -43,8 +56,8 @@ export function formatWeeklyHours(hours: SectorMeta['hours'] | undefined): strin
     .join('; ');
 }
 
-function formatProduct(p: Product, byId: Map<string, Product>): string {
-  const parts = [`- ${p.name} [id: ${p.id}] — ${formatPrice(p)}`];
+function formatProduct(p: Product, byId: Map<string, Product>, loc: BusinessLocale): string {
+  const parts = [`- ${p.name} [id: ${p.id}] — ${formatPrice(p, loc)}`];
   if (p.durationMinutes) parts.push(`about ${p.durationMinutes} min`);
   if (p.type !== 'SERVICE_APPOINTMENT') parts.push(p.fulfillmentType === 'IN_STORE_PICKUP' ? 'part, pick up in store' : 'product');
   let line = parts.join(', ') + `. ${p.description}`;
@@ -65,6 +78,9 @@ export function buildBusinessProfile(
   if (meta?.website) lines.push(`Website: ${meta.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}`);
   lines.push(`Hours: ${formatWeeklyHours(meta?.hours)}${meta?.timezone ? ` (${meta.timezone} time)` : ''}`);
   if (meta?.about?.trim()) lines.push(`About: ${meta.about.trim()}`);
+  const loc = localeOf(meta);
+  const guidance = localeGuidance(loc);
+  if (guidance) lines.push(guidance);
 
   const active = products.filter(p => p.isActive);
   if (!active.length) {
@@ -88,7 +104,7 @@ export function buildBusinessProfile(
   lines.push('Services and prices (complete list — nothing else is offered):');
   for (const [category, list] of byCategory) {
     lines.push(`${category.replace(/_/g, ' ')}:`);
-    for (const p of list) lines.push(formatProduct(p, byId));
+    for (const p of list) lines.push(formatProduct(p, byId, loc));
   }
   return lines.join('\n');
 }
@@ -97,20 +113,26 @@ export function buildBusinessProfile(
 // the model can turn "tomorrow" or "next Tuesday" into the YYYY-MM-DD the
 // tools need without guessing. The time is floored to the half hour so this
 // block stays byte-identical (and prompt-cacheable) for most of a call.
-export function describeLocalNow(now: Date, timeZone: string | undefined): string {
+export function describeLocalNow(now: Date, timeZone: string | undefined, locale = 'en-US'): string {
   const tz = timeZone || 'UTC';
   const floored = new Date(Math.floor(now.getTime() / 1_800_000) * 1_800_000);
-  let today: string;
   try {
-    today = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-      hour: 'numeric', minute: '2-digit',
-    }).format(floored);
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
   } catch {
-    return describeLocalNow(now, 'UTC');
+    return describeLocalNow(now, 'UTC', locale);
   }
+  // An invalid locale falls back to en-US rather than breaking the prompt.
+  const fmt = (opts: Intl.DateTimeFormatOptions) => {
+    try { return new Intl.DateTimeFormat(locale, { timeZone: tz, ...opts }); }
+    catch { return new Intl.DateTimeFormat('en-US', { timeZone: tz, ...opts }); }
+  };
+  const today = fmt({
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  }).format(floored);
   const ymd = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
-  const weekday = (d: Date) => new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' }).format(d);
+  const weekdayFmt = fmt({ weekday: 'long' });
+  const weekday = (d: Date) => weekdayFmt.format(d);
   const upcoming: string[] = [];
   for (let i = 0; i < 8; i++) {
     const d = new Date(now.getTime() + i * 86_400_000);

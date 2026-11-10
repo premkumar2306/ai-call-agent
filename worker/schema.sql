@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS sectors (
   categories TEXT NOT NULL,           -- JSON array
   hours      TEXT NOT NULL,           -- JSON object { mon: "9am–5pm", … }
   timezone   TEXT NOT NULL DEFAULT 'America/Chicago',
-  currency   TEXT NOT NULL DEFAULT 'USD',
+  currency   TEXT NOT NULL DEFAULT 'USD',   -- ISO 4217; prices are in its minor unit (locale, country_code: drizzle/0011)
   address    TEXT,
   phone      TEXT,
   website    TEXT,

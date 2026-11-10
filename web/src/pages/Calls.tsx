@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { formatPhone, type SectorLocale } from '../locale';
 
 interface Props {
   base: string;
@@ -51,11 +52,19 @@ interface MessageRow {
   createdAt: number | string;
 }
 
-function formatSlot(iso: string | null): string {
+// Booking times are the business's wall clock; non-US businesses are shown in
+// their own locale (en-IN: "Mon, 2 Nov 10:30 am").
+function formatSlot(iso: string | null, locale?: string): string {
   if (!iso) return '—';
   const [d, t] = iso.split('T');
   const date = new Date(`${d}T12:00:00`);
   const [h, m] = t.split(':').map(Number);
+  if (locale && locale !== 'en-US') {
+    try {
+      const at = new Date(Date.UTC(2000, 0, 1, h, m));
+      return `${date.toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' })} ${at.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`;
+    } catch { /* unknown locale: fall through */ }
+  }
   const clock = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
   return `${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} ${clock}`;
 }
@@ -104,7 +113,7 @@ function LatencyChart({ metrics }: { metrics: TurnMetric[] }) {
   );
 }
 
-interface SectorOption { key: string; name: string }
+interface SectorOption extends SectorLocale { key: string; name: string }
 
 function toMs(ts: number | string): number {
   return typeof ts === 'number' ? ts * 1000 : new Date(ts).getTime();
@@ -207,6 +216,7 @@ export default function Calls({ base, adminKey }: Props) {
   }, [base, adminKey]);
 
   const sectorName = (key: string) => sectors.find(s => s.key === key)?.name ?? key;
+  const localeFor = (key: string) => sectors.find(s => s.key === key)?.locale;
   const visible = businessFilter === 'all' ? transcripts : transcripts.filter(t => t.businessType === businessFilter);
   const open = visible.find(t => t.id === openId) ?? null;
   const inBusiness = <T extends { businessType: string }>(rows: T[]) =>
@@ -301,11 +311,11 @@ export default function Calls({ base, adminKey }: Props) {
                 <tbody>
                   {visibleBookings.map(b => (
                     <tr key={b.id}>
-                      <td style={td}>{formatSlot(b.scheduledAt)}</td>
+                      <td style={td}>{formatSlot(b.scheduledAt, localeFor(b.businessType))}</td>
                       <td style={td}>{b.productName}{b.notes ? <div style={{ color: '#888', fontSize: 12 }}>{b.notes}</div> : null}</td>
                       <td style={td}>{b.customerName ?? '—'}</td>
                       <td style={td}>{b.vehicle ?? '—'}</td>
-                      <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: '#a78bff' }}>{b.callbackPhone}</a> : '—'}</td>
+                      <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: '#a78bff' }}>{formatPhone(b.callbackPhone)}</a> : '—'}</td>
                       <td style={td}>{b.status.toLowerCase()}</td>
                     </tr>
                   ))}
@@ -325,7 +335,7 @@ export default function Calls({ base, adminKey }: Props) {
               {visibleMessages.map(m => (
                 <div key={m.id} style={{ border: '1px solid #26263a', borderRadius: 10, padding: 12, opacity: m.status === 'DONE' ? 0.5 : 1 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', fontSize: 12, color: '#999' }}>
-                    <span>{m.callerName ?? 'Caller'} · {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`} style={{ color: '#a78bff' }}>{m.callbackPhone}</a> : 'no number'} · {formatDateTime(m.createdAt)}</span>
+                    <span>{m.callerName ?? 'Caller'} · {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`} style={{ color: '#a78bff' }}>{formatPhone(m.callbackPhone)}</a> : 'no number'} · {formatDateTime(m.createdAt)}</span>
                     <button onClick={() => markDone(m)} style={{ background: '#22222f', border: '1px solid #2a2a3a', color: '#ddd', borderRadius: 6, fontSize: 12, padding: '2px 8px', cursor: 'pointer' }}>
                       {m.status === 'DONE' ? 'Reopen' : 'Mark done'}
                     </button>

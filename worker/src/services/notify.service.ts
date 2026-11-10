@@ -1,6 +1,7 @@
 import { HTTP_TIMEOUT_MS } from '../config';
 import type { Env, Order, SectorMeta } from '../types';
 import { formatSlotLabel } from './tool-router.service';
+import { formatPhone, localeOf } from '../utils/locale';
 
 // Tells people what the agent did: the business (email to the sector's
 // notify_email) and the caller (text to their callback number). Each channel
@@ -46,13 +47,16 @@ async function sendSms(env: Env, to: string, body: string): Promise<void> {
 
 const logFail = (what: string) => (e: any) => console.error(`[notify] ${what} failed`, e?.message || e);
 
-export function bookingSummary(order: Order): string {
-  const when = order.scheduledAt ? formatSlotLabel(order.scheduledAt) : 'no time set';
+// Dates use the business locale; Indian callback numbers are grouped
+// ("+91 98765 43210"). Defaults (en-US) give the same text as before.
+export function bookingSummary(order: Order, meta?: SectorMeta | null): string {
+  const locale = localeOf(meta).locale;
+  const when = order.scheduledAt ? formatSlotLabel(order.scheduledAt, undefined, undefined, locale) : 'no time set';
   return [
     `${order.productName} — ${when}`,
     `Customer: ${order.customerName ?? 'not given'}`,
     order.vehicle ? `Vehicle: ${order.vehicle}` : '',
-    `Callback: ${order.callbackPhone ?? 'not given'}`,
+    `Callback: ${order.callbackPhone ? formatPhone(order.callbackPhone) : 'not given'}`,
     order.notes ? `Notes: ${order.notes}` : '',
     `Booking ref: ${order.id.slice(0, 8)}`,
   ].filter(Boolean).join('\n');
@@ -66,10 +70,10 @@ export async function notifyBooking(env: Env, meta: SectorMeta | null | undefine
   const jobs: Promise<void>[] = [];
   if (meta?.notifyEmail) {
     jobs.push(sendEmail(env, meta.notifyEmail, `${verb}: ${order.productName}`,
-      `${verb} taken by the ${name} phone assistant.\n\n${bookingSummary(order)}\n`).catch(logFail('booking email')));
+      `${verb} taken by the ${name} phone assistant.\n\n${bookingSummary(order, meta)}\n`).catch(logFail('booking email')));
   }
   if (order.callbackPhone) {
-    const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt)}` : '';
+    const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, undefined, undefined, localeOf(meta).locale)}` : '';
     const text = event === 'cancelled'
       ? `${name}: your ${order.productName}${when} is cancelled.`
       : `${name}: you're booked for ${order.productName}${when}.${meta?.address ? ` ${meta.address}.` : ''}${meta?.phone ? ` Questions: ${meta.phone}.` : ''}`;
@@ -84,6 +88,6 @@ export async function notifyMessage(
 ): Promise<void> {
   if (!meta?.notifyEmail) return;
   await sendEmail(env, meta.notifyEmail, `${msg.updated ? 'Updated phone message' : 'Phone message'} from ${msg.callerName ?? 'a caller'}`,
-    `Message left with the ${meta.name} phone assistant.\n\nFrom: ${msg.callerName ?? 'not given'}\nCallback: ${msg.callbackPhone ?? 'not given'}\n\n${msg.message}\n`,
+    `Message left with the ${meta.name} phone assistant.\n\nFrom: ${msg.callerName ?? 'not given'}\nCallback: ${msg.callbackPhone ? formatPhone(msg.callbackPhone) : 'not given'}\n\n${msg.message}\n`,
   ).catch(logFail('message email'));
 }

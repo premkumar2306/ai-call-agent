@@ -231,6 +231,31 @@ Set where a business's booking and message emails go, and how many different
 customers' visits may start at the same time (bays), with `POST /admin/sectors`
 (`notify_email`, `capacity`).
 
+### Business locale (currency, dates, phone numbers)
+
+Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business locale**.
+There, the **Country** dropdown (United States +1 / India +91) fills in that country's currency, locale and
+timezone, each of which can still be changed. Supported countries are listed once, in `COUNTRIES`
+(`worker/src/utils/locale.ts`); the worker rejects any other `country_code`.
+
+| Field | Default | India | Effect |
+|-------|---------|-------|--------|
+| `currency` | `USD` | `INR` | ISO 4217. Catalog `price_cents` are in this currency's minor unit (cents, paise). |
+| `locale` | `en-US` | `en-IN` | BCP 47. How prices and dates are written: `₹1,50,000`, "Friday, 30 Oct at 5:30 pm". |
+| `country_code` | `US` | `IN` | How callers' local numbers are read: `98765 43210`, `022 2345 6789` → `+91…`. |
+| `timezone` | `America/Chicago` | `Asia/Kolkata` | IANA zone for opening hours, slots and "now" in the prompt. |
+
+```bash
+curl -X POST "$WORKER/admin/sectors" -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{
+  "key": "sharma_dental", "name": "Sharma Dental Care", "hours": {"mon": "10am–7pm"},
+  "currency": "INR", "locale": "en-IN", "country_code": "IN", "timezone": "Asia/Kolkata"}'
+```
+
+Omitted locale fields keep their saved values; invalid ones are rejected with a 400. With INR the agent
+says prices the Indian way ("fifteen hundred rupees", "one lakh fifty thousand rupees"), reads Indian
+callback numbers back digit by digit, and emails, calendar events and the Calls tab show `+91 98765 43210`.
+The defaults produce exactly the same prompt and messages as before locales existed (`worker/src/utils/locale.ts`).
+
 ### Calendar integration (optional)
 
 Each business can connect its own calendar from the admin UI's **Calendar** tab.
