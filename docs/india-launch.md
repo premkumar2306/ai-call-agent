@@ -31,13 +31,26 @@ Workstreams run one at a time, in the order A, G, D, C, B, E, F, to stay within 
 
 | # | PR | CI | State | Owner must configure |
 |---|----|----|-------|----------------------|
-| A | [#68](https://github.com/premkumar2306/ai-call-agent/pull/68) | green | done, ready for review | Pick India in Settings → Country for an Indian business |
-| G | [#69](https://github.com/premkumar2306/ai-call-agent/pull/69) | green | done, ready for review | Apply `worker/seeds/demo_clinic_india.sql` to try the demo clinic; live Indian-voice test calls need a Mac |
-| D | [#70](https://github.com/premkumar2306/ai-call-agent/pull/70) | green | done, ready for review | Fill in `docs/privacy-notice-template.md` and publish it; set retention days and privacy URL in Settings. Disclosure has English, Hindi and Hinglish wording |
-| C | [#71](https://github.com/premkumar2306/ai-call-agent/pull/71) | green | done, ready for review | Exotel account with KYC, an Indian number, the Voicebot flow and `EXOTEL_*` secrets; then add the number in Settings. Needs a live test call |
-| B | [#72](https://github.com/premkumar2306/ai-call-agent/pull/72) | green | done, ready for review | Sarvam account and `SARVAM_API_KEY`; pick Hindi/Hinglish voice in Settings. Needs live test calls |
-| E | [#73](https://github.com/premkumar2306/ai-call-agent/pull/73) | green | done, ready for review | `RESEND_API_KEY` and `EMAIL_FROM` for sign-in emails. After merging, switch the other PRs' routes to `withBusinessAccess` (list in #73) |
-| F | [#74](https://github.com/premkumar2306/ai-call-agent/pull/74) | green | done, ready for review | Razorpay account, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, webhook URL; set a plan per business. Needs a test-mode run |
+| A | [#68](https://github.com/premkumar2306/ai-call-agent/pull/68) | merged | live (off until configured) | Pick India in Settings → Country for an Indian business |
+| G | [#69](https://github.com/premkumar2306/ai-call-agent/pull/69) | merged | live (off until configured) | Apply `worker/seeds/demo_clinic_india.sql` to try the demo clinic; live Indian-voice test calls need a Mac |
+| D | [#70](https://github.com/premkumar2306/ai-call-agent/pull/70) | merged | live (off until configured) | Fill in `docs/privacy-notice-template.md` and publish it; set retention days and privacy URL in Settings. Disclosure has English, Hindi and Hinglish wording |
+| C | [#71](https://github.com/premkumar2306/ai-call-agent/pull/71) | merged | live (off until configured) | Exotel account with KYC, an Indian number, the Voicebot flow and `EXOTEL_*` secrets; then add the number in Settings. Needs a live test call |
+| B | [#72](https://github.com/premkumar2306/ai-call-agent/pull/72) | merged | live (off until configured) | Sarvam account and `SARVAM_API_KEY`; pick Hindi/Hinglish voice in Settings. Needs live test calls |
+| E | [#73](https://github.com/premkumar2306/ai-call-agent/pull/73) | merged | live (off until configured) | `RESEND_API_KEY` and `EMAIL_FROM` for sign-in emails. After merging, switch the other PRs' routes to `withBusinessAccess` (list in #73) |
+| F | [#74](https://github.com/premkumar2306/ai-call-agent/pull/74) | merged | live (off until configured) | Razorpay account, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, webhook URL; set a plan per business. Needs a test-mode run |
 
-All seven workstreams are complete. Merge in this order: #68, #69, #70, #71, #72, #73, #74.
-Each PR's description lists the conflicts to expect when it merges after the earlier ones.
+All seven were merged on 10 Nov 2026, in the order A #68, G #69, D #70, C #71, B #72, E #73, F #74,
+after testing them together (307 worker tests, web build, wrangler dry-run, every migration in merge
+order). Each merge deployed to production. New behaviour stays off for a business until it is
+configured: the US business is unchanged.
+
+Fixes made while merging:
+- one price formatter for clinic fees and the locale (written "₹500", spoken "500 rupees");
+- one daily cron for the retention sweep and month-end billing;
+- signup sets country/locale (explicit, or inferred from INR / Asia/Kolkata), so an Indian business
+  gets +91 numbers and the DPDP notice;
+- privacy, voice, doctors and billing routes accept a business owner's login as well as the admin key;
+- usage records name the real carrier (Twilio, Exotel or Plivo).
+
+Still to do by the owner: Sarvam, Exotel, Razorpay and Resend accounts and secrets; live test calls;
+publishing the privacy notice. Sarvam STT/TTS costs are not yet in the billing cost estimate.
