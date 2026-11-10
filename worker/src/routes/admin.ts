@@ -2,12 +2,15 @@ import { Hono } from 'hono';
 import { eq, and, desc, ne } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
-import { getSectors, getSector, upsertSector } from '../services/sector.service';
+import { getSectors, getSector, upsertSector, invalidateSectors } from '../services/sector.service';
+import { isVertical } from '../services/verticals';
+import { parseHoursRanges } from '../services/tool-router.service';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
+import { COUNTRIES, isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
 import { removeBookingFromCalendar } from '../services/calendar';
-import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
+import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages, resources as resourcesTable } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
 
@@ -85,19 +88,35 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
   if (!body?.key || !body?.name || !body?.hours) {
     return c.json({ success: false, error: 'key, name, and hours are required' }, 400);
   }
+  // Locale fields are optional; when given they must be valid, so a typo
+  // can't silently break price or date formatting on live calls.
+  const invalid = [
+    body.currency !== undefined && !isValidCurrency(body.currency) && 'currency (ISO 4217, e.g. "INR")',
+    body.locale !== undefined && !isValidLocale(body.locale) && 'locale (BCP 47, e.g. "en-IN")',
+    body.country_code !== undefined && !isValidCountryCode(body.country_code) && `country_code (one of ${Object.keys(COUNTRIES).join(', ')})`,
+    body.timezone !== undefined && !isValidTimeZone(body.timezone) && 'timezone (IANA, e.g. "Asia/Kolkata")',
+  ].filter(Boolean);
+  if (invalid.length) return c.json({ success: false, error: `Invalid ${invalid.join(', ')}` }, 400);
+  if (body.vertical != null && !isVertical(body.vertical)) {
+    return c.json({ success: false, error: `Unknown vertical: ${body.vertical}` }, 400);
+  }
   await upsertSector(c.env, body.key, {
     name:         body.name,
     model:        body.model ?? 'service',
     categories:   body.categories ?? [],
     hours:        body.hours,
     timezone:     body.timezone ?? 'America/Chicago',
-    currency:     body.currency ?? 'USD',
+    currency:     body.currency,
+    locale:       body.locale,
+    countryCode:  body.country_code,
     address:      body.address,
     phone:        body.phone,
     website:      body.website,
     about:        typeof body.about === 'string' ? body.about.slice(0, 4000) : undefined,
     notifyEmail:  typeof body.notify_email === 'string' && /^[^\s@]+@[^\s@]+$/.test(body.notify_email) ? body.notify_email : undefined,
     capacity:     Number.isInteger(body.capacity) && body.capacity >= 1 && body.capacity <= 50 ? body.capacity : undefined,
+    // Omitted = keep; null = back to general.
+    vertical:     body.vertical === null ? null : body.vertical ?? undefined,
   });
   return c.json({ success: true, data: { key: body.key, name: body.name } });
 });
@@ -195,6 +214,52 @@ adminRouter.post('/products', withAdminKey, async (c) => {
     ]);
   }
   return c.json({ success: true, data: { inserted: rows.length } });
+});
+
+// POST /admin/resources — upsert one or many bookable people (a clinic's doctors)
+// { id, business_type, name, role?, hours: { mon: "10am–1pm, 5pm–9pm" }, slot_minutes?, fee_cents?, about?,
+//   categories?: ["DENTAL"] (product categories they do; omit = all), sort_order?, is_active? }
+adminRouter.post('/resources', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const rows: any[] = Array.isArray(body) ? body : body ? [body] : [];
+  if (!rows.length) return c.json({ success: false, error: 'Provide a resource object or array' }, 400);
+  for (const r of rows) {
+    if (!r?.id || !r.business_type || !r.name || !r.hours || typeof r.hours !== 'object') {
+      return c.json({ success: false, error: `id, business_type, name, hours required — got: ${JSON.stringify(r)}` }, 400);
+    }
+    const bad = Object.entries(r.hours).find(([, v]) => typeof v !== 'string' || !parseHoursRanges(v).length);
+    if (bad) return c.json({ success: false, error: `Unreadable hours for ${r.id}.${bad[0]}: ${JSON.stringify(bad[1])} (use e.g. "10am–1pm, 5pm–9pm")` }, 400);
+    if (r.slot_minutes != null && !(Number.isInteger(r.slot_minutes) && r.slot_minutes >= 5 && r.slot_minutes <= 240)) {
+      return c.json({ success: false, error: `slot_minutes must be 5–240 for ${r.id}` }, 400);
+    }
+  }
+  const db = getDb(c.env.DB);
+  const now = new Date();
+  for (const r of rows) {
+    const values = {
+      businessType: r.business_type,
+      name: String(r.name).slice(0, 120),
+      role: typeof r.role === 'string' ? r.role.slice(0, 120) : null,
+      hours: r.hours,
+      slotMinutes: r.slot_minutes ?? 15,
+      feeCents: Number.isInteger(r.fee_cents) && r.fee_cents >= 0 ? r.fee_cents : null,
+      about: typeof r.about === 'string' ? r.about.slice(0, 1000) : null,
+      categories: Array.isArray(r.categories) && r.categories.every((x: unknown) => typeof x === 'string') && r.categories.length ? r.categories : null,
+      sortOrder: Number.isInteger(r.sort_order) ? r.sort_order : 0,
+      isActive: r.is_active !== false,
+    };
+    await db.insert(resourcesTable).values({ id: r.id, ...values, createdAt: now })
+      .onConflictDoUpdate({ target: resourcesTable.id, set: values });
+  }
+  await invalidateSectors(c.env);
+  return c.json({ success: true, data: { upserted: rows.length } });
+});
+
+// GET /admin/resources/:businessType — a business's bookable people, inactive included
+adminRouter.get('/resources/:businessType', withAdminKey, async (c) => {
+  const rows = await getDb(c.env.DB).select().from(resourcesTable)
+    .where(eq(resourcesTable.businessType, c.req.param('businessType') ?? ''));
+  return c.json({ success: true, data: rows });
 });
 
 // GET /admin/products/:businessType — list products for a sector

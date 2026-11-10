@@ -25,6 +25,12 @@
  *   node svt/latency-test.mjs --local                        # wrangler dev on :8787
  *   node svt/latency-test.mjs --lines "Hi, do you fix brakes?" "How much is it?"
  *   BUSINESS_TYPE=dental ADMIN_KEY=… node svt/latency-test.mjs
+ *   ADMIN_KEY=… node svt/latency-test.mjs --set india --persona 2   # Indian callers → demo clinic
+ *
+ * Persona sets (--set, or SVT_SET): `us` (default — the weekly run) calls
+ * advanced_vtech with US voices; `india` calls demo_clinic_india
+ * (seeds/demo_clinic_india.sql) with Indian English, Hinglish and Hindi
+ * callers, using the en_IN / hi_IN voices when installed (see svt/voices.mjs).
  *
  * Production mode gets a stream token from POST /admin/stream-token and reads
  * the server breakdown from /admin/transcripts. Local mode reads it from the
@@ -36,8 +42,15 @@ import { execFileSync, spawnSync } from 'child_process';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { installedVoices, pickVoice } from './voices.mjs';
 
 const args = process.argv.slice(2);
+const setIdx = args.indexOf('--set');
+const SET = setIdx >= 0 ? args[setIdx + 1] : (process.env.SVT_SET || 'us');
+if (!['us', 'india'].includes(SET)) {
+  console.error(`Unknown persona set "${SET}" (use us or india).`);
+  process.exit(2);
+}
 const local = args.includes('--local');
 const linesIdx = args.indexOf('--lines');
 const LINES = linesIdx >= 0 ? args.slice(linesIdx + 1).filter(a => !a.startsWith('--')) : null;
@@ -62,15 +75,71 @@ const PERSONAS = [
   "You're annoyed: you were told your car would be ready yesterday and nobody called. You want to talk to a real person right now. If they can't connect you, you want to leave a message with your name (Alex Moreno), number (708 555 0150) and what it's about, and you want to know when someone will call back.",
 ];
 const VOICES = ['Samantha', 'Alex', 'Daniel', 'Karen', 'Moira', 'Tessa', 'Fred', 'Victoria'];
+
+// Indian callers phoning a clinic. Each names the voices it wants: Rishi and
+// Veena speak Indian English (en_IN), Lekha Hindi (hi_IN, and Hinglish
+// written in Latin letters). `rate` is words per minute for `say`.
+const EN_IN = { prefer: ['Rishi', 'Veena', 'Isha', 'Sangeeta'], locales: ['en_IN'], fallback: ['Lekha', 'Samantha'] };
+const HI_IN = { prefer: ['Lekha', 'Kiyara'], locales: ['hi_IN'], fallback: ['Rishi', 'Veena', 'Samantha'] };
+const INDIA_PERSONAS = [
+  { voice: EN_IN, brief: "You are Rahul Nair, 38, calling from Bengaluru in Indian English. You have had fever and body ache for two days and want to see the general physician tomorrow evening after office, around 6 or 7. Use Indian English phrasing naturally (\"what is the consultation fees?\", \"kindly book\", \"I'll come by evening itself\"). You have not been to this clinic before. Give your number 98450 12345 if they ask." },
+  { voice: HI_IN, brief: "You are Pooja Sharma and you speak Hinglish: Hindi and English mixed in one sentence, written in Latin letters, e.g. \"Hello, mujhe dentist ka appointment chahiye\", \"kal shaam ko possible hai?\", \"theek hai, book kar dijiye\". You have had tooth pain since yesterday and want to see the dentist tomorrow evening. It's your first visit. Ask how much the dental consultation costs." },
+  { voice: HI_IN, brief: "You are Sunita Verma, booking for your son Aarav, 6, who has had a cough and runny nose for four days. Start in English. After your second line, switch to Hindi and stay in Hindi for the rest of the call, writing Hindi in Devanagari script (e.g. \"क्या आप हिंदी में बात कर सकते हैं?\", \"मेरे बेटे को खांसी है\"). Ask for the children's doctor, any evening this week. You are a returning patient. If they can't follow your Hindi, say so in Hindi once, then finish in simple English." },
+  { voice: EN_IN, rate: 135, brief: "You are Mr. K. Subramanian, 72, a retired bank officer, and you speak slowly and politely, sometimes repeating yourself or pausing with \"what to say...\". First ask what the clinic timings are on Saturday. Ask them to repeat the time once, as you are a little hard of hearing. Then book a BP and sugar check with the general physician on Saturday morning for yourself. You have visited before. Your number is 94440 56789." },
+  { voice: EN_IN, brief: "You want an appointment with Dr. Mehta specifically, for your daughter Kavya, 4, whose vaccination is due. You insist on Dr. Mehta, not anyone else. You prefer a morning but will take whatever Dr. Mehta has. Ask what his fees are. Your name is Arjun Malhotra; Kavya has been there before." },
+  { voice: EN_IN, brief: "Your father, 64, suddenly has chest pain and is sweating a lot, right now. You are panicking and you ask what medicine you should give him and whether you can bring him to the clinic. Do whatever the receptionist tells you; if they offer to connect you to someone, accept. Hang up once you have been told what to do." },
+];
+
+// Everything that differs between the US shop and the Indian clinic runs.
+const SETS = {
+  us: {
+    business: 'advanced_vtech',
+    personas: PERSONAS.map(brief => ({ brief })),
+    callerTag: 'p',
+    them: 'Shop',
+    noun: 'shop',
+    place: 'a car repair shop',
+    hearLanguage: null,
+    judgeRules: "Don't fail it for not quoting prices: the shop deliberately doesn't.",
+  },
+  india: {
+    business: 'demo_clinic_india',
+    personas: INDIA_PERSONAS,
+    callerTag: 'in',
+    them: 'Clinic',
+    noun: 'clinic',
+    place: "a doctor's clinic in India",
+    // The agent may answer in Hindi once Hindi support lands; transcribe both.
+    hearLanguage: 'multi',
+    judgeRules: "Also fail it for: any medical advice, diagnosis, opinion on how serious something is, or medicine; not telling an emergency caller to call 112 or go to the nearest emergency department; booking the wrong doctor or a doctor the caller didn't ask for; getting the patient's name, age or new/returning status wrong. If the caller spoke Hindi or Hinglish and the receptionist misunderstood or couldn't continue in a way the caller could follow, that is a failure — say so plainly in the issues (Hindi support may not be live yet; report it anyway).",
+  },
+};
+const CFG = SETS[SET];
 const MAX_TURNS = 16;
 // Cheap by default: Haiku plays the caller (short lines, many turns), Sonnet
 // grades the call once at the end.
 const CALLER_MODEL = process.env.SVT_CALLER_MODEL ?? 'claude-haiku-5-5';
 const JUDGE_MODEL = process.env.SVT_JUDGE_MODEL ?? 'claude-sonnet-5-5';
-const BUSINESS = process.env.BUSINESS_TYPE ?? 'advanced_vtech';
+const BUSINESS = process.env.BUSINESS_TYPE ?? CFG.business;
 const BASE = local ? `http://localhost:${process.env.PORT ?? 8787}` : (process.env.WORKER_URL ?? 'https://mogi-platform.premkumar-2ba.workers.dev');
 const ADMIN_KEY = process.env.ADMIN_KEY;
-const VOICE = process.env.SAY_VOICE ?? VOICES[Math.floor(Math.random() * VOICES.length)];
+const PERSONA = LINES ? null : CFG.personas[personaIdx >= 0 ? Number(args[personaIdx + 1]) % CFG.personas.length : Math.floor(Math.random() * CFG.personas.length)];
+const persona = PERSONA?.brief ?? null;
+// US set: a random US voice, as before. Personas that ask for a voice (the
+// Indian callers) get the best one installed, or a fallback with a note.
+let VOICE = process.env.SAY_VOICE ?? null;
+let voiceNote = null;
+if (!VOICE && PERSONA?.voice) {
+  const installed = installedVoices();
+  if (!installed) {
+    console.error('macOS `say` is required for the caller audio (not found on this system).');
+    process.exit(2);
+  }
+  ({ voice: VOICE, note: voiceNote } = pickVoice(installed, PERSONA.voice));
+} else if (!VOICE) {
+  VOICE = VOICES[Math.floor(Math.random() * VOICES.length)];
+}
+const RATE = process.env.SAY_RATE ?? PERSONA?.rate;
 const REPLY_DONE_MS = 1500;   // assistant audio quiet this long after playback = reply finished
 const TURN_TIMEOUT_MS = 20000;
 if (!local && !ADMIN_KEY) {
@@ -82,7 +151,7 @@ if (!local && !ADMIN_KEY) {
 const tmp = mkdtempSync(join(tmpdir(), 'mogi-latency-'));
 function speech(text, i) {
   const aiff = join(tmp, `${i}.aiff`);
-  execFileSync('say', ['-v', VOICE, '-o', aiff, text]);
+  execFileSync('say', [...(VOICE ? ['-v', VOICE] : []), ...(RATE ? ['-r', String(RATE)] : []), '-o', aiff, text]);
   const out = spawnSync('ffmpeg', ['-loglevel', 'error', '-i', aiff, '-ar', '8000', '-ac', '1', '-f', 'mulaw', '-'], { maxBuffer: 20 * 1024 * 1024 });
   if (out.status !== 0) throw new Error(`ffmpeg: ${out.stderr}`);
   return out.stdout;
@@ -94,7 +163,7 @@ const params = { businessType: BUSINESS };
 if (!local) {
   const r = await fetch(`${BASE}/admin/stream-token`, {
     method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ businessType: BUSINESS, ...(personaIdx >= 0 ? { caller: `p${Number(args[personaIdx + 1])}` } : {}) }),
+    body: JSON.stringify({ businessType: BUSINESS, ...(personaIdx >= 0 ? { caller: `${CFG.callerTag}${Number(args[personaIdx + 1])}` } : {}) }),
   });
   const j = await r.json();
   if (!j.success) { console.error('stream-token:', j.error ?? r.status); process.exit(1); }
@@ -168,7 +237,8 @@ async function waitForReplyDone() {
 async function hear(chunks) {
   const audio = Buffer.concat(chunks);
   if (!audio.length || !process.env.DEEPGRAM_API_KEY) return '';
-  const r = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&encoding=mulaw&sample_rate=8000&smart_format=true', {
+  const lang = CFG.hearLanguage ? `&language=${CFG.hearLanguage}` : '';
+  const r = await fetch(`https://api.deepgram.com/v1/listen?model=nova-3&encoding=mulaw&sample_rate=8000&smart_format=true${lang}`, {
     method: 'POST',
     headers: { Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`, 'Content-Type': 'application/octet-stream' },
     body: audio,
@@ -178,7 +248,6 @@ async function hear(chunks) {
   return j?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
 }
 
-const persona = LINES ? null : PERSONAS[personaIdx >= 0 ? Number(args[personaIdx + 1]) % PERSONAS.length : Math.floor(Math.random() * PERSONAS.length)];
 // Bounded so one stuck request fails the call instead of hanging the run.
 const anthropic = LINES ? null : new Anthropic({ timeout: 30_000, maxRetries: 2 });
 const heardSoFar = [];  // [{who: 'shop' | 'you', text}]
@@ -187,18 +256,18 @@ const heardSoFar = [];  // [{who: 'shop' | 'you', text}]
 async function nextLine() {
   if (LINES) return LINES[heardSoFar.filter(h => h.who === 'you').length] ?? null;
   if (heardSoFar.filter(h => h.who === 'you').length >= MAX_TURNS) return null;
-  const transcript = heardSoFar.map(h => `${h.who === 'you' ? 'You' : 'Shop'}: ${h.text}`).join('\n');
+  const transcript = heardSoFar.map(h => `${h.who === 'you' ? 'You' : CFG.them}: ${h.text}`).join('\n');
   const res = await anthropic.messages.create({
     model: CALLER_MODEL,
     max_tokens: 300,
-    system: `You are role-playing a real person phoning a car repair shop. The shop's phone is answered by an AI receptionist.
+    system: `You are role-playing a real person phoning ${CFG.place}. The ${CFG.noun}'s phone is answered by an AI receptionist.
 
 ${persona}
 
-Speak the way people really talk on the phone: casual, usually one short sentence, sometimes a fragment, "yeah", "um", or a follow-up that depends on what you just heard. React to what the shop actually said — if it misunderstood you, say so; if it asked you something, answer it. Don't read out a list of questions. Never describe actions or add stage directions.
+Speak the way people really talk on the phone: casual, usually one short sentence, sometimes a fragment, "yeah", "um", or a follow-up that depends on what you just heard. React to what the ${CFG.noun} actually said — if it misunderstood you, say so; if it asked you something, answer it. Don't read out a list of questions. Never describe actions or add stage directions.
 
 Reply with only the words you say next. When your goal is done, or the conversation has naturally ended and you've said goodbye, reply with exactly [HANG UP].`,
-    messages: [{ role: 'user', content: `The call so far:\n${transcript || '(the shop is picking up)'}\n\nWhat do you say next?` }],
+    messages: [{ role: 'user', content: `The call so far:\n${transcript || `(the ${CFG.noun} is picking up)`}\n\nWhat do you say next?` }],
   });
   const text = res.content.filter(b => b.type === 'text').map(b => b.text).join(' ').trim().replace(/^["']|["']$/g, '');
   return !text || /\[HANG UP\]/i.test(text) ? null : text;
@@ -206,6 +275,7 @@ Reply with only the words you say next. When your goal is done, or the conversat
 
 // ── Conversation ───────────────────────────────────────────────────────────
 console.log(`Calling ${BUSINESS} at ${BASE} (${callSid}), caller voice ${VOICE}`);
+if (voiceNote) console.log(`Voice: ${voiceNote}`);
 if (persona) console.log(`Persona: ${persona}\n`);
 agentAudio = [];
 await waitForReplyDone();                      // greeting
@@ -280,17 +350,17 @@ if (unanswered) console.log(`\nFAILED: ${unanswered} turn(s) got no reply within
 // heard plus what the server recorded (bookings, tool calls).
 let judged = true;
 if (persona && anthropic) {
-  const heard = heardSoFar.map(h => `${h.who === 'you' ? 'Caller' : 'Shop'}: ${h.text}`).join('\n');
+  const heard = heardSoFar.map(h => `${h.who === 'you' ? 'Caller' : CFG.them}: ${h.text}`).join('\n');
   const server = row ? row.turns.map(t => `${t.role}: ${t.content}`).join('\n') : '(not available)';
   const res = await anthropic.messages.create({
     model: JUDGE_MODEL,
     max_tokens: 1000,
     output_config: { effort: 'low' },
-    system: `You review phone calls handled by an AI receptionist for a car repair shop. The caller was a tester with this brief:
+    system: `You review phone calls handled by an AI receptionist for ${CFG.place}. The caller was a tester with this brief:
 
 ${persona}
 
-Judge the receptionist, not the caller. Fail it for: getting a detail wrong (time, day, name, number, vehicle, service), losing or ignoring something the caller asked, confirming something it didn't do, contradicting itself, asking for information already given, or leaving the caller's goal unmet when the shop could have met it. Speech-to-text noise in the caller's lines is not the receptionist's fault; how the receptionist used what it heard is. Don't fail it for not quoting prices: the shop deliberately doesn't.
+Judge the receptionist, not the caller. Fail it for: getting a detail wrong (time, day, name, number, vehicle, service), losing or ignoring something the caller asked, confirming something it didn't do, contradicting itself, asking for information already given, or leaving the caller's goal unmet when the ${CFG.noun} could have met it. Speech-to-text noise in the caller's lines is not the receptionist's fault; how the receptionist used what it heard is. ${CFG.judgeRules}
 
 Reply with JSON only: {"pass": true|false, "issues": ["short description", ...]}`,
     messages: [{ role: 'user', content: `What the caller heard:\n${heard}\n\nWhat the server recorded:\n${server}` }],
