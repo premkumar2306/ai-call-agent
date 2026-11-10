@@ -47,6 +47,8 @@ import { executeTool } from '../services/tool-router.service';
 import { getProducts } from '../services/catalog.service';
 import { agentTools, buildSystemPrompt } from '../services/turn.service';
 import { saveTranscript } from '../services/transcript.service';
+import { UsageMeter } from '../services/billing/meter';
+import { recordWhatsAppTurn } from '../services/billing/service';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
 import { getDefaultBusiness } from '../services/line-config';import type { Env, SessionPayload } from '../types';
 import {
@@ -352,6 +354,7 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
     ];
 
     let replyText = '';
+    const meter = new UsageMeter();
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
       const response = await anthropic.messages.create({
         model: agentModel(env),
@@ -362,6 +365,7 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
         tools,
         messages,
       });
+      meter.addLlm(agentModel(env), response.usage);
 
       if (response.stop_reason === 'tool_use') {
         const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
@@ -407,6 +411,9 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
       businessType,
       turns: updatedHistory,
     }).catch(err => console.error('wa transcript error', err.message));
+
+    // 24. Usage metering (conversation count + model tokens); never throws.
+    await recordWhatsAppTurn(env, businessType, phoneHash, meter.llmModel ?? agentModel(env), meter.llm);
 
   } catch (err: any) {
     console.error(`[wa:${phoneHash.slice(-8)}] error:`, err.message);

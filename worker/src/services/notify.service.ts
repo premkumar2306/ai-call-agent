@@ -12,7 +12,7 @@ import { formatSlotLabel } from './tool-router.service';
 
 export type BookingEvent = 'booked' | 'rescheduled' | 'cancelled';
 
-async function sendEmail(env: Env, to: string, subject: string, text: string): Promise<void> {
+export async function sendEmail(env: Env, to: string, subject: string, text: string): Promise<void> {
   if (!env.RESEND_API_KEY || env.RESEND_API_KEY === 'CHANGE_ME') {
     console.log(`[notify] RESEND_API_KEY not set; skipping email "${subject}"`);
     return;

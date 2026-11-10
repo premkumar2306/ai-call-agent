@@ -150,4 +150,14 @@ export interface Env {
   CALENDAR_TOKEN_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  // Billing (services/billing/). Secrets: the Razorpay API key pair and the
+  // webhook secret from Dashboard → Webhooks. Without RAZORPAY_WEBHOOK_SECRET
+  // the webhook rejects everything in production.
+  RAZORPAY_KEY_ID?: string;
+  RAZORPAY_KEY_SECRET?: string;
+  RAZORPAY_WEBHOOK_SECRET?: string;
+  /** Plain var: the operator's GSTIN, printed on invoices and used for the CGST/SGST vs IGST split. */
+  BILLING_SUPPLIER_GSTIN?: string;
+  /** Plain var: JSON merged over DEFAULT_COST_RATES (pricing.ts) for the margin estimate. */
+  BILLING_COST_RATES?: string;
 }

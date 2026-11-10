@@ -12,6 +12,9 @@ import { twilioRouter } from './routes/twilio';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
+import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/billing';
+import { closePeriod } from './services/billing/service';
+import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
 
 export { CallRelay } from './durable-objects/call-relay';
@@ -43,9 +46,12 @@ app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);
 app.route('/twilio',   twilioRouter);
 app.route('/admin/calendar', calendarAdminRouter);
+app.route('/admin/billing', billingAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
+app.route('/billing',  billingRouter);
+app.route('/razorpay', razorpayRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────
 // Liveness by default; `?deep=1` also checks D1 and KV so uptime monitors
@@ -82,4 +88,15 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
-export default app;
+// ── Scheduled jobs (wrangler.toml [triggers]) ──────────────────────────────
+// Daily: bill last month's overage (idempotent; failed rows retry next day).
+// Only businesses with a billing plan are touched.
+async function scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+  ctx.waitUntil(
+    closePeriod(env)
+      .then(r => { if (r.length) console.log('[billing] close-period', JSON.stringify(r)); })
+      .catch(e => console.error('[billing] close-period failed', e?.message || e)),
+  );
+}
+
+export default { fetch: app.fetch, scheduled };

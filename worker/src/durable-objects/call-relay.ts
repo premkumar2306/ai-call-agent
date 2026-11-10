@@ -14,6 +14,8 @@ import { verifyStreamToken } from '../utils/stream-token';
 import { getOrCreateCustomer } from '../utils/identity';
 import { isProduction } from '../config';
 import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesia';
+import { UsageMeter } from '../services/billing/meter';
+import { recordUsage } from '../services/billing/service';
 
 // One CallRelay instance per phone call: Twilio Media Streams → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
@@ -144,6 +146,12 @@ export class CallRelay extends DurableObject<Env> {
   private spokenLog: { text: string; at: number }[] = [];
   private lastAudioEndAt = 0;
   private metrics: TurnMetric[] = [];
+  // Billing: provider usage counted in memory during the call and written
+  // once after it (flushUsage, via waitUntil) — never on a turn's path.
+  private meter = new UsageMeter();
+  private streamStartedAt = 0;
+  private usageFlushed = false;
+  private telephonyProvider = 'twilio';
 
   private get ttsConfig(): CartesiaConfig {
     return {
@@ -316,6 +324,7 @@ export class CallRelay extends DurableObject<Env> {
   private async playChunk(turn: ActiveTurn, chunk: SpokenChunk, started: Promise<Response | null>) {
     const { signal } = turn.abort;
     const res = await started;
+    if (res) this.meter.addTts(chunk.text); // the synthesis was requested, so it's billed
     if (signal.aborted || !res) {
       // Nobody will read this body; release it rather than leak the stream.
       await res?.body?.cancel().catch(() => {});
@@ -429,6 +438,7 @@ export class CallRelay extends DurableObject<Env> {
         signal,
         heardText: () => this.heardText(turn),
         onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
+        onUsage: (model, usage) => this.meter.addLlm(model, usage),
       });
       metric.outcome = !result.committed ? 'dropped' : result.interrupted ? 'interrupted' : 'done';
       if (!result.committed) {
@@ -469,6 +479,30 @@ export class CallRelay extends DurableObject<Env> {
     }
   }
 
+  // One usage record per call: AI-handled minutes (stream start → end; a
+  // transfer to staff stops the meter) plus estimated provider usage.
+  private async flushUsage(): Promise<void> {
+    if (this.usageFlushed || !this.session || !this.streamStartedAt) return;
+    this.usageFlushed = true;
+    const endedAt = Date.now();
+    const seconds = (endedAt - this.streamStartedAt) / 1000;
+    await recordUsage(this.env, {
+      businessType: this.session.businessType,
+      channel: 'voice',
+      provider: this.telephonyProvider,
+      sourceId: this.callSid,
+      startedAt: Math.floor(this.streamStartedAt / 1000),
+      endedAt: Math.floor(endedAt / 1000),
+      durationSeconds: seconds,
+      sttSeconds: seconds, // all caller audio is streamed to STT
+      ttsChars: this.meter.ttsChars,
+      llmModel: this.meter.llmModel,
+      llm: this.meter.llm,
+      // svt/ synthetic callers (see /admin/stream-token) are metered for cost but never billed.
+      billable: !this.session.sub.startsWith('synthetic-latency-test'),
+    });
+  }
+
   private callerActive() {
     if (this.quietSince) this.quietSince = Date.now();
     this.silencePrompts = 0;
@@ -487,6 +521,7 @@ export class CallRelay extends DurableObject<Env> {
       console.log(`[call] ${this.callSid.slice(-8)} handing off to staff`);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushUsage());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'transfer');
       return;
     }
@@ -497,6 +532,7 @@ export class CallRelay extends DurableObject<Env> {
       console.log(`[call] ${this.callSid.slice(-8)} hanging up after caller silence`);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushUsage());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'caller silent');
       return;
     }
@@ -594,6 +630,7 @@ export class CallRelay extends DurableObject<Env> {
 
     } else if (msg.event === 'start') {
       this.callStartedAt = Date.now();
+      this.streamStartedAt = this.callStartedAt;
       this.callSid = msg.start.callSid;
       this.cache.callSid = this.callSid;
       this.streamSid = msg.start.streamSid;
@@ -661,6 +698,7 @@ export class CallRelay extends DurableObject<Env> {
     } else if (msg.event === 'stop') {
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushUsage());
     }
   }
 
@@ -674,6 +712,7 @@ export class CallRelay extends DurableObject<Env> {
     this.active?.abort.abort();
     this.stt.close();
     this.ctx.waitUntil(this.flushTranscript());
+    this.ctx.waitUntil(this.flushUsage());
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {
