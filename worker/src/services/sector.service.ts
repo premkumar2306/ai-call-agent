@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { eq, asc } from 'drizzle-orm';
 import { getDb } from '../db/client';
-import { sectors as sectorsTable } from '../db/schema';
-import type { Env, SectorMeta } from '../types';
+import { sectors as sectorsTable, resources as resourcesTable } from '../db/schema';
+import type { Env, Resource, SectorMeta } from '../types';
 import { resolveVoiceSettings, type VoiceSettings } from './voice-language';
 
 const CACHE_KEY = 'sectors_list';
@@ -15,18 +15,39 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     hours:      row.hours as SectorMeta['hours'],
     timezone:   row.timezone,
     currency:   row.currency,
+    locale:     row.locale ?? 'en-US',
+    countryCode: row.countryCode ?? 'US',
     address:    row.address ?? undefined,
     phone:      row.phone ?? undefined,
     website:    row.website ?? undefined,
     about:      row.about ?? undefined,
     notifyEmail: row.notifyEmail ?? undefined,
     capacity:   row.capacity ?? 1,
+    // Only present when set, so a business without one reads exactly as before.
+    ...(row.vertical ? { vertical: row.vertical } : {}),
+    aiDisclosure:     row.aiDisclosure ?? undefined,
+    disclosureText:   row.disclosureText ?? undefined,
+    privacyNoticeUrl: row.privacyNoticeUrl ?? undefined,
+    retentionDays:    row.retentionDays ?? undefined,
     voice: resolveVoiceSettings({ voice: {
       language: row.voiceLanguage as VoiceSettings['language'],
       sttProvider: row.sttProvider as VoiceSettings['sttProvider'],
       ttsProvider: row.ttsProvider as VoiceSettings['ttsProvider'],
       voiceId: row.voiceId ?? undefined,
     } }),
+  };
+}
+
+function rowToResource(row: typeof resourcesTable.$inferSelect): Resource {
+  return {
+    id:          row.id,
+    name:        row.name,
+    ...(row.role ? { role: row.role } : {}),
+    hours:       row.hours as Resource['hours'],
+    slotMinutes: row.slotMinutes > 0 ? row.slotMinutes : 15,
+    feeCents:    row.feeCents ?? null,
+    ...(row.about ? { about: row.about } : {}),
+    ...(Array.isArray(row.categories) && row.categories.length ? { categories: row.categories } : {}),
   };
 }
 
@@ -38,6 +59,14 @@ export async function getSectors(env: Env): Promise<Record<string, SectorMeta>> 
   const rows = await db.select().from(sectorsTable).where(eq(sectorsTable.isActive, true));
   const result: Record<string, SectorMeta> = {};
   for (const row of rows) result[row.key] = rowToMeta(row);
+  // Doctors (resources) ride along with their business; most have none.
+  const resourceRows = await db.select().from(resourcesTable)
+    .where(eq(resourcesTable.isActive, true))
+    .orderBy(asc(resourcesTable.sortOrder), asc(resourcesTable.name));
+  for (const r of resourceRows) {
+    const meta = result[r.businessType];
+    if (meta) (meta.resources ??= []).push(rowToResource(r));
+  }
 
   await env.CACHE.put(CACHE_KEY, JSON.stringify(result), { expirationTtl: CACHE_TTL });
   return result;
@@ -55,12 +84,15 @@ export async function upsertSector(env: Env, key: string, data: {
   hours: Record<string, string>;
   timezone?: string;
   currency?: string;
+  locale?: string;
+  countryCode?: string;
   address?: string;
   phone?: string;
   website?: string;
   about?: string;
   notifyEmail?: string;
   capacity?: number;
+  vertical?: string | null;
   voice?: Partial<VoiceSettings>;
 }): Promise<void> {
   const db = getDb(env.DB);
@@ -73,12 +105,15 @@ export async function upsertSector(env: Env, key: string, data: {
     hours:      data.hours,
     timezone:   data.timezone ?? 'America/Chicago',
     currency:   data.currency ?? 'USD',
+    locale:     data.locale ?? 'en-US',
+    countryCode: data.countryCode ?? 'US',
     address:    data.address,
     phone:      data.phone,
     website:    data.website,
     about:      data.about,
     notifyEmail: data.notifyEmail,
     capacity:   data.capacity ?? 1,
+    vertical:   data.vertical ?? null,
     ...voiceColumns(data.voice),
     isActive:   true,
     createdAt:  now,
@@ -91,7 +126,6 @@ export async function upsertSector(env: Env, key: string, data: {
       categories: data.categories,
       hours:      data.hours,
       timezone:   data.timezone ?? 'America/Chicago',
-      currency:   data.currency ?? 'USD',
       address:    data.address,
       phone:      data.phone,
       website:    data.website,
@@ -100,6 +134,12 @@ export async function upsertSector(env: Env, key: string, data: {
       // admin form doesn't wipe them.
       ...(data.notifyEmail !== undefined ? { notifyEmail: data.notifyEmail } : {}),
       ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
+      // Locale likewise: an older client that doesn't send it must not reset
+      // an Indian business to USD / en-US.
+      ...(data.currency !== undefined ? { currency: data.currency } : {}),
+      ...(data.locale !== undefined ? { locale: data.locale } : {}),
+      ...(data.countryCode !== undefined ? { countryCode: data.countryCode } : {}),
+      ...(data.vertical !== undefined ? { vertical: data.vertical } : {}),
       ...voiceColumns(data.voice),
       isActive:   true,
       updatedAt:  now,
@@ -107,6 +147,32 @@ export async function upsertSector(env: Env, key: string, data: {
   });
   // Invalidate cache
   await env.CACHE.delete(CACHE_KEY);
+}
+
+export async function invalidateSectors(env: Env): Promise<void> {
+  await env.CACHE.delete(CACHE_KEY);
+}
+
+export interface PrivacySettings {
+  aiDisclosure: boolean | null;     // null = automatic (on in India)
+  disclosureText: string | null;    // null = built-in wording
+  privacyNoticeUrl: string | null;
+  retentionDays: number | null;     // null = keep
+}
+
+// Partial update of the DPDP settings (POST /admin/privacy/:key/settings).
+// Only the keys present are written; null clears a setting.
+export async function updatePrivacySettings(env: Env, key: string, settings: Partial<PrivacySettings>): Promise<boolean> {
+  const set: Partial<typeof sectorsTable.$inferInsert> = {};
+  if ('aiDisclosure' in settings) set.aiDisclosure = settings.aiDisclosure;
+  if ('disclosureText' in settings) set.disclosureText = settings.disclosureText;
+  if ('privacyNoticeUrl' in settings) set.privacyNoticeUrl = settings.privacyNoticeUrl;
+  if ('retentionDays' in settings) set.retentionDays = settings.retentionDays;
+  if (!Object.keys(set).length) return true;
+  const rows = await getDb(env.DB).update(sectorsTable).set({ ...set, updatedAt: new Date() })
+    .where(eq(sectorsTable.key, key)).returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return rows.length > 0;
 }
 
 // Only the voice fields that were given (voiceId: undefined clears it).

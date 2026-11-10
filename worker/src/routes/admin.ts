@@ -2,13 +2,18 @@ import { Hono } from 'hono';
 import { eq, and, desc, ne } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
-import { getSectors, getSector, upsertSector, updateSectorVoice } from '../services/sector.service';
+import { getSectors, getSector, upsertSector, invalidateSectors, updateSectorVoice } from '../services/sector.service';
+import { isVertical } from '../services/verticals';
+import { parseHoursRanges } from '../services/tool-router.service';
 import { parseVoiceInput, resolveVoiceSettings } from '../services/voice-language';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
+import { COUNTRIES, isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
 import { removeBookingFromCalendar } from '../services/calendar';
-import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
+import { deletePhoneNumber, listPhoneNumbers, normalizeE164, PROVIDER_COUNTRY, upsertPhoneNumber } from '../services/phone-numbers';
+import { isTelephonyProvider, TELEPHONY_PROVIDERS } from '../telephony/types';
+import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages, resources as resourcesTable } from '../db/schema';
 
 const adminRouter = new Hono<HonoEnv>();
 
@@ -74,6 +79,42 @@ adminRouter.put('/default-business', withAdminKey, async (c) => {
   return c.json({ success: true, data: { selected: businessType || null } });
 });
 
+// ── Phone numbers → business (phone_numbers, migration 0013) ─────────────────
+
+// GET /admin/phone-numbers — every mapped number
+adminRouter.get('/phone-numbers', withAdminKey, async (c) => {
+  return c.json({ success: true, data: await listPhoneNumbers(c.env) });
+});
+
+// PUT /admin/phone-numbers { number, provider, businessType, label? } — map (or remap) a number
+adminRouter.put('/phone-numbers', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const provider = body?.provider;
+  if (!isTelephonyProvider(provider)) {
+    return c.json({ success: false, error: `provider must be one of ${TELEPHONY_PROVIDERS.join(', ')}` }, 400);
+  }
+  const number = normalizeE164(typeof body?.number === 'string' ? body.number : null, PROVIDER_COUNTRY[provider]);
+  if (!number) return c.json({ success: false, error: 'number must be a phone number, e.g. +918047123456' }, 400);
+  const businessType = body?.businessType;
+  if (typeof businessType !== 'string' || !(await getSector(c.env, businessType))) {
+    return c.json({ success: false, error: `Unknown business: ${businessType}` }, 404);
+  }
+  const label = typeof body?.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : null;
+  await upsertPhoneNumber(c.env, { number, provider, businessType, label });
+  return c.json({ success: true, data: { number, provider, businessType, label } });
+});
+
+// DELETE /admin/phone-numbers/:provider/:number — unmap (number URL-encoded, e.g. %2B9180…)
+adminRouter.delete('/phone-numbers/:provider/:number', withAdminKey, async (c) => {
+  const provider = c.req.param('provider');
+  if (!isTelephonyProvider(provider)) return c.json({ success: false, error: 'Unknown provider' }, 400);
+  const number = normalizeE164(decodeURIComponent(c.req.param('number') ?? ''), PROVIDER_COUNTRY[provider]);
+  if (!number || !(await deletePhoneNumber(c.env, provider, number))) {
+    return c.json({ success: false, error: 'Number not mapped' }, 404);
+  }
+  return c.json({ success: true, data: { number, provider } });
+});
+
 // GET /admin/sectors — list all sectors from DB
 adminRouter.get('/sectors', withAdminKey, async (c) => {
   const sectors = await getSectors(c.env);
@@ -86,6 +127,18 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
   if (!body?.key || !body?.name || !body?.hours) {
     return c.json({ success: false, error: 'key, name, and hours are required' }, 400);
   }
+  // Locale fields are optional; when given they must be valid, so a typo
+  // can't silently break price or date formatting on live calls.
+  const invalid = [
+    body.currency !== undefined && !isValidCurrency(body.currency) && 'currency (ISO 4217, e.g. "INR")',
+    body.locale !== undefined && !isValidLocale(body.locale) && 'locale (BCP 47, e.g. "en-IN")',
+    body.country_code !== undefined && !isValidCountryCode(body.country_code) && `country_code (one of ${Object.keys(COUNTRIES).join(', ')})`,
+    body.timezone !== undefined && !isValidTimeZone(body.timezone) && 'timezone (IANA, e.g. "Asia/Kolkata")',
+  ].filter(Boolean);
+  if (invalid.length) return c.json({ success: false, error: `Invalid ${invalid.join(', ')}` }, 400);
+  if (body.vertical != null && !isVertical(body.vertical)) {
+    return c.json({ success: false, error: `Unknown vertical: ${body.vertical}` }, 400);
+  }
   // Optional voice settings: voice_language, stt_provider, tts_provider, voice_id.
   const voice = parseVoiceInput(body, resolveVoiceSettings(await getSector(c.env, body.key)), !!c.env.SARVAM_API_KEY);
   if (!voice.ok) return c.json({ success: false, error: voice.error }, 400);
@@ -95,13 +148,17 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     categories:   body.categories ?? [],
     hours:        body.hours,
     timezone:     body.timezone ?? 'America/Chicago',
-    currency:     body.currency ?? 'USD',
+    currency:     body.currency,
+    locale:       body.locale,
+    countryCode:  body.country_code,
     address:      body.address,
     phone:        body.phone,
     website:      body.website,
     about:        typeof body.about === 'string' ? body.about.slice(0, 4000) : undefined,
     notifyEmail:  typeof body.notify_email === 'string' && /^[^\s@]+@[^\s@]+$/.test(body.notify_email) ? body.notify_email : undefined,
     capacity:     Number.isInteger(body.capacity) && body.capacity >= 1 && body.capacity <= 50 ? body.capacity : undefined,
+    // Omitted = keep; null = back to general.
+    vertical:     body.vertical === null ? null : body.vertical ?? undefined,
     voice:        voice.value,
   });
   return c.json({ success: true, data: { key: body.key, name: body.name } });
@@ -224,6 +281,52 @@ adminRouter.post('/products', withAdminKey, async (c) => {
     ]);
   }
   return c.json({ success: true, data: { inserted: rows.length } });
+});
+
+// POST /admin/resources — upsert one or many bookable people (a clinic's doctors)
+// { id, business_type, name, role?, hours: { mon: "10am–1pm, 5pm–9pm" }, slot_minutes?, fee_cents?, about?,
+//   categories?: ["DENTAL"] (product categories they do; omit = all), sort_order?, is_active? }
+adminRouter.post('/resources', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const rows: any[] = Array.isArray(body) ? body : body ? [body] : [];
+  if (!rows.length) return c.json({ success: false, error: 'Provide a resource object or array' }, 400);
+  for (const r of rows) {
+    if (!r?.id || !r.business_type || !r.name || !r.hours || typeof r.hours !== 'object') {
+      return c.json({ success: false, error: `id, business_type, name, hours required — got: ${JSON.stringify(r)}` }, 400);
+    }
+    const bad = Object.entries(r.hours).find(([, v]) => typeof v !== 'string' || !parseHoursRanges(v).length);
+    if (bad) return c.json({ success: false, error: `Unreadable hours for ${r.id}.${bad[0]}: ${JSON.stringify(bad[1])} (use e.g. "10am–1pm, 5pm–9pm")` }, 400);
+    if (r.slot_minutes != null && !(Number.isInteger(r.slot_minutes) && r.slot_minutes >= 5 && r.slot_minutes <= 240)) {
+      return c.json({ success: false, error: `slot_minutes must be 5–240 for ${r.id}` }, 400);
+    }
+  }
+  const db = getDb(c.env.DB);
+  const now = new Date();
+  for (const r of rows) {
+    const values = {
+      businessType: r.business_type,
+      name: String(r.name).slice(0, 120),
+      role: typeof r.role === 'string' ? r.role.slice(0, 120) : null,
+      hours: r.hours,
+      slotMinutes: r.slot_minutes ?? 15,
+      feeCents: Number.isInteger(r.fee_cents) && r.fee_cents >= 0 ? r.fee_cents : null,
+      about: typeof r.about === 'string' ? r.about.slice(0, 1000) : null,
+      categories: Array.isArray(r.categories) && r.categories.every((x: unknown) => typeof x === 'string') && r.categories.length ? r.categories : null,
+      sortOrder: Number.isInteger(r.sort_order) ? r.sort_order : 0,
+      isActive: r.is_active !== false,
+    };
+    await db.insert(resourcesTable).values({ id: r.id, ...values, createdAt: now })
+      .onConflictDoUpdate({ target: resourcesTable.id, set: values });
+  }
+  await invalidateSectors(c.env);
+  return c.json({ success: true, data: { upserted: rows.length } });
+});
+
+// GET /admin/resources/:businessType — a business's bookable people, inactive included
+adminRouter.get('/resources/:businessType', withAdminKey, async (c) => {
+  const rows = await getDb(c.env.DB).select().from(resourcesTable)
+    .where(eq(resourcesTable.businessType, c.req.param('businessType') ?? ''));
+  return c.json({ success: true, data: rows });
 });
 
 // GET /admin/products/:businessType — list products for a sector

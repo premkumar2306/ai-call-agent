@@ -38,6 +38,12 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["CallRelay"]
 
+# Daily data-retention sweep (src/services/retention.service.ts), 21:17 UTC =
+# 02:47 IST / 15:17 Chicago. Deletes nothing until a business sets a
+# retention period (sectors.retention_days).
+[triggers]
+crons = ["17 21 * * *"]
+
 [vars]
 NODE_ENV = "production"
 TOKEN_TTL_SECONDS = "900"
@@ -45,6 +51,10 @@ TWILIO_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
 WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_PHONE_NUMBER_MAP = '{"PHONE_NUMBER_ID_1":"dental","PHONE_NUMBER_ID_2":"auto_shop"}'
+# Business for Exotel / Plivo numbers with no row in phone_numbers (admin Settings →
+# Phone numbers). Unset = calls to unmapped numbers are refused.
+# EXOTEL_DEFAULT_BUSINESS_TYPE = "kovai_wellness_clinic"
+# PLIVO_DEFAULT_BUSINESS_TYPE = "kovai_wellness_clinic"
 
 # ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # optional override, see src/config.ts
 # ALLOWED_ORIGINS = "https://admin.example.com"  # extra CORS origins for the admin UI
@@ -73,6 +83,14 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_VERIFY_TOKEN       (arbitrary string you pick, enter in Meta webhook config)
 # WA_PHONE_NUMBER_ID    (found in Meta for Developers → WhatsApp → Phone Numbers)
 # WA_ACCESS_TOKEN       (permanent system user token with whatsapp_business_messaging scope)
+#
+# Indian numbers via Exotel (optional — see README "Indian phone numbers"):
+# EXOTEL_WEBHOOK_SECRET (random; Exotel doesn't sign webhooks, so every /exotel/* URL
+#                        in the call flow carries it as Basic auth or ?key=. Without it
+#                        production rejects all /exotel/* requests.)
+# Plivo (optional, alternative to Exotel):
+# PLIVO_AUTH_TOKEN      (verifies X-Plivo-Signature-V3)
+# PLIVO_WEBHOOK_URL     (public base URL Plivo calls)
 #
 # Calendar integration (optional — see README "Calendar integration"):
 # CALENDAR_TOKEN_KEY    (random; encrypts stored calendar refresh tokens)

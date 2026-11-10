@@ -9,9 +9,11 @@ AI-powered voice assistant for multi-vertical businesses (auto shop, clinic, rea
 ## Architecture
 
 ```
-Caller → Twilio → Cloudflare Worker (Hono API)
-                        ├── /twilio/inbound  → <Connect><Stream> TwiML
-                        ├── /twilio/stream   → CallRelay Durable Object (1 per call)
+Caller → Twilio (US) ─┐
+Caller → Exotel (IN) ─┼→ Cloudflare Worker (Hono API)
+Caller → Plivo  (IN) ─┘     ├── /twilio/inbound, /exotel/voicebot, /plivo/answer → stream URL + signed token
+                        ├── /{twilio,exotel,plivo}/stream → CallRelay Durable Object (1 per call)
+                        │                        ├── telephony adapter (carrier protocol ⇄ μ-law 8 kHz)
                         │                        ├── Deepgram or Sarvam (STT)
                         │                        ├── Cartesia or Sarvam (TTS)
                         │                        └── runTurn() ─┐
@@ -171,6 +173,22 @@ the repo secrets `SYNTHETIC_ADMIN_KEY`, `ANTHROPIC_API_KEY` and `DEEPGRAM_API_KE
 bookings and their calendar events; the booking persona goes last, so its appointment stays in the
 connected calendar until the next run.
 
+**Indian callers (`--set india` / `SVT_SET=india`).** A second persona set calls the demo clinic
+(`demo_clinic_india`, see *Verticals* below; seed it first): Indian English, Hinglish, a caller who
+switches to Hindi mid-call, an elderly caller who speaks slowly, a caller who insists on a specific
+doctor, and an emergency caller (the judge fails any medical advice or a missing "call 112"). They
+use the macOS Indian voices — Rishi/Veena (`en_IN`) and Lekha (`hi_IN`) — when installed (System
+Settings → Accessibility → Spoken Content → System voice → Manage Voices), and print `Voice: …`
+naming the fallback when not. The agent's replies are transcribed with Deepgram `language=multi`.
+Until Hindi speech support is live, expect the Hindi/Hinglish callers to fail; the verdict says why.
+The weekly run is unchanged: `svt.yml` still runs the `us` set only.
+
+```bash
+SVT_SET=india ./svt/run.sh        # all six, results in svt/results/india
+SVT_SET=india ./svt/run.sh 2 3    # the Hindi switcher and the elderly caller
+ADMIN_KEY=<admin key> node svt/latency-test.mjs --set india --persona 4   # the specific-doctor caller
+```
+
 The same per-turn breakdown is saved for every real call (`transcripts.metrics`) and charted in the
 admin **Calls** tab.
 
@@ -185,6 +203,11 @@ node scripts/simulate-call.mjs speech.wav     # real speech through the whole pi
 The simulator speaks Twilio's Media Streams protocol to `/twilio/stream`. In production
 the stream must carry the signed `streamToken` that `/twilio/inbound` puts in the TwiML,
 so the simulator only works against a Worker running with `NODE_ENV=development`.
+
+`PROVIDER=exotel npm run simulate-call` speaks Exotel's Voicebot protocol to `/exotel/stream`
+instead (16-bit PCM, `stream_sid`, caller in the start event; `FROM=`/`TO=` set the numbers) and
+checks every frame it gets back has Exotel's framing. `test/call-relay-telephony.test.ts` drives a
+real `CallRelay` through fake Exotel and Twilio sockets offline.
 
 ---
 
@@ -226,12 +249,103 @@ wrangler secret put SARVAM_API_KEY        # only if a business uses Sarvam (Hind
 wrangler secret put RESEND_API_KEY        # booking/message emails to sectors.notify_email
 wrangler secret put TWILIO_ACCOUNT_SID    # confirmation texts, with TWILIO_SMS_FROM (an SMS-capable Twilio number)
 wrangler secret put TWILIO_SMS_FROM
+# Indian numbers (see "Indian phone numbers" below):
+wrangler secret put EXOTEL_WEBHOOK_SECRET # Exotel; random, also typed into the Exotel call flow URLs
+wrangler secret put PLIVO_AUTH_TOKEN      # Plivo, with PLIVO_WEBHOOK_URL
+wrangler secret put PLIVO_WEBHOOK_URL
 ```
 
 Set where a business's booking and message emails go, and how many different
 customers' visits may start at the same time (bays), with `POST /admin/sectors`
 (`notify_email`, `capacity`).
 
+### Business locale (currency, dates, phone numbers)
+
+Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business locale**.
+There, the **Country** dropdown (United States +1 / India +91) fills in that country's currency, locale and
+timezone, each of which can still be changed. Supported countries are listed once, in `COUNTRIES`
+(`worker/src/utils/locale.ts`); the worker rejects any other `country_code`.
+
+| Field | Default | India | Effect |
+|-------|---------|-------|--------|
+| `currency` | `USD` | `INR` | ISO 4217. Catalog `price_cents` are in this currency's minor unit (cents, paise). |
+| `locale` | `en-US` | `en-IN` | BCP 47. How prices and dates are written: `₹1,50,000`, "Friday, 30 Oct at 5:30 pm". |
+| `country_code` | `US` | `IN` | How callers' local numbers are read: `98765 43210`, `022 2345 6789` → `+91…`. |
+| `timezone` | `America/Chicago` | `Asia/Kolkata` | IANA zone for opening hours, slots and "now" in the prompt. |
+
+```bash
+curl -X POST "$WORKER/admin/sectors" -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{
+  "key": "sharma_dental", "name": "Sharma Dental Care", "hours": {"mon": "10am–7pm"},
+  "currency": "INR", "locale": "en-IN", "country_code": "IN", "timezone": "Asia/Kolkata"}'
+```
+
+Omitted locale fields keep their saved values; invalid ones are rejected with a 400. With INR the agent
+says prices the Indian way ("fifteen hundred rupees", "one lakh fifty thousand rupees"), reads Indian
+callback numbers back digit by digit, and emails, calendar events and the Calls tab show `+91 98765 43210`.
+The defaults produce exactly the same prompt and messages as before locales existed (`worker/src/utils/locale.ts`).
+### Indian phone numbers (Exotel, or Plivo)
+
+Twilio can't easily provide Indian numbers, and Indian calls must stay India-to-India, so
+Indian numbers come from **Exotel** (or **Plivo**). Both stream call audio to the same
+`CallRelay` as Twilio: the carrier's WebSocket protocol is a *telephony adapter*
+(`worker/src/telephony/`) that turns its frames into start/media/mark/stop events and μ-law
+8 kHz audio, so STT, the agent loop, TTS, barge-in and transfer work the same on every carrier.
+
+| | Twilio | Exotel (Voicebot applet) | Plivo (Audio Stream) |
+|---|---|---|---|
+| Audio | μ-law 8 kHz | 16-bit PCM 8 kHz (transcoded to/from μ-law at the adapter) | μ-law 8 kHz |
+| Playback tracking | `mark` | `mark` | `checkpoint` → `playedStream` |
+| Barge-in | `clear` | `clear` | `clearAudio` |
+| Stream auth | JWT in `<Parameter>` | short token in the URL, bound to the CallSid (Exotel caps the query at 256 chars) — or Basic auth on a static URL | JWT in the URL |
+| Webhook auth | `X-Twilio-Signature` | shared `EXOTEL_WEBHOOK_SECRET` (Exotel doesn't sign) | `X-Plivo-Signature-V3` |
+| Transfer to staff | `<Dial>` after the stream | Passthru → Connect applet | `<Dial>` after the stream |
+
+**Which business answers.** Map each number in the admin UI (**Settings → Phone numbers**) or
+with `PUT /admin/phone-numbers {number, provider, businessType, label?}` (`GET` lists,
+`DELETE /admin/phone-numbers/:provider/:number` unmaps). Numbers are stored E.164; Indian
+numbers can be entered as `080…`, `98…` or `+91…`. This works for Twilio numbers too: a mapped
+Twilio number answers as its business; unmapped ones keep the **Phone line** default and
+`TWILIO_DEFAULT_BUSINESS_TYPE` exactly as before. Unmapped Exotel/Plivo numbers use
+`EXOTEL_DEFAULT_BUSINESS_TYPE` / `PLIVO_DEFAULT_BUSINESS_TYPE` (vars), or are refused if unset.
+
+**Caller identity.** The caller's number is normalised to E.164 (`09876543210` → `+919876543210`)
+and hashed with the same key Twilio and WhatsApp use, so an Indian caller is one customer across
+voice and WhatsApp. Withheld numbers get a per-call identity.
+
+#### Exotel setup
+
+1. Complete Exotel KYC and rent an ExoPhone. Ask Exotel to enable **AgentStream / Voicebot** on the account.
+2. Set the secret (any long random string) and, optionally, a default business:
+   ```bash
+   openssl rand -hex 24 | tee /dev/stderr | wrangler secret put EXOTEL_WEBHOOK_SECRET   # note the value for step 3
+   ```
+   `EXOTEL_DEFAULT_BUSINESS_TYPE` goes in `wrangler.toml` `[vars]` (or map every ExoPhone instead).
+3. In Exotel **App Bazaar**, create a flow, with `<secret>` from step 2 and `<worker>` your Worker host:
+   - **Voicebot** applet, URL `https://<worker>/exotel/voicebot?key=<secret>` (the dynamic-URL option:
+     it returns `{"url":"wss://<worker>/exotel/stream?t=…"}` with a token bound to the call).
+     If your account only takes a static WebSocket URL, use
+     `wss://avery:<secret>@<worker>/exotel/stream` instead; the business then comes from the called number.
+     Leave the sample rate at the default 8 kHz (don't add `?sample-rate=`).
+   - **Passthru** applet after it: `https://<worker>/exotel/after-stream?key=<secret>`. It returns
+     **200** when the caller asked for a person and **302** otherwise.
+   - On 200 → **Connect** applet whose *dial whom* is the dynamic URL `https://<worker>/exotel/connect?key=<secret>`
+     (returns the business's phone from `sectors.phone` — must be an Indian number). On 302 → **Hangup**.
+4. Assign the flow to the ExoPhone, then map the ExoPhone to a business in **Settings → Phone numbers**.
+
+`?key=` can be replaced by Basic auth (`https://avery:<secret>@<worker>/…`) wherever Exotel accepts
+it, which keeps the secret out of request logs. In production every `/exotel/*` request without the
+secret is rejected (and all of them are rejected if `EXOTEL_WEBHOOK_SECRET` isn't set).
+
+#### Plivo setup
+
+Create a Plivo application with Answer URL `POST https://<worker>/plivo/answer`, attach your Indian
+number, set `PLIVO_AUTH_TOKEN` and `PLIVO_WEBHOOK_URL` (`https://<worker>`), and map the number in
+**Settings → Phone numbers** (or set `PLIVO_DEFAULT_BUSINESS_TYPE`). `/plivo/answer` returns a
+bidirectional `<Stream>` and, after it, a `<Redirect>` to `/plivo/after-stream` (transfer or hang up).
+
+**Not yet tested on a live call:** the Exotel and Plivo protocol details come from the carriers' docs
+and reference bots, and are covered by unit tests and the simulator, but no real Exotel/Plivo call has
+gone through them yet. Check the first live call's logs (`npx wrangler tail`).
 ### Hindi and Hinglish calls (optional, per business)
 
 Each business answers in `en` (default), `hi` (Hindi) or `hi-en` (Hinglish — callers mixing
@@ -304,6 +418,27 @@ Providers are adapters in `worker/src/services/calendar/`: implement
 `CalendarProvider` (`types.ts`) in a new file and register it in `PROVIDERS`
 (`index.ts`). Routes, storage, the admin UI and the booking flow need no changes.
 
+### Privacy, disclosure and retention (India DPDP)
+
+Per business, from the admin UI's **Settings → Privacy & data** (or `/admin/privacy/:businessType/*`
+with `X-Admin-Key`). Everything is off for existing businesses; see
+[`docs/compliance-india.md`](docs/compliance-india.md) for what this does and doesn't cover.
+
+- **Call-start notice** (`sectors.ai_disclosure`, `disclosure_text`): after "Thanks for calling!"
+  Avery says the caller is talking to an AI assistant and the call is transcribed (default wording
+  in English, Hindi or Hinglish to match the business's voice language). NULL = automatic:
+  on for businesses in India (country IN, or timezone `Asia/Kolkata` / currency INR), off elsewhere.
+  Each notice is logged in `consent_records` (wording version, time, heard to the end or not).
+- **Privacy notice link** (`privacy_notice_url`): added to booking confirmation texts and the first
+  WhatsApp reply while the notice is on. Template: [`docs/privacy-notice-template.md`](docs/privacy-notice-template.md).
+- **Caller data requests**: `POST /admin/privacy/:business/export { phone }` returns everything stored
+  for that caller; `POST /admin/privacy/:business/erase { phone, confirm: true }` deletes transcripts,
+  messages and live KV history, strips personal fields from bookings (kept for aggregates), cancels
+  upcoming ones and removes their calendar events. Both are logged in `data_requests`.
+- **Retention** (`retention_days`, NULL = keep): a daily Cron Trigger (`[triggers]` in
+  `wrangler.toml`, 21:17 UTC) deletes older transcripts and staff messages. Notice records are kept
+  at least 365 days; bookings are not touched.
+
 ### Database schema change
 
 1. Edit `worker/src/db/schema.ts`
@@ -324,6 +459,48 @@ Sectors, vendors and products live in D1 and can be added without a deploy via t
 admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requiring
 `X-Admin-Key`).
 
+### Verticals: clinics and dental practices
+
+What differs between kinds of business — the details a booking records, how the receptionist
+talks about prices and staff, extra safety rules — is data in `worker/src/services/verticals.ts`,
+picked per business by `sectors.vertical` (migration `0017_clinic_vertical.sql`). A business with
+no vertical gets `general`, the original auto-shop wording and fields, byte for byte
+(`worker/test/us-unchanged.test.ts` pins it).
+
+`vertical: "clinic"` (set with `POST /admin/sectors`) switches a business to:
+
+- **Doctors as bookable resources** (`resources` table, `POST /admin/resources`): each with their
+  own weekly OPD hours (split sessions such as `"10am–1pm, 5pm–9pm"`), slot length, consultation
+  fee (`fee_cents`, minor units — paise for INR) and the product categories they do (a dentist books
+  `DENTAL`). Availability and double-booking checks are per doctor; with no doctor named the caller
+  is offered whoever does the service and is free first.
+- **Patient details** on the booking: patient name, new or returning (or age), reason for visit
+  (`orders.details`), plus the doctor (`orders.resource_id/resource_name`). Shown in emails, calendar
+  events and the admin **Calls** tab.
+- **Consultation pricing** from the doctor's fee (products in `CONSULTATION`,
+  `CHILD_CONSULTATION`, `DENTAL_CONSULTATION`); INR amounts are spoken as rupees.
+- **Medical safety rules** in the prompt: never medical advice, a diagnosis or medicine; for an
+  emergency, tell the caller to call 112 or go to the nearest emergency department, then offer a
+  transfer to staff.
+
+`worker/seeds/demo_clinic_india.sql` is a fictional demo clinic (`demo_clinic_india`, Bengaluru,
+Asia/Kolkata, INR, OPD 10am–1pm and 5pm–9pm, Sunday closed, three doctors). It has no phone number,
+so transfers fall back to taking a message; set `phone` before pointing a real line at it.
+
+```bash
+cd worker
+npx wrangler d1 execute DB --remote --file seeds/demo_clinic_india.sql   # after migrations
+```
+
+```bash
+# A doctor (re-POST to change; "is_active": false to retire)
+curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Type: application/json' -d '[
+  { "id": "dr-rao", "business_type": "my_clinic", "name": "Dr. Ananya Rao", "role": "General physician",
+    "hours": { "mon": "10am–1pm, 5pm–9pm", "sat": "10am–1pm" }, "slot_minutes": 15, "fee_cents": 50000,
+    "categories": ["CONSULTATION", "FOLLOW_UP"], "about": "Speaks English, Hindi and Kannada." }
+]'
+```
+
 ---
 
 ## Key Files
@@ -332,6 +509,10 @@ admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requi
 |------|---------|
 | `worker/src/config.ts` | Model id, Anthropic client timeouts, fail-closed secret helpers |
 | `worker/src/routes/twilio.ts` | Twilio webhooks (signature-verified) and stream TwiML |
+| `worker/src/routes/exotel.ts`, `plivo.ts` | Indian carriers: stream URL, auth, transfer-to-staff endpoints |
+| `worker/src/telephony/` | Telephony adapters: each carrier's media-stream protocol (Twilio, Exotel, Plivo) behind one interface |
+| `worker/src/services/phone-numbers.ts` | Called number → business routing (`phone_numbers` table) |
+| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: carrier adapter → Deepgram STT → `runTurn()` → Cartesia TTS |
 | `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: STT → `runTurn()` → TTS, barge-in |
 | `worker/src/durable-objects/voice-providers.ts` | STT/TTS provider interface: Deepgram, Cartesia, Sarvam (`stt-sarvam.ts`, `tts-sarvam.ts`) |
 | `worker/src/services/voice-language.ts` | Per-business voice language settings, Hindi word lists, canned lines, prompt language rules |
@@ -341,7 +522,10 @@ admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requi
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |
-| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, secrets list |
+| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, cron, secrets list |
+| `worker/src/services/disclosure.ts` | Call-start AI/transcription notice, privacy link, notice audit records |
+| `worker/src/services/data-rights.service.ts` | Caller data export and erasure |
+| `worker/src/services/retention.service.ts` | Daily retention sweep (`scheduled` in `index.ts`) |
 
 ---
 
@@ -381,15 +565,17 @@ what ships.
   Fill in `about` via `POST /admin/sectors` for anything else callers ask (warranty, payment, parking…).
 - **Memory.** Each turn sends the model's full message history, including tool calls and results, so it
   keeps the service ids and exact slot datetimes it found. (`call:{sid}` in KV keeps the plain transcript.)
-- **Barge-in.** Every audio chunk is followed by a Twilio `mark`; the assistant counts as speaking until
-  Twilio reports playback reached the last mark, not merely until audio was sent. When the caller cuts in,
+- **Barge-in.** Every audio chunk is followed by a carrier mark (Twilio/Exotel `mark`, Plivo `checkpoint`); the assistant counts as speaking until
+  the carrier reports playback reached the last mark, not merely until audio was sent. When the caller cuts in,
   history records only what they actually heard, ending in `[caller interrupted]`.
 - **Split utterances.** Turns run one at a time. If the caller keeps talking before hearing any reply, the
   running turn is abandoned and their words are merged into the next utterance.
+- **Carriers.** All carrier-specific framing lives in `worker/src/telephony/` (see "Indian phone
+  numbers"); `CallRelay` itself only sees start/media/mark/stop events and μ-law 8 kHz audio.
 - **Caller identity.** `/twilio/inbound` hashes the caller's number (same key as WhatsApp) into the stream
   token; callers no longer share `TWILIO_DEFAULT_CUSTOMER_HASH`. Withheld numbers get a per-call identity.
   The raw number also rides in the token as the default callback number for bookings and messages.
-- **Front desk.** Bookings record the caller's name, vehicle and callback number; the same caller can stack
+- **Front desk.** Bookings record the caller's name, vehicle (or, for a clinic, the doctor and patient details — see *Verticals*) and callback number; the same caller can stack
   services on one visit. `transfer_to_staff` closes the stream and `POST /twilio/after-stream` dials the
   business phone (during opening hours); `take_message` stores a callback request (`call_messages`).
   The admin **Calls** tab lists bookings, messages, and a latency chart per call (`transcripts.metrics`).

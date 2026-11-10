@@ -156,12 +156,12 @@ describe('canned lines and prompt rules', () => {
   it('adds language rules only for Hindi / Hinglish voice lines', () => {
     expect(languageRules('en')).toBe('');
     expect(buildAgentRules('auto', 'Biz', 'voice')).not.toMatch(/LANGUAGE/);
-    const hi = buildAgentRules('auto', 'Biz', 'voice', 'hi-en');
+    const hi = buildAgentRules('auto', 'Biz', 'voice', undefined, 'hi-en');
     expect(hi).toMatch(/LANGUAGE/);
     expect(hi).toMatch(/Devanagari/);
     expect(hi).toMatch(/₹1,500/);
     expect(hi).not.toMatch(/Plain spoken English/);
-    expect(buildAgentRules('auto', 'Biz', 'chat', 'hi')).not.toMatch(/LANGUAGE/);
+    expect(buildAgentRules('auto', 'Biz', 'chat', undefined, 'hi')).not.toMatch(/LANGUAGE/);
     const meta: any = { name: 'Biz', model: 'service', categories: [], hours: {}, timezone: 'Asia/Kolkata', currency: 'INR', voice: { language: 'hi' } };
     const session: any = { sub: 'x', businessType: 'auto', iat: 0, exp: 0, account: { tier: 'BASIC', store_credit_cents: 0 } };
     expect(buildSystemPrompt({ businessType: 'auto', sectorMeta: meta, products: [], session, orders: [] })[0].text).toMatch(/Reply in Hindi/);
