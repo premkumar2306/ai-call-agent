@@ -16,7 +16,7 @@ import { customerHashSalt, isProduction } from '../config';
 import { cartesiaStart, cartesiaDrain, type CartesiaConfig } from './tts-cartesia';
 import {
   createTelephonyAdapter, isTelephonyProvider, PREAUTH_HEADER, PROVIDER_HEADER,
-  type CallStart, type TelephonyAdapter,
+  type CallStart, type TelephonyAdapter, type TelephonyProvider,
 } from '../telephony';
 import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/phone-numbers';
 
@@ -184,12 +184,10 @@ export class CallRelay extends DurableObject<Env> {
     // string from <Stream url="...">, so the 'start' event's customParameters
     // (set via <Parameter> in the TwiML) is the source of truth for real calls.
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
-    // Set by the route that accepted the upgrade (/twilio|exotel|plivo/stream),
-    // which overwrites anything the client sent.
-    const provider = request.headers.get(PROVIDER_HEADER);
-    this.telephony = createTelephonyAdapter(isTelephonyProvider(provider) ? provider : 'twilio');
-    this.urlToken = url.searchParams.get(this.telephony.provider === 'exotel' ? 't' : 'token') ?? undefined;
-    this.preauthenticated = this.telephony.provider === 'exotel' && request.headers.get(PREAUTH_HEADER) === '1';
+    const cfg = streamConfig(request);
+    this.telephony = createTelephonyAdapter(cfg.provider);
+    this.urlToken = cfg.urlToken;
+    this.preauthenticated = cfg.preauthenticated;
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -734,6 +732,23 @@ export class CallRelay extends DurableObject<Env> {
   async webSocketError(_ws: WebSocket, error: unknown) {
     console.error(`[${this.telephony.provider} ws]`, (error as any)?.message || error);
   }
+}
+
+/**
+ * What the stream route told CallRelay about an upgrade request: the
+ * carrier protocol (PROVIDER_HEADER, set by /twilio|exotel|plivo/stream,
+ * which overwrite anything the client sent), a credential carried in the URL
+ * (Exotel ?t=, Plivo ?token=), and whether the route already authenticated
+ * the socket (Exotel static URL with Basic auth).
+ */
+export function streamConfig(request: Request): { provider: TelephonyProvider; urlToken?: string; preauthenticated: boolean } {
+  const url = new URL(request.url);
+  const header = request.headers.get(PROVIDER_HEADER);
+  const provider: TelephonyProvider = isTelephonyProvider(header) ? header : 'twilio';
+  const urlToken = provider === 'exotel' ? url.searchParams.get('t') ?? undefined
+    : provider === 'plivo' ? url.searchParams.get('token') ?? undefined
+    : undefined;
+  return { provider, urlToken, preauthenticated: provider === 'exotel' && request.headers.get(PREAUTH_HEADER) === '1' };
 }
 
 export function joinUtterances(a: string, b: string): string {

@@ -91,6 +91,7 @@ exotelRouter.on(['GET', 'POST'], '/voicebot', requireExotelAuth, async (c) => {
   }
   const from = normalizeE164(pick(p, 'CallFrom', 'From'), '91') ?? undefined;
   const token = await signCompactStreamToken(c.env, { callSid, businessType, from });
+  if (token.length > 250) console.warn(`[exotel] stream token is ${token.length} chars; Exotel truncates query strings over 256 — use a shorter business key`);
   return c.json({ url: `wss://${c.req.header('host')}/exotel/stream?t=${token}` });
 });
 
