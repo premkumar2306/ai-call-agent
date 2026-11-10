@@ -337,13 +337,13 @@ no vertical gets `general`, the original auto-shop wording and fields, byte for 
   (`orders.details`), plus the doctor (`orders.resource_id/resource_name`). Shown in emails, calendar
   events and the admin **Calls** tab.
 - **Consultation pricing** from the doctor's fee (products in `CONSULTATION`,
-  `CHILD_CONSULTATION`, `DENTAL_CONSULTATION`); INR amounts are spoken as rupees.
+  `CHILD_CONSULTATION`, `DENTAL_CONSULTATION`); amounts, dates and phone numbers follow the business locale (see *Business locale*).
 - **Medical safety rules** in the prompt: never medical advice, a diagnosis or medicine; for an
   emergency, tell the caller to call 112 or go to the nearest emergency department, then offer a
   transfer to staff.
 
 `worker/seeds/demo_clinic_india.sql` is a fictional demo clinic (`demo_clinic_india`, Bengaluru,
-Asia/Kolkata, INR, OPD 10am–1pm and 5pm–9pm, Sunday closed, three doctors). It has no phone number,
+Asia/Kolkata, INR, en-IN, country IN, OPD 10am–1pm and 5pm–9pm, Sunday closed, three doctors). It has no phone number,
 so transfers fall back to taking a message; set `phone` before pointing a real line at it.
 
 ```bash

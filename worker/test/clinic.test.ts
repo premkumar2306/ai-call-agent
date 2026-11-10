@@ -150,7 +150,7 @@ describe('clinic booking', () => {
   it("books the doctor at their fee and records the patient's details", async () => {
     const res = await book({ ...base, customer_name: 'Asha Verma', patient_status: 'New', reason_for_visit: 'fever for three days' });
     expect(res.success).toBe(true);
-    expect(res.spoken_response).toBe("You're all set, Asha Verma — General Consultation with Dr. Ananya Rao tomorrow at 10:00 AM. Anything else I can help with?");
+    expect(res.spoken_response).toBe("You're all set, Asha Verma — General Consultation with Dr. Ananya Rao tomorrow at 10:00 am. Anything else I can help with?");
     expect(res.data).toMatchObject({ doctor: 'Dr. Ananya Rao', price: '₹500' });
     const row = env.DB.sqlite.prepare('SELECT * FROM orders').get();
     expect(row).toMatchObject({

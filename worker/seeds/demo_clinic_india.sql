@@ -10,12 +10,12 @@
 -- price_cents / fee_cents (₹500 → 50000). Timezone Asia/Kolkata. OPD is
 -- 10am–1pm and 5pm–9pm, Monday to Saturday; Sunday closed.
 --
--- Needs migration 0017_clinic_vertical.sql. Apply:
+-- Needs migrations 0011_sector_locale.sql and 0017_clinic_vertical.sql. Apply:
 --   npx wrangler d1 execute DB --remote --file seeds/demo_clinic_india.sql
 -- then purge KV: sectors_list, products:demo_clinic_india:all
 -- (or wait 5 minutes for the caches to expire). Re-running it is safe.
 
-INSERT INTO sectors (key, name, model, categories, hours, timezone, currency, address, phone, website, about, capacity, vertical, is_active, created_at, updated_at)
+INSERT INTO sectors (key, name, model, categories, hours, timezone, currency, locale, country_code, address, phone, website, about, capacity, vertical, is_active, created_at, updated_at)
 VALUES (
   'demo_clinic_india',
   'Demo Sehat Family Clinic',
@@ -24,6 +24,8 @@ VALUES (
   '{"mon":"10am–1pm, 5pm–9pm","tue":"10am–1pm, 5pm–9pm","wed":"10am–1pm, 5pm–9pm","thu":"10am–1pm, 5pm–9pm","fri":"10am–1pm, 5pm–9pm","sat":"10am–1pm, 5pm–9pm"}',
   'Asia/Kolkata',
   'INR',
+  'en-IN',
+  'IN',
   '12 Demo Lane (fictional address), Indiranagar, Bengaluru, Karnataka 560038',
   NULL,
   NULL,
@@ -34,7 +36,7 @@ VALUES (
 )
 ON CONFLICT(key) DO UPDATE SET
   name = excluded.name, model = excluded.model, categories = excluded.categories, hours = excluded.hours,
-  timezone = excluded.timezone, currency = excluded.currency, address = excluded.address, phone = excluded.phone,
+  timezone = excluded.timezone, currency = excluded.currency, locale = excluded.locale, country_code = excluded.country_code, address = excluded.address, phone = excluded.phone,
   website = excluded.website, about = excluded.about, vertical = excluded.vertical, is_active = 1, updated_at = unixepoch();
 
 INSERT INTO vendors (id, name, business_type, contact_email, is_active, created_at)

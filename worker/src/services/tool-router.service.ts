@@ -797,7 +797,7 @@ export async function executeTool(
             cache.resourceBookings?.push({ resourceId: booked.id, start: scheduledAt.slice(0, 16), end: order.endsAt!.slice(0, 16) });
           }
           const name = order.customerName ? `, ${order.customerName}` : '';
-          const when = formatSlotLabel(order.scheduledAt!, ...todayTomorrow(sectorMeta));
+          const when = slotLabel(order.scheduledAt!);
           return {
             success: true,
             data: {
