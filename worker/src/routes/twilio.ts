@@ -7,6 +7,8 @@ import { customerHashSalt, isProduction, timingSafeEqual } from '../config';
 import { signStreamToken } from '../utils/stream-token';
 import { hashId } from '../utils/identity';
 import { transferKey } from '../services/call-context';
+import { businessForNumber } from '../services/phone-numbers';
+import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
 
 const twilioRouter = new Hono<HonoEnv>();
 
@@ -78,7 +80,13 @@ function requireTwilioSig(path: string) {
 // ── POST /twilio/inbound ──────────────────────────────────────────────────────
 
 twilioRouter.post('/inbound', requireTwilioSig('/twilio/inbound'), withTwilioSession, async (c) => {
-  const { businessType } = c.get('session');
+  const body = await c.req.parseBody();
+  // A called number mapped in phone_numbers (admin Settings → Phone numbers)
+  // answers as its own business; unmapped numbers keep the line default.
+  // An explicit ?token= session still wins.
+  const mapped = c.req.query('token') ? null
+    : await businessForNumber(c.env, 'twilio', typeof body.To === 'string' ? body.To : undefined);
+  const businessType = mapped ?? c.get('session').businessType;
   const host       = c.req.header('host');
   // businessType is passed both ways: as a <Parameter> (the reliable mechanism —
   // arrives in the 'start' event's customParameters) and as a query-string fallback
@@ -90,7 +98,6 @@ twilioRouter.post('/inbound', requireTwilioSig('/twilio/inbound'), withTwilioSes
   // number instead (digits only — the same key WhatsApp hashes, so a
   // customer is one identity across both); a withheld number gets a
   // per-call identity.
-  const body = await c.req.parseBody();
   const from = typeof body.From === 'string' ? body.From.trim() : '';
   const callSid = typeof body.CallSid === 'string' ? body.CallSid : crypto.randomUUID();
   const callerKey = /^\+?\d{7,15}$/.test(from) ? from.replace(/\D/g, '') : `call:${callSid}`;
@@ -133,9 +140,14 @@ twilioRouter.get('/stream', async (c) => {
   if (c.req.header('Upgrade') !== 'websocket') {
     return c.text('Expected websocket', 426);
   }
+  // Tell CallRelay this socket speaks Twilio's protocol, and drop any
+  // client-sent copies of the internal headers.
+  const forwarded = new Request(c.req.raw);
+  forwarded.headers.set(PROVIDER_HEADER, 'twilio');
+  forwarded.headers.delete(PREAUTH_HEADER);
   const id   = c.env.RELAY_DO.idFromName(crypto.randomUUID());
   const stub = c.env.RELAY_DO.get(id);
-  return stub.fetch(c.req.raw);
+  return stub.fetch(forwarded);
 });
 
 // ── POST /twilio/turn ─────────────────────────────────────────────────────────

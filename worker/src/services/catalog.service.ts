@@ -29,6 +29,9 @@ function rowToProduct(r: typeof productsTable.$inferSelect): Product {
     originalPriceCents: r.originalPriceCents,
     isActive: r.isActive,
     imageUrl: r.imageUrl ?? undefined,
+    // Appointment length; a clinic's procedures need it to fit slots.
+    // (Every advanced_vtech row is NULL, so its 60-minute default holds.)
+    durationMinutes: r.durationMinutes ?? null,
   };
 }
 

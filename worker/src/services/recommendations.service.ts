@@ -1,4 +1,5 @@
 import type { Product, SectorMeta } from '../types';
+import { formatMoney, localeOf } from '../utils/locale';
 
 const PRIORITY_CATEGORIES = new Set([
   'BRAKES', 'TIRES', 'DIAGNOSTICS',
@@ -43,7 +44,7 @@ export function scoreProducts(
 
 export function getSectorGreeting(sector: string, storeCreditCents: number, _tier: string, meta?: SectorMeta): string {
   const bizName = meta?.name ?? sector;
-  const credit = storeCreditCents > 0 ? ` You have $${(storeCreditCents / 100).toFixed(2)} in store credit.` : '';
+  const credit = storeCreditCents > 0 ? ` You have ${formatMoney(storeCreditCents, localeOf(meta), { alwaysFraction: true })} in store credit.` : '';
 
   const taglines: Record<string, string> = {
     auto_shop:   "What can I help you with — a service appointment, pricing, or availability?",

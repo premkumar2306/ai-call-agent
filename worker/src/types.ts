@@ -1,3 +1,5 @@
+import type { VoiceSettings } from './services/voice-language';
+
 // BusinessType is a string so new verticals can be added without code changes
 export type BusinessType = string;
 
@@ -11,6 +13,10 @@ export interface SectorMeta {
   hours: WeeklyHours;
   timezone: string;
   currency: string;
+  // BCP 47 locale for prices and dates ("en-US", "en-IN"). Default en-US.
+  locale?: string;
+  // ISO 3166-1 country for reading local phone numbers ("US", "IN"). Default US.
+  countryCode?: string;
   // Optional real-business fields populated from web research
   address?: string;
   phone?: string;
@@ -22,6 +28,36 @@ export interface SectorMeta {
   notifyEmail?: string;
   // Different customers' visits that may start at the same time. Default 1.
   capacity?: number;
+  // Key into VERTICALS (services/verticals.ts): what a booking records and
+  // the extra prompt rules. Unset = 'general' (the original auto-shop flow).
+  vertical?: string;
+  // Bookable people with their own hours (a clinic's doctors). When present,
+  // availability and conflicts are per resource instead of `capacity`.
+  resources?: Resource[];
+  // DPDP / AI disclosure (services/disclosure.ts). aiDisclosure undefined =
+  // automatic: on for businesses in India, off elsewhere.
+  aiDisclosure?: boolean;
+  disclosureText?: string;
+  privacyNoticeUrl?: string;
+  // Days to keep transcripts and staff messages (services/retention.ts).
+  retentionDays?: number;
+  // Phone-line language and STT/TTS providers (migration 0012). Absent on
+  // sector lists cached before it shipped — resolveVoiceSettings() defaults.
+  voice?: VoiceSettings;
+  // What kind of business (clinic, salon, auto_shop…), set by the onboarding wizard.
+  kind?: string;
+}
+
+/** Someone a booking is made with — a clinic's doctor — with their own hours. */
+export interface Resource {
+  id: string;
+  name: string;            // "Dr. Ananya Rao"
+  role?: string;           // "General physician"
+  hours: WeeklyHours;      // e.g. { mon: "10am–1pm, 5pm–9pm" }
+  slotMinutes: number;     // appointment grid and default length
+  feeCents?: number | null; // consultation fee, minor units of the business currency
+  about?: string;          // languages spoken, etc.
+  categories?: string[];   // product categories they do (a dentist: DENTAL); unset = all
 }
 
 export interface WeeklyHours {
@@ -77,6 +113,10 @@ export interface Order {
   vehicle?: string | null;
   callbackPhone?: string | null;
   notes?: string | null;
+  resourceId?: string | null;     // the doctor (Resource) the booking is with
+  resourceName?: string | null;
+  endsAt?: string | null;         // business-local end, for per-resource overlap checks
+  details?: Record<string, string> | null; // vertical booking fields (patient age, reason…)
   createdAt: string;
   updatedAt: string;
 }
@@ -99,6 +139,14 @@ export interface Env {
   CARTESIA_API_KEY?: string;
   CARTESIA_VOICE_ID?: string;
   CARTESIA_MODEL_ID?: string;
+  // Sarvam AI (Hindi / Hinglish voice). Secret; only needed by businesses
+  // whose voice settings pick Sarvam — those fail closed without it.
+  SARVAM_API_KEY?: string;
+  SARVAM_STT_MODEL?: string;         // default saaras:v3
+  SARVAM_TTS_MODEL?: string;         // default bulbul:v3
+  SARVAM_TTS_SPEAKER?: string;       // default speaker when a business sets no voice_id
+  SARVAM_TTS_CODEC?: string;         // 'mulaw' (default) | 'linear16'
+  SARVAM_HIGH_VAD_SENSITIVITY?: string; // '1' for Sarvam's high-sensitivity VAD
   RELAY_DO: DurableObjectNamespace;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
@@ -137,6 +185,18 @@ export interface Env {
   /** @deprecated Use TWILIO_DEFAULT_BUSINESS_TYPE */
   TWILIO_DEFAULT_SECTOR?: string;
   TWILIO_DEFAULT_CUSTOMER_HASH?: string; // hashed ID for the anonymous caller
+  // Exotel (Indian numbers, routes/exotel.ts). EXOTEL_WEBHOOK_SECRET is a
+  // secret: Exotel doesn't sign webhooks, so every /exotel/* URL configured in
+  // the call flow carries it (Basic auth or ?key=). Required in production.
+  EXOTEL_WEBHOOK_SECRET?: string;
+  /** Business for ExoPhones with no phone_numbers row. Unset = such calls are refused. */
+  EXOTEL_DEFAULT_BUSINESS_TYPE?: string;
+  // Plivo (routes/plivo.ts). PLIVO_AUTH_TOKEN verifies X-Plivo-Signature-V3;
+  // PLIVO_WEBHOOK_URL is the public base URL Plivo calls. Both required in production.
+  PLIVO_AUTH_TOKEN?: string;
+  PLIVO_WEBHOOK_URL?: string;
+  /** Business for Plivo numbers with no phone_numbers row. */
+  PLIVO_DEFAULT_BUSINESS_TYPE?: string;
   // WhatsApp Cloud API (all secrets — set via `wrangler secret put`)
   WA_APP_SECRET?: string;            // Meta app secret for X-Hub-Signature-256 verification
   WA_VERIFY_TOKEN?: string;          // Arbitrary token used in Meta webhook registration

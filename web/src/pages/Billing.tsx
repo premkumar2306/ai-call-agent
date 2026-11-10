@@ -5,7 +5,8 @@ import { useEffect, useState } from 'react';
 // for the operator (today: anyone with the admin key), so an owner login will
 // see the same page without them.
 
-interface Props { sector: string; base: string; adminKey: string }
+// auth: the admin key or the signed-in owner's token (App's authHeaders).
+interface Props { sector: string; base: string; auth: Record<string, string> }
 
 interface Gst { amountPaise: number; gstPaise: number; totalPaise: number; cgst: number; sgst: number; igst: number }
 interface Summary {
@@ -84,14 +85,15 @@ function GstLines({ g, rateBps }: { g: Gst; rateBps: number }) {
   );
 }
 
-export default function Billing({ sector, base, adminKey }: Props) {
+export default function Billing({ sector, base, auth }: Props) {
   const [data, setData] = useState<Summary | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<Record<string, string>>({});
 
-  const headers = { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' };
+  const headers = { ...auth, 'Content-Type': 'application/json' };
+  const signedIn = Object.keys(auth).length > 0;
   const call = async (path: string, init: RequestInit = {}) => {
     const res = await fetch(`${base}${path}`, { ...init, headers });
     const json = await res.json().catch(() => ({}));
@@ -111,16 +113,16 @@ export default function Billing({ sector, base, adminKey }: Props) {
       });
       if (d.cost) call('/admin/billing/plans').then(setPlans).catch(() => {});
     } catch (e: any) {
-      setMsg({ text: e.message === 'Admin key required' ? 'Enter the admin key (top right) to see billing.' : e.message, ok: false });
+      setMsg({ text: e.message, ok: false });
     }
   };
 
   useEffect(() => {
     setData(null); setMsg(null);
-    if (!adminKey) { setMsg({ text: 'Enter the admin key (top right) to see billing.', ok: false }); return; }
+    if (!signedIn) { setMsg({ text: 'Sign in (or enter the admin key) to see billing.', ok: false }); return; }
     if (sector) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminKey, base, sector]);
+  }, [auth, base, sector]);
 
   const run = async (fn: () => Promise<unknown>, ok?: string) => {
     setBusy(true); setMsg(null);

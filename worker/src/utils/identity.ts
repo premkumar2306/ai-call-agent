@@ -36,3 +36,24 @@ export async function getOrCreateCustomer(
   });
   return { tier: 'BASIC', store_credit_cents: 0 };
 }
+
+/**
+ * A voice caller's identity from the number they called from, as
+ * /twilio/inbound derives it: HMAC of the number's digits (the same key
+ * WhatsApp hashes, so a customer is one identity across channels), or a
+ * per-call identity when caller ID is withheld. `callerPhone` is the E.164
+ * number, kept as the default callback number.
+ *
+ * `normalize` maps the carrier's format to E.164 (Exotel reports Indian
+ * numbers in national format, "09876543210").
+ */
+export async function callerIdentity(
+  rawFrom: string | undefined,
+  callSid: string,
+  salt: string,
+  normalize: (raw: string) => string | null,
+): Promise<{ callerHash: string; callerPhone?: string }> {
+  const e164 = rawFrom ? normalize(rawFrom) : null;
+  const key = e164 ? e164.slice(1) : `call:${callSid}`;
+  return { callerHash: await hashId(key, salt), callerPhone: e164 ?? undefined };
+}

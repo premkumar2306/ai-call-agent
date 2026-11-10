@@ -5,10 +5,13 @@ import { requestId } from 'hono/request-id';
 import { getSectors } from './services/sector.service';
 import type { HonoEnv } from './middleware';
 import { authRouter } from './routes/auth';
+import { accountRouter } from './routes/account';
 import { catalogRouter } from './routes/catalog';
 import { ordersRouter } from './routes/orders';
 import { mogiRouter } from './routes/mogi';
 import { twilioRouter } from './routes/twilio';
+import { exotelRouter } from './routes/exotel';
+import { plivoRouter } from './routes/plivo';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
@@ -16,24 +19,27 @@ import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/bill
 import { closePeriod } from './services/billing/service';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
+import { privacyAdminRouter } from './routes/privacy';
+import { applyRetention } from './services/retention.service';
 
 export { CallRelay } from './durable-objects/call-relay';
 
 type AppEnv = HonoEnv & { Variables: { requestId: string } };
 const app = new Hono<AppEnv>();
 
-// Re-exported for tests (test/security.test.ts).
-export { isAllowedOrigin };
+// Re-exported for tests (test/security.test.ts, test/accounts.test.ts).
+export { isAllowedOrigin, app };
 
 app.use('*', requestId());
 // Skipped on the media-stream upgrade: its 101 response comes straight from
 // the Durable Object and its headers can't be modified.
-app.use('*', async (c, next) => (c.req.path === '/twilio/stream' ? next() : secureHeaders()(c, next)));
+const STREAM_PATHS = new Set(['/twilio/stream', '/exotel/stream', '/plivo/stream']);
+app.use('*', async (c, next) => (STREAM_PATHS.has(c.req.path) ? next() : secureHeaders()(c, next)));
 
 // ── CORS ───────────────────────────────────────────────────────────────────
 app.use('*', cors({
   origin: (origin, c) => (origin && isAllowedOrigin(origin, c.env) ? origin : null),
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-Mogi-Secret', 'X-Dev-Customer-Id', 'X-Admin-Key'],
 }));
 
@@ -41,11 +47,15 @@ app.use('*', cors({
 // Sub-routers are typed with HonoEnv; the extra requestId variable is a
 // superset, so mounting them is safe.
 app.route('/auth',     authRouter);
+app.route('/account',  accountRouter);
 app.route('/catalog',  catalogRouter);
 app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);
 app.route('/twilio',   twilioRouter);
+app.route('/exotel',   exotelRouter);
+app.route('/plivo',    plivoRouter);
 app.route('/admin/calendar', calendarAdminRouter);
+app.route('/admin/privacy', privacyAdminRouter);
 app.route('/admin/billing', billingAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/oauth',    oauthRouter);
@@ -72,7 +82,11 @@ app.get('/sectors', async (c) => {
   const sectors = await getSectors(c.env);
   return c.json({
     success: true,
-    data: Object.entries(sectors).map(([key, meta]) => ({ key, name: meta.name, model: meta.model })),
+    data: Object.entries(sectors).map(([key, meta]) => ({
+      key, name: meta.name, model: meta.model,
+      // How the admin UI shows this business's prices, dates and phone numbers.
+      currency: meta.currency, locale: meta.locale ?? 'en-US', countryCode: meta.countryCode ?? 'US',
+    })),
   });
 });
 
@@ -88,10 +102,13 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
-// ── Scheduled jobs (wrangler.toml [triggers]) ──────────────────────────────
-// Daily: bill last month's overage (idempotent; failed rows retry next day).
-// Only businesses with a billing plan are touched.
-async function scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+// Cron Triggers ([triggers] in wrangler.toml), once a day:
+// - data-retention sweep: a no-op until a business sets sectors.retention_days;
+// - month-end overage billing: idempotent (failed rows retry the next day) and
+//   only touches businesses with a billing plan.
+async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  ctx.waitUntil(applyRetention(env).then(() => undefined)
+    .catch(e => console.error('[retention] sweep failed', e?.message || e)));
   ctx.waitUntil(
     closePeriod(env)
       .then(r => { if (r.length) console.log('[billing] close-period', JSON.stringify(r)); })
@@ -99,4 +116,4 @@ async function scheduled(_controller: ScheduledController, env: Env, ctx: Execut
   );
 }
 
-export default { fetch: app.fetch, scheduled };
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

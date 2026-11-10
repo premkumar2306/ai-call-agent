@@ -3,6 +3,7 @@ import type { HonoEnv } from '../middleware';
 import { withAdminKey } from '../middleware';
 import { timingSafeEqual } from '../config';
 import { getSector } from '../services/sector.service';
+import { getRole, roleAllows, verifyOwnerToken } from '../services/accounts';
 import { isPeriod, isValidGstin, normalizeGstin, billingPeriod } from '../services/billing/pricing';
 import { checkWebhook, RazorpayNotConfigured } from '../services/billing/razorpay';
 import {
@@ -14,22 +15,27 @@ import {
 type BillingEnv = { Bindings: HonoEnv['Bindings']; Variables: HonoEnv['Variables'] & { viewer: Viewer } };
 
 // ── Access ──────────────────────────────────────────────────────────────────
-// Who may see and manage a business's billing. Today only the operator, with
-// X-Admin-Key. Owner logins (workstream E) plug in here: resolve the owner's
-// session, check it is for :businessType, and return { role: 'owner' }.
-// Everything below keys off `viewer.role`, so owners automatically get the
-// summary without cost/margin and none of the /admin/billing routes.
-export async function resolveBillingViewer(c: Context<BillingEnv>, _businessType: string): Promise<Viewer | null> {
+// Who may see and manage a business's billing: the operator (X-Admin-Key) for
+// every business, or a signed-in owner (Authorization: Bearer) of this one.
+// Everything below keys off `viewer.role`, so owners get the summary without
+// cost/margin and none of the /admin/billing routes. Staff can't see billing.
+export async function resolveBillingViewer(c: Context<BillingEnv>, businessType: string): Promise<Viewer | null> {
   const key = c.req.header('x-admin-key');
-  if (c.env.ADMIN_SECRET && key && timingSafeEqual(key, c.env.ADMIN_SECRET)) return { role: 'operator' };
-  return null;
+  // A wrong admin key is refused outright, never retried as an owner login.
+  if (key !== undefined) return c.env.ADMIN_SECRET && key && timingSafeEqual(key, c.env.ADMIN_SECRET) ? { role: 'operator' } : null;
+  const auth = c.req.header('authorization');
+  if (!auth?.startsWith('Bearer ')) return null;
+  const user = await verifyOwnerToken(c.env, auth.slice(7));
+  if (!user) return null;
+  return roleAllows(await getRole(c.env, user.id, businessType), 'owner') ? { role: 'owner' } : null;
 }
 
 async function withBillingAccess(c: Context<BillingEnv>, next: Next) {
   const businessType = c.req.param('businessType');
   if (!businessType) return c.json({ success: false, error: 'Business required' }, 400);
   const viewer = await resolveBillingViewer(c, businessType);
-  if (!viewer) return c.json({ success: false, error: 'Admin key required' }, 401);
+  // Same answer for "not signed in", "not yours" and "no such business".
+  if (!viewer) return c.json({ success: false, error: 'Sign in as the business owner (or use the admin key)' }, 401);
   if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: `Unknown business: ${businessType}` }, 404);
   c.set('viewer', viewer);
   await next();

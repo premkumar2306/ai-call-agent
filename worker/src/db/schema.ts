@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex, primaryKey } from 'drizzle-orm/sqlite-core';
 
 export const sectors = sqliteTable('sectors', {
   key:          text('key').primaryKey(),
@@ -8,12 +8,26 @@ export const sectors = sqliteTable('sectors', {
   hours:        text('hours', { mode: 'json' }).notNull().$type<Record<string, string>>(),
   timezone:     text('timezone').notNull().default('America/Chicago'),
   currency:     text('currency').notNull().default('USD'),
+  locale:       text('locale').notNull().default('en-US'),
+  countryCode:  text('country_code').notNull().default('US'),
   address:      text('address'),
   phone:        text('phone'),
   website:      text('website'),
   about:        text('about'),
   notifyEmail:  text('notify_email'),
   capacity:     integer('capacity').notNull().default(1),
+  vertical:     text('vertical'),                       // services/verticals.ts key; NULL = general
+  // DPDP (0014): null = automatic (on in India), true/false = forced.
+  aiDisclosure:     integer('ai_disclosure', { mode: 'boolean' }),
+  disclosureText:   text('disclosure_text'),
+  privacyNoticeUrl: text('privacy_notice_url'),
+  retentionDays:    integer('retention_days'),            // null = keep
+  // Phone-line language + providers (0012). Defaults = English, Deepgram, Cartesia.
+  voiceLanguage: text('voice_language').notNull().default('en'),   // en | hi | hi-en
+  sttProvider:   text('stt_provider').notNull().default('deepgram'), // deepgram | sarvam
+  ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
+  voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
+  kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -71,6 +85,10 @@ export const orders = sqliteTable('orders', {
   vehicle:          text('vehicle'),
   callbackPhone:    text('callback_phone'),             // E.164, from caller ID or given on the call
   notes:            text('notes'),
+  resourceId:       text('resource_id'),                // resources.id (a clinic's doctor)
+  resourceName:     text('resource_name'),
+  endsAt:           text('ends_at'),                    // business-local end, set for resource bookings
+  details:          text('details', { mode: 'json' }).$type<Record<string, string>>(), // vertical booking fields
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -87,6 +105,26 @@ export const orders = sqliteTable('orders', {
   // only prior index leads with customerIdHashed, wrong column for this
   // lookup). See issue #7.
   index('idx_orders_business_type_scheduled').on(t.businessType, t.scheduledAt),
+  index('idx_orders_resource_scheduled').on(t.resourceId, t.scheduledAt),
+]);
+
+// People a booking is made with, each with their own weekly hours — a
+// clinic's doctors (OPD timings, slot length, consultation fee).
+export const resources = sqliteTable('resources', {
+  id:           text('id').primaryKey(),
+  businessType: text('business_type').notNull(),
+  name:         text('name').notNull(),
+  role:         text('role'),
+  hours:        text('hours', { mode: 'json' }).notNull().$type<Record<string, string>>(),
+  slotMinutes:  integer('slot_minutes').notNull().default(15),
+  feeCents:     integer('fee_cents'),
+  about:        text('about'),
+  categories:   text('categories', { mode: 'json' }).$type<string[]>(), // product categories they do; null = all
+  sortOrder:    integer('sort_order').notNull().default(0),
+  isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_resources_business_active').on(t.businessType, t.isActive),
 ]);
 
 // One external calendar per business. Only Google today; `provider` leaves
@@ -129,6 +167,7 @@ export const transcripts = sqliteTable('transcripts', {
 }, (t) => [
   index('idx_transcripts_customer_business_type').on(t.customerIdHashed, t.businessType),
   index('idx_transcripts_call_sid').on(t.callSid),
+  index('idx_transcripts_business_updated').on(t.businessType, t.updatedAt),
 ]);
 
 // Messages a caller left for staff ("have someone call me about a quote").
@@ -140,10 +179,87 @@ export const callMessages = sqliteTable('call_messages', {
   callbackPhone: text('callback_phone'),
   message:       text('message').notNull(),
   status:        text('status').notNull().default('NEW'),
+  customerIdHashed: text('customer_id_hashed'),
   createdAt:     integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 }, (t) => [
   index('idx_call_messages_business_created').on(t.businessType, t.createdAt),
+  index('idx_call_messages_customer').on(t.customerIdHashed),
 ]);
+
+// When the call-start notice (AI assistant, transcription) was given — the
+// audit trail for DPDP notice. See services/disclosure.ts.
+export const consentRecords = sqliteTable('consent_records', {
+  id:               text('id').primaryKey(),
+  businessType:     text('business_type').notNull(),
+  channel:          text('channel').notNull(),            // voice | whatsapp
+  callSid:          text('call_sid'),
+  customerIdHashed: text('customer_id_hashed'),           // null after erasure
+  noticeVersion:    text('notice_version').notNull(),
+  noticeText:       text('notice_text').notNull(),
+  playedAt:         integer('played_at', { mode: 'timestamp' }).notNull(),
+  heardFully:       integer('heard_fully', { mode: 'boolean' }),
+  createdAt:        integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_consent_records_business_played').on(t.businessType, t.playedAt),
+  index('idx_consent_records_customer').on(t.customerIdHashed),
+]);
+
+// Data-principal requests (export / erasure) handled via /admin/privacy.
+export const dataRequests = sqliteTable('data_requests', {
+  id:               text('id').primaryKey(),
+  businessType:     text('business_type').notNull(),
+  kind:             text('kind').notNull(),               // export | erase
+  customerIdHashed: text('customer_id_hashed').notNull(),
+  summary:          text('summary', { mode: 'json' }),
+  createdAt:        integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  index('idx_data_requests_business_created').on(t.businessType, t.createdAt),
+]);
+
+// Called number → business, per carrier (drizzle/0013_phone_numbers.sql).
+export const phoneNumbers = sqliteTable('phone_numbers', {
+  number:       text('number').notNull(),          // E.164
+  provider:     text('provider').notNull(),        // twilio | exotel | plivo
+  businessType: text('business_type').notNull(),
+  label:        text('label'),
+  createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  primaryKey({ columns: [t.number, t.provider] }),
+  index('idx_phone_numbers_business').on(t.businessType),
+]);
+
+// ── Owner accounts (drizzle/0015_owner_accounts.sql) ───────────────────────
+// Business owners and their staff sign in with an emailed one-time code.
+export const users = sqliteTable('users', {
+  id:             text('id').primaryKey(),
+  email:          text('email').notNull(),
+  name:           text('name'),
+  phone:          text('phone'),
+  sessionVersion: integer('session_version').notNull().default(1),
+  lastLoginAt:    integer('last_login_at', { mode: 'timestamp' }),
+  createdAt:      integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  uniqueIndex('idx_users_email').on(t.email),
+]);
+
+export const businessMembers = sqliteTable('business_members', {
+  businessKey: text('business_key').notNull(),
+  userId:      text('user_id').notNull(),
+  role:        text('role').notNull().default('staff'), // owner | staff
+  createdAt:   integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [
+  primaryKey({ columns: [t.businessKey, t.userId] }),
+  index('idx_business_members_user').on(t.userId),
+]);
+
+export const loginCodes = sqliteTable('login_codes', {
+  identifier: text('identifier').primaryKey(),     // 'email:<address>'
+  codeHash:   text('code_hash').notNull(),         // HMAC, never the code
+  attempts:   integer('attempts').notNull().default(0),
+  expiresAt:  integer('expires_at', { mode: 'timestamp' }).notNull(),
+  createdAt:  integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+});
 
 // ── Billing (workstream F, migration 0016) ──────────────────────────────────
 // All times are unix seconds; money is in paise excluding GST unless named

@@ -15,12 +15,23 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Voice
 DEEPGRAM_API_KEY=
 CARTESIA_API_KEY=
+# Hindi / Hinglish via Sarvam AI (dashboard.sarvam.ai). Only businesses whose
+# voice settings pick Sarvam use it; their calls are refused without it.
+SARVAM_API_KEY=
 
-# Optional
+# Optional. Without RESEND_API_KEY, local sign-in returns the one-time code
+# to the UI instead of emailing it (development only).
 RESEND_API_KEY=
 EMAIL_FROM=Mogi <mogi@yourstore.example.com>
 TWILIO_AUTH_TOKEN=
 TWILIO_WEBHOOK_URL=
+
+# Indian numbers (optional). Exotel: shared secret every /exotel/* URL in
+# the call flow carries (Basic auth or ?key=); Plivo: signature verification.
+EXOTEL_WEBHOOK_SECRET=
+EXOTEL_DEFAULT_BUSINESS_TYPE=
+PLIVO_AUTH_TOKEN=
+PLIVO_WEBHOOK_URL=
 
 # Calendar integration (optional). Google OAuth client redirect URI for
 # local dev: http://localhost:8787/oauth/google/callback

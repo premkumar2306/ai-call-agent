@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
+import { formatPhone, type SectorLocale } from '../locale';
 
 interface Props {
   base: string;
-  adminKey: string;
+  auth: Record<string, string>;
+  /** Businesses this viewer may see: all of them for the operator, their own for an owner. */
+  sectors: SectorOption[];
 }
 
 interface TranscriptRow {
@@ -36,6 +39,8 @@ interface BookingRow {
   scheduledAt: string | null;
   customerName: string | null;
   vehicle: string | null;
+  resourceName?: string | null;          // the doctor, for clinics
+  details?: Record<string, string> | null; // patient age, new/returning, reason…
   callbackPhone: string | null;
   notes: string | null;
   createdAt: number | string;
@@ -51,11 +56,28 @@ interface MessageRow {
   createdAt: number | string;
 }
 
-function formatSlot(iso: string | null): string {
+function bookingDetails(b: BookingRow): string {
+  const parts = [
+    b.resourceName ? `with ${b.resourceName}` : '',
+    b.vehicle ?? '',
+    ...Object.entries(b.details ?? {}).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`),
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : '—';
+}
+
+// Booking times are the business's wall clock; non-US businesses are shown in
+// their own locale (en-IN: "Mon, 2 Nov 10:30 am").
+function formatSlot(iso: string | null, locale?: string): string {
   if (!iso) return '—';
   const [d, t] = iso.split('T');
   const date = new Date(`${d}T12:00:00`);
   const [h, m] = t.split(':').map(Number);
+  if (locale && locale !== 'en-US') {
+    try {
+      const at = new Date(Date.UTC(2000, 0, 1, h, m));
+      return `${date.toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' })} ${at.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`;
+    } catch { /* unknown locale: fall through */ }
+  }
   const clock = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
   return `${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} ${clock}`;
 }
@@ -104,7 +126,7 @@ function LatencyChart({ metrics }: { metrics: TurnMetric[] }) {
   );
 }
 
-interface SectorOption { key: string; name: string }
+interface SectorOption extends SectorLocale { key: string; name: string }
 
 function toMs(ts: number | string): number {
   return typeof ts === 'number' ? ts * 1000 : new Date(ts).getTime();
@@ -153,8 +175,7 @@ const td: React.CSSProperties = {
   verticalAlign: 'top',
 };
 
-export default function Calls({ base, adminKey }: Props) {
-  const [sectors, setSectors]         = useState<SectorOption[]>([]);
+export default function Calls({ base, auth, sectors }: Props) {
   const [transcripts, setTranscripts] = useState<TranscriptRow[]>([]);
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState('');
@@ -164,22 +185,17 @@ export default function Calls({ base, adminKey }: Props) {
   const [messages, setMessages]       = useState<MessageRow[]>([]);
 
   useEffect(() => {
-    if (!adminKey) {
+    if (!Object.keys(auth).length || !sectors.length) {
       setTranscripts([]);
-      setError('Enter the admin key above to view call transcripts.');
       return;
     }
     setLoading(true);
     setError('');
-    fetch(`${base}/sectors`)
-      .then(r => r.json())
-      .then(async (json: any) => {
-        if (!json.success) { setError('Failed to load business list'); return; }
-        const allSectors: SectorOption[] = json.data;
-        setSectors(allSectors);
+    Promise.resolve(sectors)
+      .then(async (allSectors) => {
 
         const getAll = async <T,>(path: string): Promise<T[]> => (await Promise.all(allSectors.map(s =>
-          fetch(`${base}/admin/${path}/${s.key}`, { headers: { 'X-Admin-Key': adminKey } })
+          fetch(`${base}/admin/${path}/${s.key}`, { headers: auth })
             .then(r => r.json()).then((j: any) => (j.success ? j.data : []) as T[]).catch(() => [] as T[])
         ))).flat();
         getAll<BookingRow>('bookings').then(rows => setBookings(rows.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt))));
@@ -187,7 +203,7 @@ export default function Calls({ base, adminKey }: Props) {
 
         const results = await Promise.all(
           allSectors.map(s =>
-            fetch(`${base}/admin/transcripts/${s.key}`, { headers: { 'X-Admin-Key': adminKey } })
+            fetch(`${base}/admin/transcripts/${s.key}`, { headers: auth })
               .then(async r => {
                 const json = await r.json();
                 if (!r.ok || !json.success) throw new Error(json.error ?? 'Failed to load transcripts');
@@ -204,19 +220,22 @@ export default function Calls({ base, adminKey }: Props) {
       })
       .catch((err: Error) => setError(err.message || 'Network error loading calls'))
       .finally(() => setLoading(false));
-  }, [base, adminKey]);
+  }, [base, auth, sectors]);
 
   const sectorName = (key: string) => sectors.find(s => s.key === key)?.name ?? key;
+  const localeFor = (key: string) => sectors.find(s => s.key === key)?.locale;
   const visible = businessFilter === 'all' ? transcripts : transcripts.filter(t => t.businessType === businessFilter);
   const open = visible.find(t => t.id === openId) ?? null;
   const inBusiness = <T extends { businessType: string }>(rows: T[]) =>
     businessFilter === 'all' ? rows : rows.filter(r => r.businessType === businessFilter);
   const visibleBookings = inBusiness(bookings).filter(b => b.status !== 'CANCELLED').slice(0, 30);
   const visibleMessages = inBusiness(messages).slice(0, 30);
+  // Clinics book a doctor and record patient details instead of a vehicle.
+  const hasDetails = visibleBookings.some(b => b.resourceName || (b.details && Object.keys(b.details).length));
 
   const markDone = (m: MessageRow) => {
     fetch(`${base}/admin/messages/${m.businessType}/${m.id}`, {
-      method: 'PATCH', headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+      method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: m.status === 'DONE' ? 'NEW' : 'DONE' }),
     }).then(() => setMessages(ms => ms.map(x => x.id === m.id ? { ...x, status: m.status === 'DONE' ? 'NEW' : 'DONE' } : x)));
   };
@@ -296,16 +315,16 @@ export default function Calls({ base, adminKey }: Props) {
               <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
                 <thead><tr>
                   <th style={th}>When</th><th style={th}>Service</th><th style={th}>Customer</th>
-                  <th style={th}>Vehicle</th><th style={th}>Callback</th><th style={th}>Status</th>
+                  <th style={th}>{hasDetails ? 'Details' : 'Vehicle'}</th><th style={th}>Callback</th><th style={th}>Status</th>
                 </tr></thead>
                 <tbody>
                   {visibleBookings.map(b => (
                     <tr key={b.id}>
-                      <td style={td}>{formatSlot(b.scheduledAt)}</td>
+                      <td style={td}>{formatSlot(b.scheduledAt, localeFor(b.businessType))}</td>
                       <td style={td}>{b.productName}{b.notes ? <div style={{ color: '#888', fontSize: 12 }}>{b.notes}</div> : null}</td>
                       <td style={td}>{b.customerName ?? '—'}</td>
-                      <td style={td}>{b.vehicle ?? '—'}</td>
-                      <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: '#a78bff' }}>{b.callbackPhone}</a> : '—'}</td>
+                      <td style={td}>{hasDetails ? bookingDetails(b) : b.vehicle ?? '—'}</td>
+                      <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: '#a78bff' }}>{formatPhone(b.callbackPhone)}</a> : '—'}</td>
                       <td style={td}>{b.status.toLowerCase()}</td>
                     </tr>
                   ))}
@@ -325,7 +344,7 @@ export default function Calls({ base, adminKey }: Props) {
               {visibleMessages.map(m => (
                 <div key={m.id} style={{ border: '1px solid #26263a', borderRadius: 10, padding: 12, opacity: m.status === 'DONE' ? 0.5 : 1 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', fontSize: 12, color: '#999' }}>
-                    <span>{m.callerName ?? 'Caller'} · {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`} style={{ color: '#a78bff' }}>{m.callbackPhone}</a> : 'no number'} · {formatDateTime(m.createdAt)}</span>
+                    <span>{m.callerName ?? 'Caller'} · {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`} style={{ color: '#a78bff' }}>{formatPhone(m.callbackPhone)}</a> : 'no number'} · {formatDateTime(m.createdAt)}</span>
                     <button onClick={() => markDone(m)} style={{ background: '#22222f', border: '1px solid #2a2a3a', color: '#ddd', borderRadius: 6, fontSize: 12, padding: '2px 8px', cursor: 'pointer' }}>
                       {m.status === 'DONE' ? 'Reopen' : 'Mark done'}
                     </button>

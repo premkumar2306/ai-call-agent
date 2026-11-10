@@ -1,9 +1,11 @@
 import { eq, and, ne, gte, lte } from 'drizzle-orm';
-import type { SessionPayload, Env, SectorMeta } from '../types';
+import type { SessionPayload, Env, SectorMeta, Resource, WeeklyHours } from '../types';
 import { getProducts, getProductById, searchProducts } from './catalog.service';
 import { placeOrder, getOrders, getOrder, cancelOrder, updateOrderDetails } from './order.service';
 import { scoreProducts } from './recommendations.service';
-import { formatPrice } from './business-profile';
+import { formatPrice, priceText, spokenPriceText, isResourcePriced } from './business-profile';
+import { formatClock, formatDayLabel, localeOf, normalizePhone as normalizePhoneFor, spokenMoney, spokenPhone } from '../utils/locale';
+import { getVertical, detailsFromArgs, missingRequired, type Vertical } from './verticals';
 import { getDb } from '../db/client';
 import { orders as ordersTable, callMessages } from '../db/schema';
 import { notifyBooking, notifyMessage } from './notify.service';
@@ -52,6 +54,16 @@ export function parseHoursRange(range: string): { openH: number; openM: number; 
   if (closeAP === 'pm' && closeH !== 12) closeH += 12;
   if (closeAP === 'am' && closeH === 12) closeH = 0;
   return { openH, openM: parseInt(m[2] ?? '0'), closeH, closeM: parseInt(m[5] ?? '0') };
+}
+
+/**
+ * Every range in a day's hours: "10am–1pm, 5pm–9pm" (a clinic's morning and
+ * evening OPD) is two. A single range parses exactly as parseHoursRange.
+ */
+export function parseHoursRanges(hours: string): NonNullable<ReturnType<typeof parseHoursRange>>[] {
+  return hours.split(/\s*(?:,|;|&|\band\b)\s*/i)
+    .map(part => parseHoursRange(part))
+    .filter((r): r is NonNullable<typeof r> => r !== null);
 }
 
 /**
@@ -127,32 +139,71 @@ export function localMinutes(date: Date, timeZone: string | undefined): number {
   return get('hour') * 60 + get('minute');
 }
 
-export interface Slot { date: string; time: string; datetime: string; label: string; minutes: number }
+export interface Slot {
+  date: string; time: string; datetime: string; label: string; minutes: number;
+  /** The doctor this opening is with (resource businesses only). */
+  resource?: { id: string; name: string };
+}
 
 // "9:00 AM" from minutes since midnight.
-function clockLabel(mins: number): string {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-}
+const clockLabel = (mins: number) => formatClock(mins, 'en-US');
 
 // Spoken label for a business-local "YYYY-MM-DDTHH:MM[:SS]" — formatted from
 // the string itself, never via Date parsing (the Worker clock is UTC, the
 // string is wall-clock time in the business's zone).
-export function formatSlotLabel(datetime: string, todayYmd?: string, tomorrowYmd?: string): string {
+// `locale` is the business's (en-US: "Friday, Oct 30 at 9:00 AM"; en-IN:
+// "Friday, 30 Oct at 9:00 am").
+export function formatSlotLabel(datetime: string, todayYmd?: string, tomorrowYmd?: string, locale = 'en-US'): string {
   const ymd = datetime.slice(0, 10);
   const mins = parseInt(datetime.slice(11, 13), 10) * 60 + parseInt(datetime.slice(14, 16), 10);
   const day = ymd === todayYmd ? 'today'
     : ymd === tomorrowYmd ? 'tomorrow'
-    : new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
-  return `${day} at ${clockLabel(mins)}`;
+    : formatDayLabel(ymd, locale);
+  return `${day} at ${formatClock(mins, locale)}`;
 }
 
 // Earliest a same-day slot may start, so nobody is offered "today at 2"
 // at 1:55.
 const SAME_DAY_LEAD_MIN = 60;
 export const AVAILABILITY_DAYS = 14;
+
+// Every start time inside `hours` over the availability window, `stepMin`
+// apart, that leaves room for `durationMinutes` before the range closes.
+function openingSlots(
+  hours: WeeklyHours | undefined, timeZone: string | undefined, durationMinutes: number, stepMin: number, now: Date,
+  locale = 'en-US',
+): Slot[] {
+  const out: Slot[] = [];
+  const today = localDay(now, timeZone).ymd;
+  const tomorrow = localDay(new Date(now.getTime() + 86_400_000), timeZone).ymd;
+  const nowMin = localMinutes(now, timeZone);
+
+  for (let dayOffset = 0; dayOffset <= AVAILABILITY_DAYS; dayOffset++) {
+    const { ymd: dateStr, dayKey } = localDay(new Date(now.getTime() + dayOffset * 86_400_000), timeZone);
+    const hoursStr = hours?.[dayKey];
+    if (!hoursStr) continue;
+
+    for (const parsed of parseHoursRanges(hoursStr)) {
+      const openMin = Math.ceil((parsed.openH * 60 + parsed.openM) / stepMin) * stepMin;
+      const closeMin = parsed.closeH * 60 + parsed.closeM;
+
+      for (let m = openMin; m + durationMinutes <= closeMin; m += stepMin) {
+        if (dateStr === today && m < nowMin + SAME_DAY_LEAD_MIN) continue;
+        const datetime = `${dateStr}T${hhmm(m)}:00`;
+        out.push({
+          date: dateStr,
+          time: clockLabel(m),
+          datetime,
+          label: formatSlotLabel(datetime, today, tomorrow, locale),
+          minutes: m,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 export async function getAvailableSlots(
   env: Env,
@@ -164,36 +215,9 @@ export async function getAvailableSlots(
   now: Date = new Date(),
   forCustomer?: string,
 ): Promise<Slot[]> {
-  const rawSlots: Slot[] = [];
   // Any half hour inside opening hours is bookable, so "9 works" can be
   // booked even when 8:30 and 9:30 were the times read out.
-  const stepMin = 30;
-  const today = localDay(now, meta?.timezone).ymd;
-  const tomorrow = localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd;
-  const nowMin = localMinutes(now, meta?.timezone);
-
-  for (let dayOffset = 0; dayOffset <= AVAILABILITY_DAYS; dayOffset++) {
-    const { ymd: dateStr, dayKey } = localDay(new Date(now.getTime() + dayOffset * 86_400_000), meta?.timezone);
-    const hoursStr = meta?.hours[dayKey];
-    if (!hoursStr) continue;
-
-    const parsed = parseHoursRange(hoursStr);
-    if (!parsed) continue;
-    const openMin = Math.ceil((parsed.openH * 60 + parsed.openM) / 30) * 30;
-    const closeMin = parsed.closeH * 60 + parsed.closeM;
-
-    for (let m = openMin; m + durationMinutes <= closeMin; m += stepMin) {
-      if (dateStr === today && m < nowMin + SAME_DAY_LEAD_MIN) continue;
-      const datetime = `${dateStr}T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00`;
-      rawSlots.push({
-        date: dateStr,
-        time: clockLabel(m),
-        datetime,
-        label: formatSlotLabel(datetime, today, tomorrow),
-        minutes: m,
-      });
-    }
-  }
+  const rawSlots = openingSlots(meta?.hours, meta?.timezone, durationMinutes, 30, now, localeOf(meta).locale);
 
   // Filter out slots already booked. If the caller already has a fresh
   // booked-slot set for this call (CallRelay prefetches one at call start
@@ -216,6 +240,119 @@ export async function getAvailableSlots(
       const { start, end } = bookingInterval(s.datetime, durationMinutes, meta?.timezone);
       return !overlapsBusy(start.getTime(), end.getTime(), busy);
     });
+}
+
+// ── Resource (doctor) availability ─────────────────────────────────────────
+// A clinic books a doctor, not a bay: each doctor has their own OPD hours and
+// slot length, and a slot is taken when it overlaps any of that doctor's
+// bookings. Business-local "YYYY-MM-DDTHH:MM" strings throughout.
+
+export interface ResourceBooking { resourceId: string; start: string; end: string }
+
+export async function getResourceBookings(env: Env, businessType: string): Promise<ResourceBooking[]> {
+  const db = getDb(env.DB);
+  // Local wall-clock strings vs a UTC horizon: a day of slack either side
+  // is harmless (extra rows only), and nothing current is missed.
+  const from = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const to = new Date(Date.now() + (AVAILABILITY_DAYS + 2) * 86_400_000).toISOString().slice(0, 10);
+  const rows = await db
+    .select({ resourceId: ordersTable.resourceId, start: ordersTable.scheduledAt, end: ordersTable.endsAt })
+    .from(ordersTable)
+    .where(and(
+      eq(ordersTable.businessType, businessType),
+      ne(ordersTable.status, 'CANCELLED'),
+      gte(ordersTable.scheduledAt, from),
+      lte(ordersTable.scheduledAt, to),
+    ));
+  return rows
+    .filter(r => r.resourceId && r.start)
+    .map(r => ({ resourceId: r.resourceId!, start: r.start!.slice(0, 16), end: (r.end ?? r.start!).slice(0, 16) }));
+}
+
+/** "YYYY-MM-DDTHH:MM[:SS]" + minutes, as a local "YYYY-MM-DDTHH:MM:00" (same day or later). */
+export function addLocalMinutes(datetime: string, minutes: number): string {
+  const d = new Date(`${datetime.slice(0, 16)}:00Z`);
+  return new Date(d.getTime() + minutes * 60_000).toISOString().slice(0, 19);
+}
+
+/** The business's resources, if its vertical books them (a clinic's doctors). */
+export function bookableResources(meta: SectorMeta | null | undefined): Resource[] {
+  return getVertical(meta).resources && meta?.resources?.length ? meta.resources : [];
+}
+
+/** Whether a person does this product category (no list = everything). */
+export function offers(r: Resource, category: string | undefined): boolean {
+  return !category || !r.categories?.length || r.categories.includes(category);
+}
+
+// "Dr. Mehta doesn't do dental cleaning — Dr. Khan does."
+function notOffered(r: Resource, category: string, meta: SectorMeta | null | undefined, serviceName: string): ToolResult {
+  const spec = getVertical(meta).resources!;
+  const who = bookableResources(meta).filter(x => offers(x, category));
+  return {
+    success: false, error: 'NOT_OFFERED_BY_RESOURCE',
+    data: { [`${spec.noun}s_who_do_it`]: who.map(x => ({ [spec.param]: x.id, name: x.name })) },
+    spoken_response: `${r.name} doesn't do ${serviceName || 'that'}${who.length ? ` — ${joinOr(who.map(x => x.name))} does` : ''}. Would that work?`,
+  };
+}
+
+/** A resource named by id, or loosely by name ("Dr Rao", "rao"). */
+export function findResource(meta: SectorMeta | null | undefined, ref: unknown): Resource | undefined {
+  if (typeof ref !== 'string' || !ref.trim()) return undefined;
+  const all = bookableResources(meta);
+  const q = ref.trim().toLowerCase();
+  const byId = all.find(r => r.id.toLowerCase() === q);
+  if (byId) return byId;
+  const words = (x: string) => x.toLowerCase().replace(/\bdr\.?\s*/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 1);
+  const wanted = words(q);
+  if (!wanted.length) return undefined;
+  const hits = all.filter(r => wanted.every(w => words(r.name).includes(w)));
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+export function getResourceSlots(
+  meta: SectorMeta | null | undefined,
+  opts: {
+    resourceId?: string;
+    /** Only people who do this product category. */
+    category?: string;
+    /** Appointment length; defaults to each doctor's slot length. */
+    durationMinutes?: number;
+    bookings: ResourceBooking[];
+    calendarBusy?: BusyInterval[] | null;
+    now?: Date;
+  },
+): Slot[] {
+  const now = opts.now ?? new Date();
+  const all = bookableResources(meta);
+  const chosen = (opts.resourceId ? all.filter(r => r.id === opts.resourceId) : all).filter(r => offers(r, opts.category));
+  const busy = opts.calendarBusy ?? [];
+  const merged: { slot: Slot; order: number }[] = [];
+  chosen.forEach((r, order) => {
+    const duration = opts.durationMinutes ?? r.slotMinutes;
+    const mine = opts.bookings.filter(b => b.resourceId === r.id);
+    for (const slot of openingSlots(r.hours, meta?.timezone, duration, r.slotMinutes, now, localeOf(meta).locale)) {
+      const start = slot.datetime.slice(0, 16);
+      const end = addLocalMinutes(slot.datetime, duration).slice(0, 16);
+      if (mine.some(b => b.start < end && b.end > start)) continue;
+      if (busy.length) {
+        const iv = bookingInterval(slot.datetime, duration, meta?.timezone);
+        if (overlapsBusy(iv.start.getTime(), iv.end.getTime(), busy)) continue;
+      }
+      merged.push({ slot: { ...slot, resource: { id: r.id, name: r.name } }, order });
+    }
+  });
+  merged.sort((a, b) => a.slot.datetime.localeCompare(b.slot.datetime) || a.order - b.order);
+  // Any doctor: one opening per time (the first doctor free then), and the
+  // spoken label says who it's with.
+  const out: Slot[] = [];
+  const seen = new Set<string>();
+  for (const { slot } of merged) {
+    if (seen.has(slot.datetime)) continue;
+    seen.add(slot.datetime);
+    out.push(!opts.resourceId && all.length > 1 ? { ...slot, label: `${slot.label} with ${slot.resource!.name}` } : slot);
+  }
+  return out;
 }
 
 const TIME_OF_DAY: Record<string, [number, number]> = {
@@ -276,6 +413,73 @@ export function pickSlots(
   return { shown: spread(slots), matchedPreference: true };
 }
 
+/**
+ * The spoken reply and data for check_availability, given the open slots.
+ * `spokenFor` names the service (and doctor) in the reply: " for Brake Repair".
+ */
+function availabilityReply(
+  slots: Slot[], args: Record<string, unknown>, serviceId: string | undefined, spokenFor: string,
+  spec?: Vertical['resources'],
+): ToolResult {
+  // `datetime` is what book_appointment needs; a doctor's opening also
+  // carries the doctor_id to book it with.
+  const out = ({ minutes: _m, resource, ...rest }: Slot) =>
+    resource && spec ? { ...rest, [spec.param]: resource.id, [spec.noun]: resource.name } : rest;
+  if (slots.length === 0) {
+    return { success: true, data: { slots: [] }, spoken_response: `We don't have any openings in the next ${AVAILABILITY_DAYS} days. Please call us directly.` };
+  }
+  const preferredDate = args.preferred_date as string | undefined;
+  const timeOfDay = args.time_of_day as string | undefined;
+  // An exact day and time ("Wednesday at 10"): if it's open, hand back
+  // just that slot so the model books it this turn instead of reading
+  // out three other times. If not, offer that day's nearest times.
+  const timeMatch = /^(\d{1,2}):(\d{2})/.exec(String(args.preferred_time ?? ''));
+  if (preferredDate && timeMatch) {
+    const wanted = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+    const exact = slots.find(s => s.date === preferredDate && s.minutes === wanted);
+    if (exact) {
+      return {
+        success: true,
+        data: { requested_slot: out(exact), requested_open: true, service_id: serviceId },
+        spoken_response: `${exact.label} is open.`,
+      };
+    }
+    const sameDay = slots.filter(s => s.date === preferredDate)
+      .sort((a, b) => Math.abs(a.minutes - wanted) - Math.abs(b.minutes - wanted))
+      .slice(0, 3)
+      .sort((a, b) => a.minutes - b.minutes);
+    if (sameDay.length) {
+      return {
+        success: true,
+        data: { requested_open: false, offered: sameDay.map(out), service_id: serviceId },
+        spoken_response: `That time isn't open, but the nearest openings${spokenFor} are ${joinOr(sameDay.map(s => s.label))}. Which works for you?`,
+      };
+    }
+  }
+  const { shown, matchedPreference } = pickSlots(slots, { preferredDate, timeOfDay });
+  const asked = preferredDate || timeOfDay;
+  const lead = asked && !matchedPreference
+    ? `That time is booked up, but the nearest openings${spokenFor} are`
+    : `I have openings${spokenFor}`;
+  const spoken = `${lead} ${joinOr(shown.map(s => s.label))}. Which works for you?`;
+  // `datetime` is what book_appointment needs — offered slots first so
+  // the model books exactly what the caller heard.
+  // Everything else open on the day(s) being discussed comes first, so
+  // "anything earlier?" can be answered from this result instead of
+  // the model guessing that what it offered was all there is.
+  const focusDays = new Set(preferredDate ? [preferredDate] : shown.map(s => s.date));
+  const notShown = slots.filter(s => !shown.includes(s));
+  const rest = [
+    ...notShown.filter(s => focusDays.has(s.date)),
+    ...notShown.filter(s => !focusDays.has(s.date)),
+  ].slice(0, 15);
+  return {
+    success: true,
+    data: { offered: shown.map(out), other_open_slots: rest.map(out), matched_preference: matchedPreference, service_id: serviceId },
+    spoken_response: spoken,
+  };
+}
+
 // Prefers the call's cached catalog over a KV/D1 round trip.
 async function lookupProduct(env: Env, cache: CallCache | undefined, id: string | undefined) {
   if (!id) return null;
@@ -309,6 +513,12 @@ export async function executeTool(
   background?: Background,
 ): Promise<ToolResult> {
   const { businessType, account } = token;
+  const loc = localeOf(sectorMeta);
+  const normalizePhone = (raw: string | undefined) => normalizePhoneFor(raw, loc.countryCode);
+  // Caller ID in the business's country format (a no-op for E.164 from Twilio).
+  const callerPhone = token.callerPhone ? (normalizePhone(token.callerPhone) ?? token.callerPhone) : undefined;
+  const slotLabel = (dt: string) => formatSlotLabel(dt, ...todayTomorrow(sectorMeta));
+  const vertical = getVertical(sectorMeta);
   const defer = async (p: Promise<unknown>) => {
     const safe = p.catch(err => console.error(`[tool:${toolName}] background error`, err?.message || err));
     if (background) background(safe); else await safe;
@@ -323,7 +533,7 @@ export async function executeTool(
         return {
           success: true,
           data: account,
-          spoken_response: `You have $${credit} in store credit and you're a ${account.tier} member.`,
+          spoken_response: `You have ${loc.currency === 'USD' ? `$${credit}` : spokenMoney(account.store_credit_cents, loc)} in store credit and you're a ${account.tier} member.`,
         };
       }
 
@@ -357,7 +567,7 @@ export async function executeTool(
         }
         // Include IDs in data so Claude can use them immediately for check_availability / book_appointment
         const topResult = top5[0];
-        const price = formatPrice(topResult);
+        const price = spokenPriceText(topResult, sectorMeta);
         const duration = topResult.durationMinutes ? `, about ${topResult.durationMinutes} minutes` : '';
         const spoken = top5.length === 1
           ? `We have ${topResult.name} — ${price}${duration}. Want me to find you a time?`
@@ -365,7 +575,7 @@ export async function executeTool(
         return {
           success: true,
           data: {
-            products: top5.map(p => ({ id: p.id, name: p.name, price: formatPrice(p), durationMinutes: p.durationMinutes, category: p.category, description: p.description })),
+            products: top5.map(p => ({ id: p.id, name: p.name, price: priceText(p, sectorMeta), durationMinutes: p.durationMinutes, category: p.category, description: p.description })),
             matchType: 'match',
             query,
           },
@@ -380,7 +590,7 @@ export async function executeTool(
         const duration = p.durationMinutes ? ` Takes about ${p.durationMinutes} minutes.` : '';
         return {
           success: true, data: p,
-          spoken_response: `${p.name} — ${formatPrice(p)}.${duration} ${p.description}`,
+          spoken_response: `${p.name} — ${spokenPriceText(p, sectorMeta)}.${duration} ${p.description}`,
         };
       }
 
@@ -389,6 +599,20 @@ export async function executeTool(
         const serviceId = args.service_id as string | undefined;
         let duration = 60;
         let serviceName = '';
+        // Doctors (resources): which one was asked for, if any.
+        const spec = vertical.resources;
+        const resources = bookableResources(sectorMeta);
+        const askedFor = spec ? args[spec.param] : undefined;
+        const resource = resources.length ? findResource(sectorMeta, askedFor) : undefined;
+        if (resources.length && askedFor && !resource) {
+          return {
+            success: false, error: 'UNKNOWN_RESOURCE',
+            data: { [`${spec!.noun}s`]: resources.map(r => ({ [spec!.param]: r.id, name: r.name, role: r.role })) },
+            spoken_response: `Sorry, I didn't catch which ${spec!.noun}. We have ${joinOr(resources.map(r => r.name))}.`,
+          };
+        }
+        let productDuration: number | undefined;
+        let productCategory: string | undefined;
         // Calendar busy times are fetched alongside the product lookup.
         // CallRelay prefetches them at call start too; null means not
         // loaded yet (or the calendar was unreachable — retried next time).
@@ -398,74 +622,29 @@ export async function executeTool(
         if (serviceId) {
           const p = await lookupProduct(env, cache, serviceId);
           lap?.('lookupProduct');
-          if (p?.durationMinutes) duration = p.durationMinutes;
+          if (p?.durationMinutes) { duration = p.durationMinutes; productDuration = p.durationMinutes; }
           if (p?.name) serviceName = p.name;
+          if (p) productCategory = p.category;
         }
         const calendarBusy = await busyP;
         lap?.('calendarBusy');
+        if (resources.length) {
+          const bookings = cache?.resourceBookings ?? await getResourceBookings(env, businessType);
+          if (cache) cache.resourceBookings = bookings;
+          lap?.('resourceBookings');
+          if (resource && !offers(resource, productCategory)) return notOffered(resource, productCategory!, sectorMeta, serviceName);
+          return availabilityReply(
+            getResourceSlots(sectorMeta, { resourceId: resource?.id, category: productCategory, durationMinutes: productDuration, bookings, calendarBusy }),
+            args, serviceId, `${serviceName ? ` for ${serviceName}` : ''}${resource ? ` with ${resource.name}` : ''}`, spec,
+          );
+        }
         // getAvailableSlots' internal D1 lookup (getBookedDatetimes) is
         // skipped entirely when the call already has a prefetched, kept-in-
         // sync booked-slot set (CallRelay prefetches one at call start —
         // see CallCache) — this tool becomes pure CPU in that case.
         const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy, new Date(), token.sub);
         lap?.('getAvailableSlots');
-        if (slots.length === 0) {
-          return { success: true, data: { slots: [] }, spoken_response: `We don't have any openings in the next ${AVAILABILITY_DAYS} days. Please call us directly.` };
-        }
-        const preferredDate = args.preferred_date as string | undefined;
-        const timeOfDay = args.time_of_day as string | undefined;
-        // An exact day and time ("Wednesday at 10"): if it's open, hand back
-        // just that slot so the model books it this turn instead of reading
-        // out three other times. If not, offer that day's nearest times.
-        const timeMatch = /^(\d{1,2}):(\d{2})/.exec(String(args.preferred_time ?? ''));
-        if (preferredDate && timeMatch) {
-          const wanted = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
-          const exact = slots.find(s => s.date === preferredDate && s.minutes === wanted);
-          if (exact) {
-            const { minutes: _m, ...slot } = exact;
-            return {
-              success: true,
-              data: { requested_slot: slot, requested_open: true, service_id: serviceId },
-              spoken_response: `${exact.label} is open.`,
-            };
-          }
-          const sameDay = slots.filter(s => s.date === preferredDate)
-            .sort((a, b) => Math.abs(a.minutes - wanted) - Math.abs(b.minutes - wanted))
-            .slice(0, 3)
-            .sort((a, b) => a.minutes - b.minutes);
-          if (sameDay.length) {
-            const spokenFor = serviceName ? ` for ${serviceName}` : '';
-            return {
-              success: true,
-              data: { requested_open: false, offered: sameDay.map(({ minutes: _x, ...r }) => r), service_id: serviceId },
-              spoken_response: `That time isn't open, but the nearest openings${spokenFor} are ${joinOr(sameDay.map(s => s.label))}. Which works for you?`,
-            };
-          }
-        }
-        const { shown, matchedPreference } = pickSlots(slots, { preferredDate, timeOfDay });
-        const spokenFor = serviceName ? ` for ${serviceName}` : '';
-        const asked = preferredDate || timeOfDay;
-        const lead = asked && !matchedPreference
-          ? `That time is booked up, but the nearest openings${spokenFor} are`
-          : `I have openings${spokenFor}`;
-        const spoken = `${lead} ${joinOr(shown.map(s => s.label))}. Which works for you?`;
-        // `datetime` is what book_appointment needs — offered slots first so
-        // the model books exactly what the caller heard.
-        const strip = ({ minutes: _m, ...rest }: Slot) => rest;
-        // Everything else open on the day(s) being discussed comes first, so
-        // "anything earlier?" can be answered from this result instead of
-        // the model guessing that what it offered was all there is.
-        const focusDays = new Set(preferredDate ? [preferredDate] : shown.map(s => s.date));
-        const notShown = slots.filter(s => !shown.includes(s));
-        const rest = [
-          ...notShown.filter(s => focusDays.has(s.date)),
-          ...notShown.filter(s => !focusDays.has(s.date)),
-        ].slice(0, 15);
-        return {
-          success: true,
-          data: { offered: shown.map(strip), other_open_slots: rest.map(strip), matched_preference: matchedPreference, service_id: serviceId },
-          spoken_response: spoken,
-        };
+        return availabilityReply(slots, args, serviceId, serviceName ? ` for ${serviceName}` : '');
       }
 
       case 'get_business_hours': {
@@ -486,7 +665,7 @@ export async function executeTool(
         }
         const upsell = await lookupProduct(env, cache, p.upsellProductId);
         if (!upsell) return { success: true, data: { upsells: [] }, spoken_response: "No add-ons right now." };
-        const price = formatPrice(upsell);
+        const price = spokenPriceText(upsell, sectorMeta);
         return {
           success: true,
           data: { upsells: [upsell] },
@@ -534,7 +713,8 @@ export async function executeTool(
         }
         // The front desk needs to know who is coming and how to reach them.
         const customerName = (args.customer_name as string | undefined)?.trim();
-        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? token.callerPhone;
+        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? callerPhone;
+        const details = detailsFromArgs(vertical, args);
         // Booking the same thing twice (a repeated request, a retry) isn't a
         // clash with someone else — say they're already set.
         if (scheduledAt) {
@@ -545,15 +725,87 @@ export async function executeTool(
             return {
               success: true,
               data: { id: dup.id, service: dup.productName, scheduled_at: dup.scheduledAt, already_booked: true },
-              spoken_response: `You're already booked for ${dup.productName} ${formatSlotLabel(dup.scheduledAt!, ...todayTomorrow(sectorMeta))}. Anything else?`,
+              spoken_response: `You're already booked for ${dup.productName} ${slotLabel(dup.scheduledAt!)}. Anything else?`,
             };
           }
         }
         if (product.fulfillmentType === 'SERVICE_BOOKING' && !customerName) {
-          return { success: false, error: 'DETAILS_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.DETAILS_REQUIRED };
+          return { success: false, error: 'DETAILS_REQUIRED', spoken_response: vertical.askName };
+        }
+        // What else this vertical needs written down (a clinic: new or
+        // returning patient, or their age).
+        const missing = product.fulfillmentType === 'SERVICE_BOOKING' ? missingRequired(vertical, details) : null;
+        if (missing) {
+          return { success: false, error: 'DETAILS_REQUIRED', data: { missing }, spoken_response: vertical.askMissing };
         }
         if (product.fulfillmentType === 'SERVICE_BOOKING' && !callbackPhone) {
           return { success: false, error: 'PHONE_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.PHONE_REQUIRED };
+        }
+        // A clinic books a doctor: their own hours, slot length and fee.
+        if (scheduledAt && bookableResources(sectorMeta).length) {
+          const spec = vertical.resources!;
+          const named = findResource(sectorMeta, args[spec.param]);
+          if (args[spec.param] && !named) {
+            const all = bookableResources(sectorMeta);
+            return { success: false, error: 'UNKNOWN_RESOURCE', spoken_response: `Sorry, which ${spec.noun} would you like? We have ${joinOr(all.map(r => r.name))}.` };
+          }
+          // No doctor named: whoever sits then, in listed order.
+          if (named && !offers(named, product.category)) return notOffered(named, product.category, sectorMeta, product.name);
+          const candidates = (named ? [named] : bookableResources(sectorMeta)).filter(r => offers(r, product.category));
+          let problem: ReturnType<typeof checkWithinHours> = 'OUTSIDE_HOURS';
+          const fits = candidates.filter(r => {
+            const p = checkWithinHours(scheduledAt, product.durationMinutes ?? r.slotMinutes, { ...sectorMeta!, hours: r.hours });
+            if (p === 'PAST_TIME') problem = p;
+            return !p;
+          });
+          if (!fits.length) {
+            const msg = named && problem === 'OUTSIDE_HOURS'
+              ? `${named.name} isn't in then. Want me to find ${named.name}'s next opening?`
+              : TOOL_ERROR_MESSAGES[problem];
+            return { success: false, error: problem, spoken_response: msg };
+          }
+          let order: Awaited<ReturnType<typeof placeOrder>> | null = null;
+          let booked: Resource | null = null;
+          for (const r of fits) {
+            const duration = product.durationMinutes ?? r.slotMinutes;
+            const { start, end } = bookingInterval(scheduledAt, duration, sectorMeta?.timezone);
+            if (!(await isSlotFreeInCalendar(env, businessType, start, end))) continue;
+            try {
+              order = await placeOrder(env, token.sub, businessType, product.id,
+                (args.payment_method as string | undefined) ?? 'CREDIT_CARD', undefined, scheduledAt, {
+                  customerName, callbackPhone, notes: args.notes as string | undefined, details,
+                  resource: { id: r.id, name: r.name, endsAt: addLocalMinutes(scheduledAt, duration) },
+                  priceCents: isResourcePriced(product, sectorMeta) && r.feeCents != null ? r.feeCents : undefined,
+                });
+              booked = r;
+              break;
+            } catch (e: any) {
+              if (e?.code !== 'SLOT_TAKEN') throw e;
+            }
+          }
+          lap?.('placeOrder');
+          if (!order || !booked) {
+            if (cache) { cache.resourceBookings = null; cache.calendarBusy = null; }
+            return { success: false, error: 'SLOT_TAKEN', spoken_response: TOOL_ERROR_MESSAGES.SLOT_TAKEN };
+          }
+          const duration = product.durationMinutes ?? booked.slotMinutes;
+          await defer(syncBookingToCalendar(env, order, sectorMeta, duration));
+          await defer(notifyBooking(env, sectorMeta, order, 'booked'));
+          if (cache) {
+            cache.orders = null;
+            cache.ordersLoaded = false;
+            cache.resourceBookings?.push({ resourceId: booked.id, start: scheduledAt.slice(0, 16), end: order.endsAt!.slice(0, 16) });
+          }
+          const name = order.customerName ? `, ${order.customerName}` : '';
+          const when = formatSlotLabel(order.scheduledAt!, ...todayTomorrow(sectorMeta));
+          return {
+            success: true,
+            data: {
+              id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt,
+              [spec.noun]: booked.name, status: order.status, price: formatPrice({ ...product, priceCents: order.priceCents, originalPriceCents: order.priceCents }, sectorMeta),
+            },
+            spoken_response: `You're all set${name} — ${order.productName} with ${booked.name} ${when}. Anything else I can help with?`,
+          };
         }
         // The model sometimes books a time it never offered ("2:15", or a
         // Sunday). Reject anything outside opening hours or already past
@@ -625,13 +877,13 @@ export async function executeTool(
           }
         }
 
-        const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
+        const when = order.scheduledAt ? ` for ${slotLabel(order.scheduledAt)}` : '';
         // The name is read back so a misheard one ("Westfield") gets corrected now.
         const name = order.customerName ? `, ${order.customerName}` : '';
         const msg = `You're all set${name} — ${order.productName}${when}. Anything else I can help with?`;
         return {
           success: true,
-          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product) },
+          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product, loc) },
           spoken_response: msg,
         };
       }
@@ -642,7 +894,7 @@ export async function executeTool(
         const order = await getOrder(env, args.order_id as string, token.sub);
         if (!order) return { success: false, spoken_response: "I couldn't find that booking." };
         const scheduled = order.scheduledAt
-          ? ` Scheduled for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}.`
+          ? ` Scheduled for ${slotLabel(order.scheduledAt)}.`
           : '';
         let spoken = `Booking ${order.id.slice(0, 8)} — ${order.productName} is ${order.status}.${scheduled}`;
         if (order.trackingNumber) spoken += ` Tracking: ${order.trackingNumber}.`;
@@ -661,7 +913,7 @@ export async function executeTool(
           return { success: true, data: { orders: [] }, spoken_response: "You don't have any active bookings." };
         }
         const describe = (o: typeof orders[number]) =>
-          `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt, ...todayTomorrow(sectorMeta))}` : ''}`;
+          `${o.productName}${o.scheduledAt ? ` on ${slotLabel(o.scheduledAt)}` : ''}`;
         const spoken = `You have ${upcoming.length} booking${upcoming.length > 1 ? 's' : ''}: ${upcoming.slice(0, 3).map(describe).join(', and ')}.`;
         return {
           success: true,
@@ -680,6 +932,7 @@ export async function executeTool(
           vehicle: args.vehicle as string | undefined,
           callbackPhone: callbackPhone ?? undefined,
           notes: args.notes as string | undefined,
+          extra: detailsFromArgs(vertical, args),
         });
         if (!updated) return { success: false, error: 'NOT_FOUND', spoken_response: "I couldn't find that booking. Want me to list your bookings?" };
         if (cache) { cache.orders = null; cache.ordersLoaded = false; }
@@ -687,16 +940,16 @@ export async function executeTool(
         if (updated.calendarEventId) {
           const product = await lookupProduct(env, cache, updated.productId);
           await defer(removeBookingFromCalendar(env, updated)
-            .then(() => syncBookingToCalendar(env, updated, sectorMeta, product?.durationMinutes ?? 60)));
+            .then(() => syncBookingToCalendar(env, updated, sectorMeta, bookingMinutes(updated, product?.durationMinutes))));
         }
         const parts = [
           updated.customerName ? `under ${updated.customerName}` : '',
           updated.vehicle ? `for the ${updated.vehicle}` : '',
-          updated.callbackPhone ? `and we'll call ${updated.callbackPhone}` : '',
+          updated.callbackPhone ? `and we'll call ${spokenPhone(updated.callbackPhone, loc)}` : '',
         ].filter(Boolean).join(' ');
         return {
           success: true,
-          data: { id: updated.id, customer_name: updated.customerName, vehicle: updated.vehicle, callback_phone: updated.callbackPhone, notes: updated.notes },
+          data: { id: updated.id, customer_name: updated.customerName, vehicle: updated.vehicle, callback_phone: updated.callbackPhone, notes: updated.notes, ...(updated.details ?? {}) },
           spoken_response: `Updated — your ${updated.productName} is ${parts || 'updated'}. Anything else?`,
         };
       }
@@ -708,21 +961,29 @@ export async function executeTool(
         const old = recent.find(o => o.id === args.order_id && ['PENDING', 'ACCEPTED', 'COMPLETE'].includes(o.status));
         if (!old?.scheduledAt) return { success: false, error: 'NOT_FOUND', spoken_response: "I couldn't find that booking. Want me to list your bookings?" };
         const product = await lookupProduct(env, cache, old.productId);
-        const problem = checkWithinHours(newAt, product?.durationMinutes ?? 60, sectorMeta);
+        // Same doctor, their hours and slot length (if it was booked with one).
+        const resource = old.resourceId ? bookableResources(sectorMeta).find(r => r.id === old.resourceId) : undefined;
+        const minutes = product?.durationMinutes ?? resource?.slotMinutes ?? 60;
+        const problem = checkWithinHours(newAt, minutes, resource ? { ...sectorMeta!, hours: resource.hours } : sectorMeta);
         if (problem) return { success: false, error: problem, spoken_response: TOOL_ERROR_MESSAGES[problem] };
         // New slot first, so a taken time leaves the original booking alone.
         const moved = await placeOrder(env, token.sub, businessType, old.productId, old.paymentMethod, undefined, newAt, {
           customerName: old.customerName ?? undefined, vehicle: old.vehicle ?? undefined,
-          callbackPhone: old.callbackPhone ?? token.callerPhone, notes: old.notes ?? undefined,
+          callbackPhone: old.callbackPhone ?? callerPhone, notes: old.notes ?? undefined,
           capacity: sectorMeta?.capacity,
+          ...(resource ? {
+            resource: { id: resource.id, name: resource.name, endsAt: addLocalMinutes(newAt, minutes) },
+            details: old.details ?? undefined,
+            priceCents: old.priceCents,
+          } : {}),
         });
         const cancelled = await cancelOrder(env, old.id, token.sub);
         lap?.('reschedule');
         await defer(removeBookingFromCalendar(env, cancelled));
-        if (moved.scheduledAt) await defer(syncBookingToCalendar(env, moved, sectorMeta, product?.durationMinutes ?? 60));
+        if (moved.scheduledAt) await defer(syncBookingToCalendar(env, moved, sectorMeta, resource ? minutes : product?.durationMinutes ?? 60));
         await defer(notifyBooking(env, sectorMeta, moved, 'rescheduled'));
-        if (cache) { cache.orders = null; cache.ordersLoaded = false; cache.bookedDatetimes = null; }
-        const label = formatSlotLabel(moved.scheduledAt!, ...todayTomorrow(sectorMeta));
+        if (cache) { cache.orders = null; cache.ordersLoaded = false; cache.bookedDatetimes = null; cache.resourceBookings = null; }
+        const label = slotLabel(moved.scheduledAt!);
         return {
           success: true,
           data: { id: moved.id, service: moved.productName, scheduled_at: moved.scheduledAt, replaced: old.id },
@@ -734,12 +995,12 @@ export async function executeTool(
         const phone = sectorMeta?.phone;
         if (!phone) return { success: false, error: 'NO_STAFF_LINE', spoken_response: "I can't transfer you, but I can take a message and have someone call you back." };
         if (checkWithinHours(nowLocalIso(sectorMeta), 1, sectorMeta)) {
-          return { success: false, error: 'CLOSED', spoken_response: "The shop is closed right now, so nobody can pick up. I can take a message and have someone call you back — what's your name?" };
+          return { success: false, error: 'CLOSED', spoken_response: `The ${vertical.place} is closed right now, so nobody can pick up. I can take a message and have someone call you back — what's your name?` };
         }
         // Only a live call (CallRelay) can hand off; elsewhere give the number.
         if (!cache) return { success: true, data: { phone }, spoken_response: `You can reach the team directly at ${phone}.` };
         cache.transferTo = phone.replace(/[^\d+]/g, '');
-        return { success: true, data: { transferring: true }, spoken_response: 'Sure — connecting you to the service desk now. One moment.' };
+        return { success: true, data: { transferring: true }, spoken_response: `Sure — connecting you to ${vertical.desk} now. One moment.` };
       }
 
       case 'take_message': {
@@ -748,7 +1009,7 @@ export async function executeTool(
         const callerName = (args.caller_name as string | undefined)?.trim().slice(0, 120) || null;
         // Without a name the message is "someone called" — ask before saving.
         if (!callerName) return { success: false, error: 'NAME_REQUIRED', spoken_response: 'Sure — what name should I put on the message?' };
-        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? token.callerPhone ?? null;
+        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? callerPhone ?? null;
         if (!callbackPhone) return { success: false, error: 'PHONE_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.PHONE_REQUIRED };
         // One message per call: a second take_message (the caller adds a
         // detail or corrects their number) replaces it rather than leaving
@@ -760,7 +1021,7 @@ export async function executeTool(
           await db.update(callMessages).set(fields).where(eq(callMessages.id, cache.messageId));
         } else {
           const id = crypto.randomUUID();
-          await db.insert(callMessages).values({ id, businessType, callSid: cache?.callSid ?? null, ...fields });
+          await db.insert(callMessages).values({ id, businessType, callSid: cache?.callSid ?? null, customerIdHashed: token.sub, ...fields });
           if (cache) cache.messageId = id;
         }
         await defer(notifyMessage(env, sectorMeta, { ...fields, updated: updating }));
@@ -768,7 +1029,7 @@ export async function executeTool(
         return {
           success: true,
           data: { saved: true, updated: updating, caller_name: callerName, callback_phone: callbackPhone },
-          spoken_response: `Got it, ${callerName} — ${updating ? "I've updated your message" : "I've passed that on"}, and someone will call you back at ${callbackPhone}. Anything else?`,
+          spoken_response: `Got it, ${callerName} — ${updating ? "I've updated your message" : "I've passed that on"}, and someone will call you back at ${spokenPhone(callbackPhone, loc)}. Anything else?`,
         };
       }
 
@@ -802,8 +1063,9 @@ export async function executeTool(
           // Other bookings of theirs may share the time; drop the entry
           // and let the next availability check refetch.
           if (order.scheduledAt) cache.bookedDatetimes = null;
+          if (order.resourceId) cache.resourceBookings = null;
         }
-        const when = order.scheduledAt ? ` on ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
+        const when = order.scheduledAt ? ` on ${slotLabel(order.scheduledAt)}` : '';
         return {
           success: true,
           data: { id: order.id, service: order.productName, scheduled_at: order.scheduledAt, status: order.status },
@@ -837,13 +1099,17 @@ const TOOL_ERROR_MESSAGES: Record<string, string> = {
   PHONE_REQUIRED: "I can't see the number you're calling from — what's the best number to reach you?",
 };
 
-// "(847) 555-1234" / "847-555-1234" / "+18475551234" → E.164 (US default).
-export function normalizePhone(raw: string | undefined): string | undefined {
-  const digits = raw?.replace(/\D/g, '') ?? '';
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw?.trim().startsWith('+') && digits.length >= 8 && digits.length <= 15) return `+${digits}`;
-  return undefined;
+// "(847) 555-1234" / "847-555-1234" / "+18475551234" → E.164 (US default);
+// pass the business's country ("IN") to read local numbers there.
+export { normalizePhoneFor as normalizePhone };
+
+// A booking's length: to its recorded end (a doctor's slot), else the product's.
+function bookingMinutes(order: { scheduledAt?: string | null; endsAt?: string | null }, productMinutes: number | null | undefined): number {
+  if (order.scheduledAt && order.endsAt) {
+    const ms = Date.parse(`${order.endsAt.slice(0, 16)}:00Z`) - Date.parse(`${order.scheduledAt.slice(0, 16)}:00Z`);
+    if (ms > 0) return ms / 60_000;
+  }
+  return productMinutes ?? 60;
 }
 
 // Business-local "now" as YYYY-MM-DDTHH:MM:00, for opening-hours checks.
@@ -855,9 +1121,9 @@ function nowLocalIso(meta: SectorMeta | null | undefined): string {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00`;
 }
 
-function todayTomorrow(meta: SectorMeta | null | undefined): [string, string] {
+function todayTomorrow(meta: SectorMeta | null | undefined): [string, string, string] {
   const now = new Date();
-  return [localDay(now, meta?.timezone).ymd, localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd];
+  return [localDay(now, meta?.timezone).ymd, localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd, localeOf(meta).locale];
 }
 
 function joinOr(items: string[]): string {
@@ -875,11 +1141,10 @@ export function checkWithinHours(
   const today = localDay(now, meta.timezone).ymd;
   if (ymd < today || (ymd === today && mins < localMinutes(now, meta.timezone))) return 'PAST_TIME';
   const dayKey = DAY_NAMES[new Date(`${ymd}T12:00:00Z`).getUTCDay()];
-  const parsed = meta.hours[dayKey] ? parseHoursRange(meta.hours[dayKey]!) : null;
-  if (!parsed) return 'OUTSIDE_HOURS';
-  const open = parsed.openH * 60 + parsed.openM;
-  const close = parsed.closeH * 60 + parsed.closeM;
-  return mins >= open && mins + durationMinutes <= close ? null : 'OUTSIDE_HOURS';
+  const ranges = meta.hours[dayKey] ? parseHoursRanges(meta.hours[dayKey]!) : [];
+  // Inside one range: a split day ("10am–1pm, 5pm–9pm") has a gap between.
+  return ranges.some(r => mins >= r.openH * 60 + r.openM && mins + durationMinutes <= r.closeH * 60 + r.closeM)
+    ? null : 'OUTSIDE_HOURS';
 }
 
 // ── Tool definitions — sector-agnostic, voice-optimised ───────────────────
@@ -891,6 +1156,25 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
   const bizName = meta?.name ?? sector;
   const isService = meta?.model === 'service';
   const isMixed = meta?.model === 'mixed';
+  const vertical = getVertical(meta);
+  // Doctors (resources): a parameter naming one, only where there are some.
+  const spec = vertical.resources;
+  const resources = bookableResources(meta);
+  const resourceParam = spec && resources.length ? {
+    [spec.param]: {
+      type: 'string', enum: resources.map(r => r.id),
+      description: `The ${spec.noun}'s [${spec.param}] if the caller wants a particular ${spec.noun}; leave out for whoever is free first.`,
+    },
+  } : {};
+  const bookResourceParam = spec && resources.length ? {
+    [spec.param]: {
+      type: 'string', enum: resources.map(r => r.id),
+      description: `The ${spec.param} of the chosen slot from check_availability.`,
+    },
+  } : {};
+  // The vertical's own booking fields (vehicle; patient age, reason…).
+  const fields = (update: boolean) => Object.fromEntries(vertical.bookingFields.map(f =>
+    [f.key, update && f.updateDescription ? { ...f.schema, description: f.updateDescription } : f.schema]));
 
   return [
     {
@@ -929,6 +1213,7 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
           preferred_date: { type: 'string', description: 'YYYY-MM-DD, only if the customer named a day ("tomorrow", "Friday"). Resolve it with the dates in the system prompt.' },
           time_of_day:    { type: 'string', enum: ['morning', 'afternoon', 'evening'], description: 'Only if the customer said a part of the day.' },
           preferred_time: { type: 'string', description: 'HH:MM 24-hour, only if the customer named an exact time ("at 10" → 10:00). Use with preferred_date.' },
+          ...resourceParam,
         },
         required: [],
       },
@@ -965,11 +1250,12 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
           product_id:      { type: 'string' },
           payment_method:  { type: 'string', enum: ['CREDIT_CARD', 'DEBIT_CARD', 'STORE_CREDIT', 'INVOICE'], description: 'Defaults to CREDIT_CARD (paid at the shop).' },
           scheduled_at:    { type: 'string', description: 'The exact `datetime` of the chosen slot from check_availability, e.g. "2026-04-15T09:00:00".' },
+          ...bookResourceParam,
           shipping_address: { type: 'object', description: 'Required only for physical items: { line1, city, state, zip }.' },
-          customer_name:   { type: 'string', description: "The caller's name, as they said it." },
-          vehicle:         { type: 'string', description: 'Year, make and model, for businesses that work on vehicles (e.g. "2018 Honda Civic").' },
+          customer_name:   { type: 'string', description: vertical.customerNameDescription },
+          ...fields(false),
           callback_phone:  { type: 'string', description: "Only if the caller gives a different number than the one they're calling from, or caller ID is unavailable." },
-          notes:           { type: 'string', description: 'Anything the staff should know (symptoms, requests).' },
+          notes:           { type: 'string', description: vertical.notesDescription },
         },
         required: ['product_id'],
       },
@@ -994,9 +1280,9 @@ export function getToolDefinitions(sector: string, sectorMeta?: SectorMeta | nul
         properties: {
           order_id:       { type: 'string', description: 'The booking id.' },
           customer_name:  { type: 'string' },
-          vehicle:        { type: 'string', description: 'Year, make and model.' },
+          ...fields(true),
           callback_phone: { type: 'string' },
-          notes:          { type: 'string', description: 'Symptoms or requests for the technician.' },
+          notes:          { type: 'string', description: vertical.updateNotesDescription },
         },
         required: ['order_id'],
       },

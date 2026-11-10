@@ -38,8 +38,10 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["CallRelay"]
 
-# Daily jobs (src/index.ts scheduled()): month-end overage billing. Runs at
-# 02:17 IST; idempotent, so a day's failure retries the next day.
+# Daily jobs (src/index.ts scheduled()), 20:47 UTC = 02:17 IST / 14:47 Chicago:
+# the data-retention sweep (src/services/retention.service.ts; deletes nothing
+# until a business sets sectors.retention_days) and month-end overage billing
+# (idempotent, so a day's failure retries the next day).
 [triggers]
 crons = ["47 20 * * *"]
 
@@ -50,9 +52,19 @@ TWILIO_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
 WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_PHONE_NUMBER_MAP = '{"PHONE_NUMBER_ID_1":"dental","PHONE_NUMBER_ID_2":"auto_shop"}'
+# Business for Exotel / Plivo numbers with no row in phone_numbers (admin Settings →
+# Phone numbers). Unset = calls to unmapped numbers are refused.
+# EXOTEL_DEFAULT_BUSINESS_TYPE = "kovai_wellness_clinic"
+# PLIVO_DEFAULT_BUSINESS_TYPE = "kovai_wellness_clinic"
 
 # ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # optional override, see src/config.ts
 # ALLOWED_ORIGINS = "https://admin.example.com"  # extra CORS origins for the admin UI
+# Sarvam (only used by businesses that select it; see README "Hindi and Hinglish calls"):
+# SARVAM_STT_MODEL = "saaras:v3"       # or saaras:v4
+# SARVAM_TTS_MODEL = "bulbul:v3"
+# SARVAM_TTS_SPEAKER = "priya"         # default Bulbul speaker when a business sets no voice_id
+# SARVAM_TTS_CODEC = "linear16"        # if the mulaw stream turns out unusable; default mulaw
+# SARVAM_HIGH_VAD_SENSITIVITY = "1"
 # BILLING_SUPPLIER_GSTIN = "27AAAAA0000A1Z5"       # your GSTIN on invoices; same state → CGST+SGST, else IGST
 # BILLING_COST_RATES = '{"usdToInr": 88}'          # override provider cost estimates (src/services/billing/pricing.ts)
 
@@ -65,13 +77,25 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # TWILIO_AUTH_TOKEN     (webhook signature verification)
 # TWILIO_WEBHOOK_URL    (public base URL Twilio calls, e.g. https://mogi-platform.<acct>.workers.dev)
 # DEEPGRAM_API_KEY, CARTESIA_API_KEY   (voice)
-# Optional: MOGI_SECRET, RESEND_API_KEY, EMAIL_FROM, CARTESIA_VOICE_ID, CARTESIA_MODEL_ID
+# SARVAM_API_KEY        (Hindi / Hinglish voice via Sarvam AI — needed only by businesses whose
+#                        voice settings pick Sarvam STT or TTS; their calls fail closed without it)
+# RESEND_API_KEY        (business-owner sign-in codes; without it /account/login/start returns 503 in production)
+# EMAIL_FROM            (sender on a Resend-verified domain, e.g. "Avery <hello@yourdomain.com>")
+# Optional: MOGI_SECRET, CARTESIA_VOICE_ID, CARTESIA_MODEL_ID
 #
 # WhatsApp (required if the /whatsapp webhook is in use):
 # WA_APP_SECRET         (Meta app secret → X-Hub-Signature-256)
 # WA_VERIFY_TOKEN       (arbitrary string you pick, enter in Meta webhook config)
 # WA_PHONE_NUMBER_ID    (found in Meta for Developers → WhatsApp → Phone Numbers)
 # WA_ACCESS_TOKEN       (permanent system user token with whatsapp_business_messaging scope)
+#
+# Indian numbers via Exotel (optional — see README "Indian phone numbers"):
+# EXOTEL_WEBHOOK_SECRET (random; Exotel doesn't sign webhooks, so every /exotel/* URL
+#                        in the call flow carries it as Basic auth or ?key=. Without it
+#                        production rejects all /exotel/* requests.)
+# Plivo (optional, alternative to Exotel):
+# PLIVO_AUTH_TOKEN      (verifies X-Plivo-Signature-V3)
+# PLIVO_WEBHOOK_URL     (public base URL Plivo calls)
 #
 # Calendar integration (optional — see README "Calendar integration"):
 # CALENDAR_TOKEN_KEY    (random; encrypts stored calendar refresh tokens)
