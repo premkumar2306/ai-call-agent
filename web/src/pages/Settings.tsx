@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { COUNTRIES, countryDefaults } from '../locale';
 import PrivacySettings from './PrivacySettings';
 import PhoneNumbers from './PhoneNumbers';
+import VoiceSettings from './VoiceSettings';
 
 interface Props {
   base: string;
@@ -101,6 +102,7 @@ export default function Settings({ base, adminKey, sectors }: Props) {
     </div>
     <PrivacySettings base={base} adminKey={adminKey} sectors={sectors} />
     <PhoneNumbers base={base} adminKey={adminKey} sectors={sectors} />
+    <VoiceSettings base={base} adminKey={adminKey} sectors={sectors} />
     </div>
   );
 }

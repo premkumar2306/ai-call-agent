@@ -58,6 +58,12 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 
 # ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # optional override, see src/config.ts
 # ALLOWED_ORIGINS = "https://admin.example.com"  # extra CORS origins for the admin UI
+# Sarvam (only used by businesses that select it; see README "Hindi and Hinglish calls"):
+# SARVAM_STT_MODEL = "saaras:v3"       # or saaras:v4
+# SARVAM_TTS_MODEL = "bulbul:v3"
+# SARVAM_TTS_SPEAKER = "priya"         # default Bulbul speaker when a business sets no voice_id
+# SARVAM_TTS_CODEC = "linear16"        # if the mulaw stream turns out unusable; default mulaw
+# SARVAM_HIGH_VAD_SENSITIVITY = "1"
 
 # Secrets — run: wrangler secret put <NAME>
 # Required in production (the Worker fails closed without them):
@@ -68,6 +74,8 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # TWILIO_AUTH_TOKEN     (webhook signature verification)
 # TWILIO_WEBHOOK_URL    (public base URL Twilio calls, e.g. https://mogi-platform.<acct>.workers.dev)
 # DEEPGRAM_API_KEY, CARTESIA_API_KEY   (voice)
+# SARVAM_API_KEY        (Hindi / Hinglish voice via Sarvam AI — needed only by businesses whose
+#                        voice settings pick Sarvam STT or TTS; their calls fail closed without it)
 # Optional: MOGI_SECRET, RESEND_API_KEY, EMAIL_FROM, CARTESIA_VOICE_ID, CARTESIA_MODEL_ID
 #
 # WhatsApp (required if the /whatsapp webhook is in use):

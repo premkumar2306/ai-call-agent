@@ -10,6 +10,7 @@ import { saveTranscript } from './transcript.service';
 import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
 import { getVertical, VERTICALS, type Vertical } from './verticals';
 import type { CallCache } from './call-context';
+import { languageRules, resolveVoiceSettings, type VoiceLanguage } from './voice-language';
 import type { Order, Product, SectorMeta } from '../types';
 
 // ── Call history stored in CART KV (1-hour TTL per call) ─────────────────────
@@ -87,10 +88,12 @@ const FIRST_CHUNK_MIN_CHARS = 12;
 const FIRST_CHUNK_MAX_CHARS = 90;
 
 // Pops the next complete sentence off the front of `buffer` (ending in
-// . ! or ? followed by whitespace or end-of-string). Returns null if the
-// buffer doesn't yet contain a full sentence.
+// . ! ? or the Devanagari danda । ॥, followed by whitespace or
+// end-of-string). Returns null if the buffer doesn't yet contain a full
+// sentence. (English text never contains a danda, so English chunking is
+// unchanged.)
 export function popSentence(buffer: string): { chunk: string; rest: string } | null {
-  const m = buffer.match(/[.!?]+(\s+|$)/);
+  const m = buffer.match(/[.!?।॥]+(\s+|$)/);
   if (!m || m.index === undefined) return null;
   const end = m.index + m[0].length;
   const chunk = buffer.slice(0, end).trim();
@@ -255,12 +258,12 @@ export const INTERRUPTED_MARK = '[caller interrupted]';
 
 export type Channel = 'voice' | 'chat';
 
-export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general): string {
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en'): string {
   const v = vertical.prompt;
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
 - Open with a very short first sentence (one to five words, e.g. "Yes, we do." / "Sure." / "We're at 320 Lexington Drive."), so the caller hears you right away; then at most one more short sentence. Under 35 words in all, then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
-- Plain spoken English: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
+- ${language === 'en' ? 'Plain spoken English' : 'Plain speech'}: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
 - At most one question per reply. Don't read out booking reference numbers unless asked.`
     : `WRITING (WhatsApp / web chat):
 - Two to four short sentences. You may use *bold* for service names and prices. No headers or long bullet lists.
@@ -283,7 +286,8 @@ CONVERSATION:
 - Use what the ${who} already told you. Never ask for something they already said, and never ask the same question twice in a row — if you didn't understand, say what you did catch and ask something narrower.
 - ${channel === 'voice' ? 'Speech recognition makes mistakes. If words look garbled, make your best guess from context and confirm it in a few words.' : 'Typos happen. Make your best guess from context and confirm it briefly.'}
 - A reply of yours ending in "${INTERRUPTED_MARK}" was cut off — the ${who} only heard the part before it. Respond to what they said; don't restart the whole reply.
-- If asked, you are an AI assistant — never claim to be human. If they want a person, use transfer_to_staff.`;
+- If asked, you are an AI assistant — never claim to be human. If they want a person, use transfer_to_staff.${
+    channel === 'voice' && language !== 'en' ? `\n\n${languageRules(language)}` : ''}`;
 
   if (businessType === 'health_nav') {
     return `You are Mogi, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
@@ -345,7 +349,7 @@ export function buildSystemPrompt(opts: {
 }): Anthropic.TextBlockParam[] {
   const bizName = opts.sectorMeta?.name ?? opts.businessType;
   const stable = opts.stable
-    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta))}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language)}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
   return [
     { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },
@@ -456,7 +460,10 @@ export async function runTurn(
   // attempts let one stalled round go silent for 40s; fail inside that
   // window and apologise instead.
   const anthropic = createAnthropic(env, { timeoutMs: VOICE_MODEL_TIMEOUT_MS, maxRetries: 1 });
-  const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '');
+  // Tool replies are hand-written English: a Hindi / Hinglish line always
+  // has the model say them in the caller's language instead.
+  const directToolReply = !/^(0|false)$/i.test(env.VOICE_DIRECT_TOOL_REPLY ?? '')
+    && resolveVoiceSettings(sectorMeta).language === 'en';
 
   // Whether anything has been handed to TTS yet this turn. Governs whether
   // the next flush may break on a clause (first chunk) or must wait for a

@@ -1,3 +1,5 @@
+import type { VoiceSettings } from './services/voice-language';
+
 // BusinessType is a string so new verticals can be added without code changes
 export type BusinessType = string;
 
@@ -39,6 +41,9 @@ export interface SectorMeta {
   privacyNoticeUrl?: string;
   // Days to keep transcripts and staff messages (services/retention.ts).
   retentionDays?: number;
+  // Phone-line language and STT/TTS providers (migration 0012). Absent on
+  // sector lists cached before it shipped — resolveVoiceSettings() defaults.
+  voice?: VoiceSettings;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */
@@ -132,6 +137,14 @@ export interface Env {
   CARTESIA_API_KEY?: string;
   CARTESIA_VOICE_ID?: string;
   CARTESIA_MODEL_ID?: string;
+  // Sarvam AI (Hindi / Hinglish voice). Secret; only needed by businesses
+  // whose voice settings pick Sarvam — those fail closed without it.
+  SARVAM_API_KEY?: string;
+  SARVAM_STT_MODEL?: string;         // default saaras:v3
+  SARVAM_TTS_MODEL?: string;         // default bulbul:v3
+  SARVAM_TTS_SPEAKER?: string;       // default speaker when a business sets no voice_id
+  SARVAM_TTS_CODEC?: string;         // 'mulaw' (default) | 'linear16'
+  SARVAM_HIGH_VAD_SENSITIVITY?: string; // '1' for Sarvam's high-sensitivity VAD
   RELAY_DO: DurableObjectNamespace;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
