@@ -11,6 +11,10 @@ export interface SectorMeta {
   hours: WeeklyHours;
   timezone: string;
   currency: string;
+  // BCP 47 locale for prices and dates ("en-US", "en-IN"). Default en-US.
+  locale?: string;
+  // ISO 3166-1 country for reading local phone numbers ("US", "IN"). Default US.
+  countryCode?: string;
   // Optional real-business fields populated from web research
   address?: string;
   phone?: string;
@@ -22,6 +26,31 @@ export interface SectorMeta {
   notifyEmail?: string;
   // Different customers' visits that may start at the same time. Default 1.
   capacity?: number;
+  // Key into VERTICALS (services/verticals.ts): what a booking records and
+  // the extra prompt rules. Unset = 'general' (the original auto-shop flow).
+  vertical?: string;
+  // Bookable people with their own hours (a clinic's doctors). When present,
+  // availability and conflicts are per resource instead of `capacity`.
+  resources?: Resource[];
+  // DPDP / AI disclosure (services/disclosure.ts). aiDisclosure undefined =
+  // automatic: on for businesses in India, off elsewhere.
+  aiDisclosure?: boolean;
+  disclosureText?: string;
+  privacyNoticeUrl?: string;
+  // Days to keep transcripts and staff messages (services/retention.ts).
+  retentionDays?: number;
+}
+
+/** Someone a booking is made with — a clinic's doctor — with their own hours. */
+export interface Resource {
+  id: string;
+  name: string;            // "Dr. Ananya Rao"
+  role?: string;           // "General physician"
+  hours: WeeklyHours;      // e.g. { mon: "10am–1pm, 5pm–9pm" }
+  slotMinutes: number;     // appointment grid and default length
+  feeCents?: number | null; // consultation fee, minor units of the business currency
+  about?: string;          // languages spoken, etc.
+  categories?: string[];   // product categories they do (a dentist: DENTAL); unset = all
 }
 
 export interface WeeklyHours {
@@ -77,6 +106,10 @@ export interface Order {
   vehicle?: string | null;
   callbackPhone?: string | null;
   notes?: string | null;
+  resourceId?: string | null;     // the doctor (Resource) the booking is with
+  resourceName?: string | null;
+  endsAt?: string | null;         // business-local end, for per-resource overlap checks
+  details?: Record<string, string> | null; // vertical booking fields (patient age, reason…)
   createdAt: string;
   updatedAt: string;
 }

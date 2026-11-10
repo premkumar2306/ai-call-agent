@@ -1,0 +1,11 @@
+BUSINESS PROFILE — Advanced VTech
+Address: 320 Lexington Drive, Buffalo Grove, IL 60089
+Phone: (847) 777-5000
+Website: advancedvtech.com
+Hours: Monday 7:30am to 6pm; Tuesday 7:30am to 6pm; Wednesday 7:30am to 6pm; Thursday 7:30am to 6pm; Friday 7:30am to 6pm; Saturday 8am to 4pm; Sunday closed (America/Chicago time)
+About: Full-service auto and truck repair.
+Services and prices (complete list — nothing else is offered):
+MAINTENANCE:
+- Oil & Filter Change and Lube [id: avtech-oil] — price depends on the vehicle. Price depends on the vehicle; the service advisor quotes it before any work starts.
+BRAKES:
+- Brake Repair [id: avtech-brakes] — $89 (regularly $120), about 90 min. Brakes. Pairs well with: Oil & Filter Change and Lube.

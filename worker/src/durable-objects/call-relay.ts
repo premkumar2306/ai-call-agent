@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Env, SessionPayload } from '../types';
+import type { Env, SectorMeta, SessionPayload } from '../types';
 import { buildDefaultTwilioSession } from '../middleware';
 import { runTurn, amendInterruptedReply, retractLastExchange } from '../services/turn.service';
 import { getSector } from '../services/sector.service';
@@ -8,6 +8,7 @@ import { getOrders } from '../services/order.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
+import { callStartNotice, recordConsent } from '../services/disclosure';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { createDeepgramSTT, createDeepgramFluxSTT, fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
 import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
@@ -129,6 +130,9 @@ export class CallRelay extends DurableObject<Env> {
   private urlBusinessType?: string;
   private callSid = 'relay';
   private transcriptFlushed = false;
+  // The call-start AI/transcription notice, when the business has it on
+  // (services/disclosure.ts). Logged to consent_records when the call ends.
+  private notice?: { text: string; startedAt: Date; chunk: SpokenChunk; recorded: boolean };
   // Call-lifetime cache: sector metadata, product list, tool defs, history,
   // orders and booked-slot set all live here instead of round-tripping to
   // KV/D1 on every turn. See worker/src/services/call-context.ts.
@@ -481,6 +485,7 @@ export class CallRelay extends DurableObject<Env> {
   // runTurn() skips its per-turn D1 transcript write when a call cache is in
   // play; this is the one write for the call.
   private async flushTranscript(): Promise<void> {
+    await this.flushNotice();
     if (this.transcriptFlushed || !this.session || this.cache.history.length === 0) return;
     this.transcriptFlushed = true;
     try {
@@ -494,6 +499,23 @@ export class CallRelay extends DurableObject<Env> {
     } catch (e: any) {
       console.error('[transcript flush]', e?.message || e);
     }
+  }
+
+  // Audit trail: the notice was played, and whether the caller heard it to
+  // the end (Twilio reached its mark) or talked over it / hung up.
+  private async flushNotice(): Promise<void> {
+    const n = this.notice;
+    if (!n || n.recorded || !this.session) return;
+    n.recorded = true;
+    await recordConsent(this.env, {
+      businessType: this.session.businessType,
+      channel: 'voice',
+      callSid: this.callSid,
+      customerIdHashed: this.session.sub,
+      noticeText: n.text,
+      playedAt: n.startedAt,
+      heardFully: n.chunk.played,
+    });
   }
 
   private callerActive() {
@@ -555,7 +577,7 @@ export class CallRelay extends DurableObject<Env> {
       .finally(() => this.endTurn(turn));
   }
 
-  private greet(businessType: string | undefined, sectorPromise: Promise<{ name: string } | null>) {
+  private greet(businessType: string | undefined, sectorPromise: Promise<SectorMeta | null>) {
     const capabilityHint = businessType === 'health_nav'
       ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
       : 'I can answer questions about our services and prices, or book you in — what can I do for you?';
@@ -574,11 +596,12 @@ export class CallRelay extends DurableObject<Env> {
       : Promise.resolve(null);
     const turn = this.startTurn(true);
     const { signal } = turn.abort;
-    const say = (text: string) => {
+    const speak = (text: string) => {
       const chunk: SpokenChunk = { text, played: false, filler: false };
       turn.chunks.push(chunk);
-      return this.playChunk(turn, chunk, cartesiaStart(this.ttsConfig, text, signal).catch(() => null));
+      return { chunk, done: this.playChunk(turn, chunk, cartesiaStart(this.ttsConfig, text, signal).catch(() => null)) };
     };
+    const say = (text: string) => speak(text).done;
     // Opener first (no dependency on the lookup), then the part that needs
     // the business name.
     say('Thanks for calling!')
@@ -586,6 +609,15 @@ export class CallRelay extends DurableObject<Env> {
         if (signal.aborted) return;
         const [sectorMeta, custom] = await Promise.all([sectorPromise, savedGreeting]);
         if (signal.aborted) return;
+        // AI / transcription notice (DPDP), before anything else is said.
+        // Off unless the business has it on — see services/disclosure.ts.
+        const notice = callStartNotice(sectorMeta);
+        if (notice) {
+          const { chunk, done } = speak(notice);
+          this.notice = { text: notice, startedAt: new Date(), chunk, recorded: false };
+          await done;
+          if (signal.aborted) return;
+        }
         const storeName = sectorMeta?.name ?? businessType ?? 'us';
         await say(custom
           ? `${custom.greeting} I'm ${custom.agentName || 'Mogi'}, the virtual assistant.`

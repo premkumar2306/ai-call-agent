@@ -173,6 +173,22 @@ the repo secrets `SYNTHETIC_ADMIN_KEY`, `ANTHROPIC_API_KEY` and `DEEPGRAM_API_KE
 bookings and their calendar events; the booking persona goes last, so its appointment stays in the
 connected calendar until the next run.
 
+**Indian callers (`--set india` / `SVT_SET=india`).** A second persona set calls the demo clinic
+(`demo_clinic_india`, see *Verticals* below; seed it first): Indian English, Hinglish, a caller who
+switches to Hindi mid-call, an elderly caller who speaks slowly, a caller who insists on a specific
+doctor, and an emergency caller (the judge fails any medical advice or a missing "call 112"). They
+use the macOS Indian voices — Rishi/Veena (`en_IN`) and Lekha (`hi_IN`) — when installed (System
+Settings → Accessibility → Spoken Content → System voice → Manage Voices), and print `Voice: …`
+naming the fallback when not. The agent's replies are transcribed with Deepgram `language=multi`.
+Until Hindi speech support is live, expect the Hindi/Hinglish callers to fail; the verdict says why.
+The weekly run is unchanged: `svt.yml` still runs the `us` set only.
+
+```bash
+SVT_SET=india ./svt/run.sh        # all six, results in svt/results/india
+SVT_SET=india ./svt/run.sh 2 3    # the Hindi switcher and the elderly caller
+ADMIN_KEY=<admin key> node svt/latency-test.mjs --set india --persona 4   # the specific-doctor caller
+```
+
 The same per-turn breakdown is saved for every real call (`transcripts.metrics`) and charted in the
 admin **Calls** tab.
 
@@ -242,6 +258,30 @@ Set where a business's booking and message emails go, and how many different
 customers' visits may start at the same time (bays), with `POST /admin/sectors`
 (`notify_email`, `capacity`).
 
+### Business locale (currency, dates, phone numbers)
+
+Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business locale**.
+There, the **Country** dropdown (United States +1 / India +91) fills in that country's currency, locale and
+timezone, each of which can still be changed. Supported countries are listed once, in `COUNTRIES`
+(`worker/src/utils/locale.ts`); the worker rejects any other `country_code`.
+
+| Field | Default | India | Effect |
+|-------|---------|-------|--------|
+| `currency` | `USD` | `INR` | ISO 4217. Catalog `price_cents` are in this currency's minor unit (cents, paise). |
+| `locale` | `en-US` | `en-IN` | BCP 47. How prices and dates are written: `₹1,50,000`, "Friday, 30 Oct at 5:30 pm". |
+| `country_code` | `US` | `IN` | How callers' local numbers are read: `98765 43210`, `022 2345 6789` → `+91…`. |
+| `timezone` | `America/Chicago` | `Asia/Kolkata` | IANA zone for opening hours, slots and "now" in the prompt. |
+
+```bash
+curl -X POST "$WORKER/admin/sectors" -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' -d '{
+  "key": "sharma_dental", "name": "Sharma Dental Care", "hours": {"mon": "10am–7pm"},
+  "currency": "INR", "locale": "en-IN", "country_code": "IN", "timezone": "Asia/Kolkata"}'
+```
+
+Omitted locale fields keep their saved values; invalid ones are rejected with a 400. With INR the agent
+says prices the Indian way ("fifteen hundred rupees", "one lakh fifty thousand rupees"), reads Indian
+callback numbers back digit by digit, and emails, calendar events and the Calls tab show `+91 98765 43210`.
+The defaults produce exactly the same prompt and messages as before locales existed (`worker/src/utils/locale.ts`).
 ### Indian phone numbers (Exotel, or Plivo)
 
 Twilio can't easily provide Indian numbers, and Indian calls must stay India-to-India, so
@@ -332,6 +372,27 @@ Providers are adapters in `worker/src/services/calendar/`: implement
 `CalendarProvider` (`types.ts`) in a new file and register it in `PROVIDERS`
 (`index.ts`). Routes, storage, the admin UI and the booking flow need no changes.
 
+### Privacy, disclosure and retention (India DPDP)
+
+Per business, from the admin UI's **Settings → Privacy & data** (or `/admin/privacy/:businessType/*`
+with `X-Admin-Key`). Everything is off for existing businesses; see
+[`docs/compliance-india.md`](docs/compliance-india.md) for what this does and doesn't cover.
+
+- **Call-start notice** (`sectors.ai_disclosure`, `disclosure_text`): after "Thanks for calling!"
+  Avery says the caller is talking to an AI assistant and the call is transcribed (default wording
+  in English, Hindi or Hinglish to match the business's voice language). NULL = automatic:
+  on for businesses in India (country IN, or timezone `Asia/Kolkata` / currency INR), off elsewhere.
+  Each notice is logged in `consent_records` (wording version, time, heard to the end or not).
+- **Privacy notice link** (`privacy_notice_url`): added to booking confirmation texts and the first
+  WhatsApp reply while the notice is on. Template: [`docs/privacy-notice-template.md`](docs/privacy-notice-template.md).
+- **Caller data requests**: `POST /admin/privacy/:business/export { phone }` returns everything stored
+  for that caller; `POST /admin/privacy/:business/erase { phone, confirm: true }` deletes transcripts,
+  messages and live KV history, strips personal fields from bookings (kept for aggregates), cancels
+  upcoming ones and removes their calendar events. Both are logged in `data_requests`.
+- **Retention** (`retention_days`, NULL = keep): a daily Cron Trigger (`[triggers]` in
+  `wrangler.toml`, 21:17 UTC) deletes older transcripts and staff messages. Notice records are kept
+  at least 365 days; bookings are not touched.
+
 ### Database schema change
 
 1. Edit `worker/src/db/schema.ts`
@@ -352,6 +413,48 @@ Sectors, vendors and products live in D1 and can be added without a deploy via t
 admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requiring
 `X-Admin-Key`).
 
+### Verticals: clinics and dental practices
+
+What differs between kinds of business — the details a booking records, how the receptionist
+talks about prices and staff, extra safety rules — is data in `worker/src/services/verticals.ts`,
+picked per business by `sectors.vertical` (migration `0017_clinic_vertical.sql`). A business with
+no vertical gets `general`, the original auto-shop wording and fields, byte for byte
+(`worker/test/us-unchanged.test.ts` pins it).
+
+`vertical: "clinic"` (set with `POST /admin/sectors`) switches a business to:
+
+- **Doctors as bookable resources** (`resources` table, `POST /admin/resources`): each with their
+  own weekly OPD hours (split sessions such as `"10am–1pm, 5pm–9pm"`), slot length, consultation
+  fee (`fee_cents`, minor units — paise for INR) and the product categories they do (a dentist books
+  `DENTAL`). Availability and double-booking checks are per doctor; with no doctor named the caller
+  is offered whoever does the service and is free first.
+- **Patient details** on the booking: patient name, new or returning (or age), reason for visit
+  (`orders.details`), plus the doctor (`orders.resource_id/resource_name`). Shown in emails, calendar
+  events and the admin **Calls** tab.
+- **Consultation pricing** from the doctor's fee (products in `CONSULTATION`,
+  `CHILD_CONSULTATION`, `DENTAL_CONSULTATION`); INR amounts are spoken as rupees.
+- **Medical safety rules** in the prompt: never medical advice, a diagnosis or medicine; for an
+  emergency, tell the caller to call 112 or go to the nearest emergency department, then offer a
+  transfer to staff.
+
+`worker/seeds/demo_clinic_india.sql` is a fictional demo clinic (`demo_clinic_india`, Bengaluru,
+Asia/Kolkata, INR, OPD 10am–1pm and 5pm–9pm, Sunday closed, three doctors). It has no phone number,
+so transfers fall back to taking a message; set `phone` before pointing a real line at it.
+
+```bash
+cd worker
+npx wrangler d1 execute DB --remote --file seeds/demo_clinic_india.sql   # after migrations
+```
+
+```bash
+# A doctor (re-POST to change; "is_active": false to retire)
+curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Type: application/json' -d '[
+  { "id": "dr-rao", "business_type": "my_clinic", "name": "Dr. Ananya Rao", "role": "General physician",
+    "hours": { "mon": "10am–1pm, 5pm–9pm", "sat": "10am–1pm" }, "slot_minutes": 15, "fee_cents": 50000,
+    "categories": ["CONSULTATION", "FOLLOW_UP"], "about": "Speaks English, Hindi and Kannada." }
+]'
+```
+
 ---
 
 ## Key Files
@@ -370,7 +473,10 @@ admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requi
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |
-| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, secrets list |
+| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, cron, secrets list |
+| `worker/src/services/disclosure.ts` | Call-start AI/transcription notice, privacy link, notice audit records |
+| `worker/src/services/data-rights.service.ts` | Caller data export and erasure |
+| `worker/src/services/retention.service.ts` | Daily retention sweep (`scheduled` in `index.ts`) |
 
 ---
 
@@ -420,7 +526,7 @@ what ships.
 - **Caller identity.** `/twilio/inbound` hashes the caller's number (same key as WhatsApp) into the stream
   token; callers no longer share `TWILIO_DEFAULT_CUSTOMER_HASH`. Withheld numbers get a per-call identity.
   The raw number also rides in the token as the default callback number for bookings and messages.
-- **Front desk.** Bookings record the caller's name, vehicle and callback number; the same caller can stack
+- **Front desk.** Bookings record the caller's name, vehicle (or, for a clinic, the doctor and patient details — see *Verticals*) and callback number; the same caller can stack
   services on one visit. `transfer_to_staff` closes the stream and `POST /twilio/after-stream` dials the
   business phone (during opening hours); `take_message` stores a callback request (`call_messages`).
   The admin **Calls** tab lists bookings, messages, and a latency chart per call (`transcripts.metrics`).
