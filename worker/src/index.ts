@@ -5,6 +5,7 @@ import { requestId } from 'hono/request-id';
 import { getSectors } from './services/sector.service';
 import type { HonoEnv } from './middleware';
 import { authRouter } from './routes/auth';
+import { accountRouter } from './routes/account';
 import { catalogRouter } from './routes/catalog';
 import { ordersRouter } from './routes/orders';
 import { mogiRouter } from './routes/mogi';
@@ -30,7 +31,7 @@ app.use('*', async (c, next) => (c.req.path === '/twilio/stream' ? next() : secu
 // ── CORS ───────────────────────────────────────────────────────────────────
 app.use('*', cors({
   origin: (origin, c) => (origin && isAllowedOrigin(origin, c.env) ? origin : null),
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-Mogi-Secret', 'X-Dev-Customer-Id', 'X-Admin-Key'],
 }));
 
@@ -38,6 +39,7 @@ app.use('*', cors({
 // Sub-routers are typed with HonoEnv; the extra requestId variable is a
 // superset, so mounting them is safe.
 app.route('/auth',     authRouter);
+app.route('/account',  accountRouter);
 app.route('/catalog',  catalogRouter);
 app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);

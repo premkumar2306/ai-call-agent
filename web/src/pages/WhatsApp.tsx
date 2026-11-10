@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 interface Props {
   sector: string;
   base: string;
-  adminKey: string;
+  auth: Record<string, string>;
 }
 
 interface TranscriptRow {
@@ -61,7 +61,7 @@ const stepItem: React.CSSProperties = {
   fontSize: 14, color: '#ccc', lineHeight: 1.8,
 };
 
-export default function WhatsApp({ sector, base, adminKey }: Props) {
+export default function WhatsApp({ sector, base, auth }: Props) {
   const [transcripts, setTranscripts]     = useState<TranscriptRow[]>([]);
   const [loading, setLoading]             = useState(false);
   const [error, setError]                 = useState('');
@@ -71,11 +71,11 @@ export default function WhatsApp({ sector, base, adminKey }: Props) {
   const webhookUrl = `${API_URL}/whatsapp/webhook`;
 
   useEffect(() => {
-    if (!sector || !adminKey) return;
+    if (!sector || !Object.keys(auth).length) return;
     setLoading(true);
     setError('');
     fetch(`${base}/admin/transcripts/${sector}?channel=wa`, {
-      headers: { 'X-Admin-Key': adminKey },
+      headers: auth,
     })
       .then(r => r.json())
       .then((json: any) => {
@@ -84,7 +84,7 @@ export default function WhatsApp({ sector, base, adminKey }: Props) {
       })
       .catch(() => setError('Network error loading transcripts'))
       .finally(() => setLoading(false));
-  }, [sector, base, adminKey]);
+  }, [sector, base, auth]);
 
   function copyWebhook() {
     navigator.clipboard.writeText(webhookUrl).then(() => {

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { eq, and, desc, ne } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
-import { withAdminKey } from '../middleware';
-import { getSectors, getSector, upsertSector } from '../services/sector.service';
+import { withAdminKey, withBusinessAccess } from '../middleware';
+import { getSectors, getSector, upsertSector, updateSector } from '../services/sector.service';
+import { parseBusinessPatch, parseService, serviceProductId } from '../services/accounts';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
@@ -103,23 +104,33 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
 });
 
 // GET /admin/sectors/:key — get one sector
-adminRouter.get('/sectors/:key', withAdminKey, async (c) => {
+adminRouter.get('/sectors/:key', withBusinessAccess('staff', 'key'), async (c) => {
   const key = c.req.param('key') ?? '';
   const meta = await getSector(c.env, key);
   if (!meta) return c.json({ success: false, error: 'Sector not found' }, 404);
   return c.json({ success: true, data: meta });
 });
 
+// PUT /admin/sectors/:key — the owner's Business tab: change details, hours, staff line…
+// Only the fields sent are changed (see parseBusinessPatch).
+adminRouter.put('/sectors/:key', withBusinessAccess('owner', 'key'), async (c) => {
+  const patch = parseBusinessPatch(await c.req.json().catch(() => null));
+  if (typeof patch === 'string') return c.json({ success: false, error: patch }, 400);
+  const key = c.req.param('key') ?? '';
+  if (!(await updateSector(c.env, key, patch))) return c.json({ success: false, error: 'Sector not found' }, 404);
+  return c.json({ success: true, data: await getSector(c.env, key) });
+});
+
 // ── UI Config ──────────────────────────────────────────────────────────────
 
-adminRouter.get('/config/:sector', withAdminKey, async (c) => {
+adminRouter.get('/config/:sector', withBusinessAccess('staff', 'sector'), async (c) => {
   const { sector } = c.req.param();
   const meta = await getSector(c.env, sector);
   if (!meta) return c.json({ success: false, error: 'Unknown sector' }, 404);
   return c.json({ success: true, data: await getConfig(c.env, sector) });
 });
 
-adminRouter.put('/config/:sector', withAdminKey, async (c) => {
+adminRouter.put('/config/:sector', withBusinessAccess('owner', 'sector'), async (c) => {
   const { sector } = c.req.param();
   const meta = await getSector(c.env, sector);
   if (!meta) return c.json({ success: false, error: 'Unknown sector' }, 404);
@@ -198,7 +209,7 @@ adminRouter.post('/products', withAdminKey, async (c) => {
 });
 
 // GET /admin/products/:businessType — list products for a sector
-adminRouter.get('/products/:businessType', withAdminKey, async (c) => {
+adminRouter.get('/products/:businessType', withBusinessAccess('staff'), async (c) => {
   const db = getDb(c.env.DB);
   const businessType = c.req.param('businessType') ?? '';
   const rows = await db.select().from(productsTable)
@@ -206,9 +217,92 @@ adminRouter.get('/products/:businessType', withAdminKey, async (c) => {
   return c.json({ success: true, data: rows });
 });
 
+// ── Services, scoped to one business (owner's Services tab) ───────────────
+// Unlike POST /admin/products (operator bulk import), ids are generated here
+// and every update is matched on (id, business), so one business can never
+// overwrite another's catalog.
+
+async function invalidateProduct(env: HonoEnv['Bindings'], businessType: string, id: string, category: string) {
+  await Promise.all([
+    env.CACHE.delete(`products:${businessType}:all`),
+    env.CACHE.delete(`products:${businessType}:${category}`),
+    env.CACHE.delete(`product:${id}`),
+  ]);
+}
+
+// POST /admin/products/:businessType { name, priceCents, durationMinutes, description? }
+adminRouter.post('/products/:businessType', withBusinessAccess('owner'), async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
+  const meta = await getSector(c.env, businessType);
+  if (!meta) return c.json({ success: false, error: 'Unknown business' }, 404);
+  const svc = parseService(await c.req.json().catch(() => null));
+  if (typeof svc === 'string') return c.json({ success: false, error: svc }, 400);
+
+  const db = getDb(c.env.DB);
+  if ((await db.select({ id: productsTable.id }).from(productsTable).where(eq(productsTable.businessType, businessType))).length >= 200) {
+    return c.json({ success: false, error: 'A business can have up to 200 services' }, 403);
+  }
+  // Businesses from the wizard have a vendor with their own key; older ones
+  // have whatever vendor the seed gave them.
+  let [vendor] = await db.select().from(vendorsTable).where(eq(vendorsTable.businessType, businessType)).limit(1);
+  if (!vendor) {
+    [vendor] = await db.insert(vendorsTable).values({
+      id: serviceProductId(businessType).replace('-svc-', '-vendor-'), name: meta.name, businessType,
+      contactEmail: meta.notifyEmail ?? 'info@example.com', isActive: true, createdAt: new Date(),
+    }).returning();
+  }
+  const category = meta.categories.includes('SERVICES') || !meta.categories.length ? 'SERVICES' : meta.categories[0];
+  const [row] = await db.insert(productsTable).values({
+    id: serviceProductId(businessType), businessType, vendorId: vendor.id, vendorName: vendor.name,
+    name: svc.name, category, type: 'SERVICE_APPOINTMENT', fulfillmentType: 'SERVICE_BOOKING',
+    description: svc.description, priceCents: svc.priceCents, originalPriceCents: svc.priceCents,
+    durationMinutes: svc.durationMinutes, isActive: true, createdAt: new Date(),
+  }).returning();
+  await invalidateProduct(c.env, businessType, row.id, category);
+  return c.json({ success: true, data: row }, 201);
+});
+
+// PUT /admin/products/:businessType/:id { name?, priceCents?, durationMinutes?, description?, isActive? }
+adminRouter.put('/products/:businessType/:id', withBusinessAccess('owner'), async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
+  const id = c.req.param('id') ?? '';
+  const db = getDb(c.env.DB);
+  const [existing] = await db.select().from(productsTable)
+    .where(and(eq(productsTable.id, id), eq(productsTable.businessType, businessType))).limit(1);
+  if (!existing) return c.json({ success: false, error: 'Service not found' }, 404);
+  const body = await c.req.json().catch(() => null);
+  const svc = parseService({
+    name: body?.name ?? existing.name,
+    priceCents: body?.priceCents ?? existing.priceCents,
+    durationMinutes: body?.durationMinutes ?? existing.durationMinutes ?? 60,
+    description: body?.description ?? existing.description,
+  });
+  if (typeof svc === 'string') return c.json({ success: false, error: svc }, 400);
+  const priceChanged = svc.priceCents !== existing.priceCents;
+  const [row] = await db.update(productsTable).set({
+    name: svc.name, description: svc.description, durationMinutes: svc.durationMinutes,
+    ...(priceChanged ? { priceCents: svc.priceCents, originalPriceCents: svc.priceCents } : {}),
+    ...(typeof body?.isActive === 'boolean' ? { isActive: body.isActive } : {}),
+  }).where(and(eq(productsTable.id, id), eq(productsTable.businessType, businessType))).returning();
+  await invalidateProduct(c.env, businessType, id, existing.category);
+  return c.json({ success: true, data: row });
+});
+
+// DELETE /admin/products/:businessType/:id — hides the service (bookings keep referring to it)
+adminRouter.delete('/products/:businessType/:id', withBusinessAccess('owner'), async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
+  const id = c.req.param('id') ?? '';
+  const rows = await getDb(c.env.DB).update(productsTable).set({ isActive: false })
+    .where(and(eq(productsTable.id, id), eq(productsTable.businessType, businessType)))
+    .returning({ category: productsTable.category });
+  if (!rows.length) return c.json({ success: false, error: 'Service not found' }, 404);
+  await invalidateProduct(c.env, businessType, id, rows[0].category);
+  return c.json({ success: true });
+});
+
 // GET /admin/transcripts/:businessType — list recent transcripts for a sector
 // Optional query param: ?channel=wa (filter by callSid starting with 'wa:')
-adminRouter.get('/transcripts/:businessType', withAdminKey, async (c) => {
+adminRouter.get('/transcripts/:businessType', withBusinessAccess('staff'), async (c) => {
   const businessType = c.req.param('businessType') ?? '';
   const channel = c.req.query('channel');
   const db = getDb(c.env.DB);
@@ -251,7 +345,7 @@ adminRouter.post('/stream-token', withAdminKey, async (c) => {
 });
 
 // GET /admin/bookings/:businessType — recent bookings with the caller's details
-adminRouter.get('/bookings/:businessType', withAdminKey, async (c) => {
+adminRouter.get('/bookings/:businessType', withBusinessAccess('staff'), async (c) => {
   const rows = await getDb(c.env.DB).select().from(ordersTable)
     .where(eq(ordersTable.businessType, c.req.param('businessType') ?? ''))
     .orderBy(desc(ordersTable.createdAt))
@@ -260,7 +354,7 @@ adminRouter.get('/bookings/:businessType', withAdminKey, async (c) => {
 });
 
 // GET /admin/messages/:businessType — messages callers left for staff
-adminRouter.get('/messages/:businessType', withAdminKey, async (c) => {
+adminRouter.get('/messages/:businessType', withBusinessAccess('staff'), async (c) => {
   const rows = await getDb(c.env.DB).select().from(callMessages)
     .where(eq(callMessages.businessType, c.req.param('businessType') ?? ''))
     .orderBy(desc(callMessages.createdAt))
@@ -269,7 +363,7 @@ adminRouter.get('/messages/:businessType', withAdminKey, async (c) => {
 });
 
 // PATCH /admin/messages/:businessType/:id — mark a message handled { status: 'DONE' | 'NEW' }
-adminRouter.patch('/messages/:businessType/:id', withAdminKey, async (c) => {
+adminRouter.patch('/messages/:businessType/:id', withBusinessAccess('staff'), async (c) => {
   const body = await c.req.json().catch(() => null);
   const status = body?.status === 'DONE' ? 'DONE' : 'NEW';
   await getDb(c.env.DB).update(callMessages).set({ status })

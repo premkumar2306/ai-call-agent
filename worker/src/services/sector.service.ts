@@ -20,6 +20,7 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     about:      row.about ?? undefined,
     notifyEmail: row.notifyEmail ?? undefined,
     capacity:   row.capacity ?? 1,
+    kind:       row.kind ?? undefined,
   };
 }
 
@@ -97,4 +98,15 @@ export async function upsertSector(env: Env, key: string, data: {
   });
   // Invalidate cache
   await env.CACHE.delete(CACHE_KEY);
+}
+
+/** Changes only the given columns of an existing sector. False if there's no such sector. */
+export async function updateSector(env: Env, key: string, patch: Partial<Pick<typeof sectorsTable.$inferInsert,
+  'name' | 'kind' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'hours' | 'about' | 'notifyEmail' | 'capacity'>>): Promise<boolean> {
+  const rows = await getDb(env.DB).update(sectorsTable)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(sectorsTable.key, key))
+    .returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return rows.length > 0;
 }

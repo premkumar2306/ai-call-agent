@@ -22,6 +22,8 @@ export interface SectorMeta {
   notifyEmail?: string;
   // Different customers' visits that may start at the same time. Default 1.
   capacity?: number;
+  // What kind of business (clinic, salon, auto_shop…), set by the onboarding wizard.
+  kind?: string;
 }
 
 export interface WeeklyHours {

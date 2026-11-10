@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import type { HonoEnv } from '../middleware';
-import { withAdminKey } from '../middleware';
+import { withBusinessAccess } from '../middleware';
 import { getSector } from '../services/sector.service';
 import { isAllowedOrigin } from '../utils/origins';
 import {
@@ -21,11 +21,13 @@ function redirectUri(c: Context<HonoEnv>, provider: string): string {
   return `${new URL(c.req.url).origin}/oauth/${provider}/callback`;
 }
 
-calendarAdminRouter.use('*', withAdminKey);
+// Members can see the connection; only owners (or the operator) change it.
+const canView = withBusinessAccess('staff');
+const canManage = withBusinessAccess('owner');
 
 // GET /admin/calendar/:businessType — connection status and available providers
-calendarAdminRouter.get('/:businessType', async (c) => {
-  const businessType = c.req.param('businessType');
+calendarAdminRouter.get('/:businessType', canView, async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
   const conn = await getConnection(c.env, businessType);
   return c.json({
     success: true,
@@ -48,7 +50,7 @@ calendarAdminRouter.get('/:businessType', async (c) => {
 
 // POST /admin/calendar/:businessType/:provider/connect { returnTo } → { url }
 // The UI then sends the operator's browser to `url`.
-calendarAdminRouter.post('/:businessType/:provider/connect', async (c) => {
+calendarAdminRouter.post('/:businessType/:provider/connect', canManage, async (c) => {
   const { businessType, provider } = c.req.param();
   if (!getProvider(provider)) return c.json({ success: false, error: `Unknown calendar provider: ${provider}` }, 404);
   if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: `Unknown business: ${businessType}` }, 404);
@@ -73,8 +75,8 @@ calendarAdminRouter.post('/:businessType/:provider/connect', async (c) => {
 });
 
 // GET /admin/calendar/:businessType/calendars — calendars the account can write to
-calendarAdminRouter.get('/:businessType/calendars', async (c) => {
-  const conn = await getConnection(c.env, c.req.param('businessType'));
+calendarAdminRouter.get('/:businessType/calendars', canManage, async (c) => {
+  const conn = await getConnection(c.env, c.req.param('businessType') ?? '');
   if (!conn) return c.json({ success: false, error: 'No calendar connected' }, 404);
   try {
     return c.json({ success: true, data: await listCalendars(c.env, conn) });
@@ -85,8 +87,8 @@ calendarAdminRouter.get('/:businessType/calendars', async (c) => {
 });
 
 // PUT /admin/calendar/:businessType { calendarId?, calendarName?, checkBusy?, writeEvents? }
-calendarAdminRouter.put('/:businessType', async (c) => {
-  const businessType = c.req.param('businessType');
+calendarAdminRouter.put('/:businessType', canManage, async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
   if (!(await getConnection(c.env, businessType))) return c.json({ success: false, error: 'No calendar connected' }, 404);
   const body = await c.req.json().catch(() => ({}));
   const settings: Parameters<typeof updateConnectionSettings>[2] = {};
@@ -100,8 +102,8 @@ calendarAdminRouter.put('/:businessType', async (c) => {
 });
 
 // DELETE /admin/calendar/:businessType — revoke access and forget the connection
-calendarAdminRouter.delete('/:businessType', async (c) => {
-  await disconnect(c.env, c.req.param('businessType'));
+calendarAdminRouter.delete('/:businessType', canManage, async (c) => {
+  await disconnect(c.env, c.req.param('businessType') ?? '');
   return c.json({ success: true });
 });
 

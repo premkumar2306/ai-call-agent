@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 
 interface Props {
   base: string;
-  adminKey: string;
+  auth: Record<string, string>;
+  /** Businesses this viewer may see: all of them for the operator, their own for an owner. */
+  sectors: SectorOption[];
 }
 
 interface TranscriptRow {
@@ -153,8 +155,7 @@ const td: React.CSSProperties = {
   verticalAlign: 'top',
 };
 
-export default function Calls({ base, adminKey }: Props) {
-  const [sectors, setSectors]         = useState<SectorOption[]>([]);
+export default function Calls({ base, auth, sectors }: Props) {
   const [transcripts, setTranscripts] = useState<TranscriptRow[]>([]);
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState('');
@@ -164,22 +165,17 @@ export default function Calls({ base, adminKey }: Props) {
   const [messages, setMessages]       = useState<MessageRow[]>([]);
 
   useEffect(() => {
-    if (!adminKey) {
+    if (!Object.keys(auth).length || !sectors.length) {
       setTranscripts([]);
-      setError('Enter the admin key above to view call transcripts.');
       return;
     }
     setLoading(true);
     setError('');
-    fetch(`${base}/sectors`)
-      .then(r => r.json())
-      .then(async (json: any) => {
-        if (!json.success) { setError('Failed to load business list'); return; }
-        const allSectors: SectorOption[] = json.data;
-        setSectors(allSectors);
+    Promise.resolve(sectors)
+      .then(async (allSectors) => {
 
         const getAll = async <T,>(path: string): Promise<T[]> => (await Promise.all(allSectors.map(s =>
-          fetch(`${base}/admin/${path}/${s.key}`, { headers: { 'X-Admin-Key': adminKey } })
+          fetch(`${base}/admin/${path}/${s.key}`, { headers: auth })
             .then(r => r.json()).then((j: any) => (j.success ? j.data : []) as T[]).catch(() => [] as T[])
         ))).flat();
         getAll<BookingRow>('bookings').then(rows => setBookings(rows.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt))));
@@ -187,7 +183,7 @@ export default function Calls({ base, adminKey }: Props) {
 
         const results = await Promise.all(
           allSectors.map(s =>
-            fetch(`${base}/admin/transcripts/${s.key}`, { headers: { 'X-Admin-Key': adminKey } })
+            fetch(`${base}/admin/transcripts/${s.key}`, { headers: auth })
               .then(async r => {
                 const json = await r.json();
                 if (!r.ok || !json.success) throw new Error(json.error ?? 'Failed to load transcripts');
@@ -204,7 +200,7 @@ export default function Calls({ base, adminKey }: Props) {
       })
       .catch((err: Error) => setError(err.message || 'Network error loading calls'))
       .finally(() => setLoading(false));
-  }, [base, adminKey]);
+  }, [base, auth, sectors]);
 
   const sectorName = (key: string) => sectors.find(s => s.key === key)?.name ?? key;
   const visible = businessFilter === 'all' ? transcripts : transcripts.filter(t => t.businessType === businessFilter);
@@ -216,7 +212,7 @@ export default function Calls({ base, adminKey }: Props) {
 
   const markDone = (m: MessageRow) => {
     fetch(`${base}/admin/messages/${m.businessType}/${m.id}`, {
-      method: 'PATCH', headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+      method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: m.status === 'DONE' ? 'NEW' : 'DONE' }),
     }).then(() => setMessages(ms => ms.map(x => x.id === m.id ? { ...x, status: m.status === 'DONE' ? 'NEW' : 'DONE' } : x)));
   };
