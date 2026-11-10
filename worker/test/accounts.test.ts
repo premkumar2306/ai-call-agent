@@ -318,6 +318,25 @@ describe('cross-tenant access is denied', () => {
     expect((await req(`/account/businesses/${keyA}/members`, { token: tokenA })).status).toBe(200);
   });
 
+  it("other PRs' business routes (privacy, voice, doctors, billing) follow the same rule", async () => {
+    const routes = (k: string) => [
+      `/admin/privacy/${k}/settings`, `/admin/privacy/${k}/requests`,
+      `/admin/sectors/${k}/voice`, `/admin/resources/${k}`, `/billing/${k}`,
+    ];
+    for (const path of routes(keyA)) {
+      expect([path, (await req(path, { token: tokenA })).status]).toEqual([path, 200]);
+      // Billing answers 401 rather than 403 so it doesn't reveal which businesses exist.
+      expect([path, (await req(path, { token: tokenB })).status]).toEqual([path, path.startsWith('/billing') ? 401 : 403]);
+      expect([path, (await req(path)).status]).toEqual([path, 401]);
+      expect([path, (await req(path, { admin: ADMIN })).status]).toEqual([path, 200]);
+    }
+    // An owner sees their billing but never the operator's cost and margin.
+    const bill = await (await req(`/billing/${keyA}`, { token: tokenA })).json() as any;
+    expect(bill.data.cost ?? null).toBeNull();
+    expect((await req(`/admin/billing/plans`, { token: tokenA })).status).toBe(401);
+    expect((await req(`/admin/privacy/${keyA}/erase`, { token: tokenB, body: { phone: '+919876543210' } })).status).toBe(403);
+  });
+
   it("owner B gets 403 on every one of A's routes", async () => {
     for (const path of readRoutes(keyA)) {
       expect([path, (await req(path, { token: tokenB })).status]).toEqual([path, 403]);

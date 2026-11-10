@@ -38,11 +38,12 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["CallRelay"]
 
-# Daily data-retention sweep (src/services/retention.service.ts), 21:17 UTC =
-# 02:47 IST / 15:17 Chicago. Deletes nothing until a business sets a
-# retention period (sectors.retention_days).
+# Daily jobs (src/index.ts scheduled()), 20:47 UTC = 02:17 IST / 14:47 Chicago:
+# the data-retention sweep (src/services/retention.service.ts; deletes nothing
+# until a business sets sectors.retention_days) and month-end overage billing
+# (idempotent, so a day's failure retries the next day).
 [triggers]
-crons = ["17 21 * * *"]
+crons = ["47 20 * * *"]
 
 [vars]
 NODE_ENV = "production"
@@ -64,6 +65,8 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # SARVAM_TTS_SPEAKER = "priya"         # default Bulbul speaker when a business sets no voice_id
 # SARVAM_TTS_CODEC = "linear16"        # if the mulaw stream turns out unusable; default mulaw
 # SARVAM_HIGH_VAD_SENSITIVITY = "1"
+# BILLING_SUPPLIER_GSTIN = "27AAAAA0000A1Z5"       # your GSTIN on invoices; same state → CGST+SGST, else IGST
+# BILLING_COST_RATES = '{"usdToInr": 88}'          # override provider cost estimates (src/services/billing/pricing.ts)
 
 # Secrets — run: wrangler secret put <NAME>
 # Required in production (the Worker fails closed without them):
@@ -97,3 +100,8 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # Calendar integration (optional — see README "Calendar integration"):
 # CALENDAR_TOKEN_KEY    (random; encrypts stored calendar refresh tokens)
 # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   (OAuth client, redirect URI <worker>/oauth/google/callback)
+#
+# Billing (optional — see README "Billing (India)"; off for every business without a plan):
+# RAZORPAY_KEY_ID       (Dashboard → Account & Settings → API keys; the key id is also sent to Checkout)
+# RAZORPAY_KEY_SECRET   (same page; signs API calls and verifies Checkout's payment signature)
+# RAZORPAY_WEBHOOK_SECRET (Dashboard → Webhooks, URL <worker>/razorpay/webhook; without it every webhook is rejected)

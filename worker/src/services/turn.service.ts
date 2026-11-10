@@ -371,6 +371,8 @@ export interface RunTurnOptions {
   heardText?: () => string;
   /** Every timing checkpoint (label, ms since the turn started), for per-call latency metrics. */
   onLap?: (label: string, ms: number) => void;
+  /** Token usage of every model call, for billing cost estimates (services/billing/meter.ts). */
+  onUsage?: (model: string, usage: Anthropic.Usage) => void;
 }
 
 export async function runTurn(
@@ -549,6 +551,7 @@ export async function runTurn(
       lap(`anthropic#${i} (${response.stop_reason})`);
       const usage = response.usage as any;
       if (usage) {
+        opts.onUsage?.(voiceModel(env), response.usage);
         lap(`anthropic#${i} usage (in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens ?? 0} cache_write=${usage.cache_creation_input_tokens ?? 0})`);
       }
 

@@ -260,3 +260,100 @@ export const loginCodes = sqliteTable('login_codes', {
   expiresAt:  integer('expires_at', { mode: 'timestamp' }).notNull(),
   createdAt:  integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 });
+
+// ── Billing (workstream F, migration 0016) ──────────────────────────────────
+// All times are unix seconds; money is in paise excluding GST unless named
+// otherwise; provider costs in micro-USD. Billing is off for a business until
+// billing_accounts.plan_id is set.
+
+export const billingPlans = sqliteTable('billing_plans', {
+  id:                    text('id').primaryKey(),
+  name:                  text('name').notNull(),
+  currency:              text('currency').notNull().default('INR'),
+  monthlyFeePaise:       integer('monthly_fee_paise').notNull(),
+  includedMinutes:       integer('included_minutes').notNull(),
+  overagePaisePerMinute: integer('overage_paise_per_minute').notNull(),
+  trialDays:             integer('trial_days').notNull().default(0),
+  gstRateBps:            integer('gst_rate_bps').notNull().default(1800),
+  razorpayPlanId:        text('razorpay_plan_id'),
+  isActive:              integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  createdAt:             integer('created_at').notNull(),
+  updatedAt:             integer('updated_at').notNull(),
+});
+
+export const billingAccounts = sqliteTable('billing_accounts', {
+  businessType:           text('business_type').primaryKey(),   // sectors.key
+  planId:                 text('plan_id'),
+  trialEndsAt:            integer('trial_ends_at'),
+  razorpayCustomerId:     text('razorpay_customer_id'),
+  razorpaySubscriptionId: text('razorpay_subscription_id'),
+  subscriptionStatus:     text('subscription_status'),
+  currentPeriodEnd:       integer('current_period_end'),
+  legalName:              text('legal_name'),
+  gstin:                  text('gstin'),
+  billingEmail:           text('billing_email'),
+  addressLine1:           text('address_line1'),
+  addressLine2:           text('address_line2'),
+  city:                   text('city'),
+  state:                  text('state'),
+  postalCode:             text('postal_code'),
+  country:                text('country').notNull().default('IN'),
+  alert80Period:          text('alert_80_period'),
+  alert100Period:         text('alert_100_period'),
+  createdAt:              integer('created_at').notNull(),
+  updatedAt:              integer('updated_at').notNull(),
+}, (t) => [
+  index('idx_billing_accounts_subscription').on(t.razorpaySubscriptionId),
+]);
+
+export const usageRecords = sqliteTable('usage_records', {
+  id:                  text('id').primaryKey(),
+  businessType:        text('business_type').notNull(),
+  channel:             text('channel').notNull(),            // voice | whatsapp
+  provider:            text('provider'),
+  sourceId:            text('source_id').notNull(),
+  period:              text('period').notNull(),             // YYYY-MM, Asia/Kolkata
+  startedAt:           integer('started_at').notNull(),
+  endedAt:             integer('ended_at'),
+  durationSeconds:     integer('duration_seconds').notNull().default(0),
+  billableMinutes:     integer('billable_minutes').notNull().default(0),
+  billable:            integer('billable', { mode: 'boolean' }).notNull().default(true),
+  sttSeconds:          integer('stt_seconds').notNull().default(0),
+  ttsChars:            integer('tts_chars').notNull().default(0),
+  llmModel:            text('llm_model'),
+  llmInputTokens:      integer('llm_input_tokens').notNull().default(0),
+  llmOutputTokens:     integer('llm_output_tokens').notNull().default(0),
+  llmCacheReadTokens:  integer('llm_cache_read_tokens').notNull().default(0),
+  llmCacheWriteTokens: integer('llm_cache_write_tokens').notNull().default(0),
+  costUsdMicros:       integer('cost_usd_micros').notNull().default(0),
+  createdAt:           integer('created_at').notNull(),
+}, (t) => [
+  uniqueIndex('idx_usage_records_source').on(t.channel, t.sourceId),
+  index('idx_usage_records_business_period').on(t.businessType, t.period),
+]);
+
+export const billingInvoices = sqliteTable('billing_invoices', {
+  id:              text('id').primaryKey(),
+  businessType:    text('business_type').notNull(),
+  period:          text('period').notNull(),
+  planId:          text('plan_id'),
+  minutesUsed:     integer('minutes_used').notNull(),
+  includedMinutes: integer('included_minutes').notNull(),
+  overageMinutes:  integer('overage_minutes').notNull(),
+  overagePaise:    integer('overage_paise').notNull(),
+  gstPaise:        integer('gst_paise').notNull(),
+  totalPaise:      integer('total_paise').notNull(),
+  status:          text('status').notNull(),   // no_overage | trial | billed | unbilled | failed
+  razorpayAddonId: text('razorpay_addon_id'),
+  error:           text('error'),
+  createdAt:       integer('created_at').notNull(),
+  updatedAt:       integer('updated_at').notNull(),
+}, (t) => [
+  uniqueIndex('idx_billing_invoices_business_period').on(t.businessType, t.period),
+]);
+
+export const razorpayEvents = sqliteTable('razorpay_events', {
+  id:         text('id').primaryKey(),
+  event:      text('event').notNull(),
+  receivedAt: integer('received_at').notNull(),
+});

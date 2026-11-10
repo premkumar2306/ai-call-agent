@@ -15,10 +15,12 @@ import { plivoRouter } from './routes/plivo';
 import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
+import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/billing';
+import { closePeriod } from './services/billing/service';
+import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
 import { privacyAdminRouter } from './routes/privacy';
 import { applyRetention } from './services/retention.service';
-import type { Env } from './types';
 
 export { CallRelay } from './durable-objects/call-relay';
 
@@ -54,9 +56,12 @@ app.route('/exotel',   exotelRouter);
 app.route('/plivo',    plivoRouter);
 app.route('/admin/calendar', calendarAdminRouter);
 app.route('/admin/privacy', privacyAdminRouter);
+app.route('/admin/billing', billingAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
+app.route('/billing',  billingRouter);
+app.route('/razorpay', razorpayRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────
 // Liveness by default; `?deep=1` also checks D1 and KV so uptime monitors
@@ -97,10 +102,18 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
-// Cron Triggers ([triggers] in wrangler.toml): daily data-retention sweep.
-// A no-op until a business sets sectors.retention_days.
+// Cron Triggers ([triggers] in wrangler.toml), once a day:
+// - data-retention sweep: a no-op until a business sets sectors.retention_days;
+// - month-end overage billing: idempotent (failed rows retry the next day) and
+//   only touches businesses with a billing plan.
 async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-  ctx.waitUntil(applyRetention(env).then(() => undefined));
+  ctx.waitUntil(applyRetention(env).then(() => undefined)
+    .catch(e => console.error('[retention] sweep failed', e?.message || e)));
+  ctx.waitUntil(
+    closePeriod(env)
+      .then(r => { if (r.length) console.log('[billing] close-period', JSON.stringify(r)); })
+      .catch(e => console.error('[billing] close-period failed', e?.message || e)),
+  );
 }
 
 export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

@@ -301,6 +301,10 @@ wrangler secret put TWILIO_SMS_FROM
 wrangler secret put EXOTEL_WEBHOOK_SECRET # Exotel; random, also typed into the Exotel call flow URLs
 wrangler secret put PLIVO_AUTH_TOKEN      # Plivo, with PLIVO_WEBHOOK_URL
 wrangler secret put PLIVO_WEBHOOK_URL
+# Optional billing (see "Billing (India)"):
+wrangler secret put RAZORPAY_KEY_ID
+wrangler secret put RAZORPAY_KEY_SECRET
+wrangler secret put RAZORPAY_WEBHOOK_SECRET   # /razorpay/webhook rejects everything without it
 ```
 
 Set where a business's booking and message emails go, and how many different
@@ -487,6 +491,63 @@ with `X-Admin-Key`). Everything is off for existing businesses; see
   `wrangler.toml`, 21:17 UTC) deletes older transcripts and staff messages. Notice records are kept
   at least 365 days; bookings are not touched.
 
+### Billing (India)
+
+Per-minute usage metering for every business, and Razorpay subscriptions for the
+ones that have a plan. **Billing is off for a business until the operator assigns it
+a plan**; nothing is charged, emailed or limited before that, and the US
+`advanced_vtech` line has no plan.
+
+**Metering.** When a call ends, `CallRelay` writes one `usage_records` row (via
+`waitUntil`, never on a turn's path): AI-handled seconds from stream start to end
+(a transfer to staff stops the meter), billed per started minute; STT seconds, TTS
+characters and Anthropic tokens; and an estimated provider cost in micro-USD
+(`DEFAULT_COST_RATES` in `src/services/billing/pricing.ts`, override with the
+`BILLING_COST_RATES` var; telephony, STT and TTS are priced per provider: Twilio/Exotel/Plivo, Deepgram/Sarvam, Cartesia/Sarvam). WhatsApp counts 24-hour conversations per customer
+separately (not billed by the plans). Usage rolls up by calendar month in India time.
+`svt/` synthetic callers are costed but never billed.
+
+**Plans are data** (`billing_plans`, migration 0016 seeds `in_starter`: ₹2,999/month
+excl. GST, 300 minutes, ₹7/minute after, 14-day trial):
+
+```bash
+H='X-Admin-Key: <admin key>'; W=https://<worker-host>
+curl -X PUT  $W/admin/billing/plans/in_growth -H "$H" -H 'content-type: application/json' \
+  -d '{"name":"Growth","monthlyFeePaise":599900,"includedMinutes":800,"overagePaisePerMinute":600,"trialDays":14}'
+curl -X POST $W/admin/billing/plans/in_starter/razorpay -H "$H"   # create the Razorpay plan (fee incl. GST)
+curl -X PUT  $W/admin/billing/accounts/<business> -H "$H" -H 'content-type: application/json' -d '{"planId":"in_starter"}'  # null = off
+curl $W/admin/billing/usage/<business>?period=2026-11 -H "$H"      # per-call records with cost
+curl -X POST $W/admin/billing/close-period -H "$H" -d '{"period":"2026-10"}'  # the daily cron, by hand
+```
+
+Razorpay plans can't be edited: after changing a price, call `/razorpay` again; new
+subscriptions use the new plan.
+
+**Owner flow** (admin **Billing** tab, `/billing/<business>`): plan and status, minutes
+this month against the plan, amounts with 18% GST (CGST+SGST when the business's
+GSTIN is in the same state as `BILLING_SUPPLIER_GSTIN`, otherwise IGST), GSTIN and
+billing address, past overage invoices, and **Subscribe with Razorpay**, which
+creates a subscription (first charge after the trial) and opens Checkout for UPI
+AutoPay or card. Cost and margin per minute are shown to the operator only.
+
+- **Soft limits:** the owner (`billing_email`, else `sectors.notify_email`) is emailed
+  once a month at 80% and 100% of the included minutes. Calls are never refused or
+  cut off.
+- **Overage:** a daily cron (`[triggers]` in `wrangler.toml`) closes last month: minutes
+  over the plan × rate + GST become a Razorpay add-on on the subscription, charged
+  with the next monthly invoice. One `billing_invoices` row per business per month;
+  `failed` rows retry daily. With no active subscription the row is `unbilled` for
+  the operator to invoice by hand.
+- **Webhook:** Razorpay Dashboard → Webhooks → URL `https://<worker-host>/razorpay/webhook`,
+  a secret (= `RAZORPAY_WEBHOOK_SECRET`), events `subscription.*`. The raw body's
+  HMAC-SHA256 (`X-Razorpay-Signature`) is checked before parsing; production rejects
+  every webhook while the secret is unset. Events are de-duplicated on
+  `X-Razorpay-Event-Id`, and the subscription is re-read from the API so out-of-order
+  deliveries can't roll its status back.
+
+Access goes through `resolveBillingViewer()` in `src/routes/billing.ts`, which today
+accepts only the operator's `X-Admin-Key`; owner logins plug in there.
+
 ### Database schema change
 
 1. Edit `worker/src/db/schema.ts`
@@ -570,6 +631,8 @@ curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Typ
 | `worker/src/routes/account.ts`, `worker/src/services/accounts.ts` | Business-owner sign-in codes, owner tokens, memberships, onboarding |
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
+| `worker/src/services/billing/` | Usage metering, plans, GST and overage maths (`pricing.ts`), Razorpay client and signatures (`razorpay.ts`) |
+| `worker/src/routes/billing.ts` | `/billing/*` (business), `/admin/billing/*` (operator), `/razorpay/webhook` |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |
 | `worker/wrangler.toml` | Cloudflare bindings, vars, observability, cron, secrets list |
 | `worker/src/services/disclosure.ts` | Call-start AI/transcription notice, privacy link, notice audit records |

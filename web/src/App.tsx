@@ -10,13 +10,14 @@ import Onboarding from './pages/Onboarding';
 import Business from './pages/Business';
 import Services from './pages/Services';
 import Team from './pages/Team';
+import Billing from './pages/Billing';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 import { ApiError, api, authHeaders, loadOwnerToken, saveOwnerToken, type Auth, type Me } from './auth';
 
 // Operator (admin key) sees every tab and every business; owners and staff see
 // their own businesses, and staff only the tabs that don't change settings.
-const ADMIN_TABS = ['Customize', 'Voice Test', 'Calls', 'Business', 'Services', 'Team', 'WhatsApp', 'Calendar', 'Settings', 'Overview'] as const;
-const OWNER_TABS = ['Calls', 'Business', 'Services', 'Calendar', 'Team', 'Voice Test', 'Customize'] as const;
+const ADMIN_TABS = ['Customize', 'Voice Test', 'Calls', 'Business', 'Services', 'Team', 'WhatsApp', 'Calendar', 'Billing', 'Settings', 'Overview'] as const;
+const OWNER_TABS = ['Calls', 'Business', 'Services', 'Calendar', 'Team', 'Billing', 'Voice Test', 'Customize'] as const;
 const STAFF_TABS = ['Calls', 'Business', 'Services', 'Voice Test'] as const;
 type Tab = typeof ADMIN_TABS[number];
 
@@ -193,6 +194,7 @@ export default function App() {
           oauthResult={calendarRedirect?.business === sector ? calendarRedirect : null}
         />
       )}
+      {tab === 'Billing' && sector && <Billing key={sector} sector={sector} base={BASE} auth={headers} />}
       {tab === 'Settings' && (
         <div style={{ display: 'grid', gap: 24 }}>
           <Settings base={BASE} adminKey={adminKey} sectors={sectors} />
