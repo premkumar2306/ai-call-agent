@@ -2,6 +2,10 @@
 // country_code). Mirrors worker/src/utils/locale.ts: US businesses keep the
 // existing "$12.00" / raw-number display; others go through Intl.
 
+// The supported countries and their defaults live in one place, shared with
+// the worker (which validates country_code against the same list).
+export { COUNTRIES, countryDefaults } from '../../worker/src/utils/locale';
+
 export interface SectorLocale { currency?: string; locale?: string; countryCode?: string }
 
 /** "$12.00" (USD, as before) or e.g. "₹1,500.00" with Indian grouping. */

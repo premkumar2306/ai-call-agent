@@ -6,7 +6,7 @@ import { getSectors, getSector, upsertSector } from '../services/sector.service'
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
-import { isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
+import { COUNTRIES, isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
 import { removeBookingFromCalendar } from '../services/calendar';
 import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages } from '../db/schema';
 
@@ -91,7 +91,7 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
   const invalid = [
     body.currency !== undefined && !isValidCurrency(body.currency) && 'currency (ISO 4217, e.g. "INR")',
     body.locale !== undefined && !isValidLocale(body.locale) && 'locale (BCP 47, e.g. "en-IN")',
-    body.country_code !== undefined && !isValidCountryCode(body.country_code) && 'country_code (ISO 3166-1 alpha-2, e.g. "IN")',
+    body.country_code !== undefined && !isValidCountryCode(body.country_code) && `country_code (one of ${Object.keys(COUNTRIES).join(', ')})`,
     body.timezone !== undefined && !isValidTimeZone(body.timezone) && 'timezone (IANA, e.g. "Asia/Kolkata")',
   ].filter(Boolean);
   if (invalid.length) return c.json({ success: false, error: `Invalid ${invalid.join(', ')}` }, 400);

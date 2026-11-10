@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Product, SectorMeta } from '../src/types';
 import {
-  formatClock, formatDayLabel, formatMoney, formatPhone, indianNumberWords, isValidCountryCode, isValidCurrency,
+  COUNTRIES, countryDefaults, formatClock, formatDayLabel, formatMoney, formatPhone, indianNumberWords, isValidCountryCode, isValidCurrency,
   isValidLocale, isValidTimeZone, localeGuidance, localeOf, normalizePhone, spokenMoney, spokenPhone,
 } from '../src/utils/locale';
 import { buildBusinessProfile, describeLocalNow, formatPrice, formatSpokenPrice } from '../src/services/business-profile';
@@ -214,5 +214,25 @@ describe('an Indian business end to end', () => {
     expect(summary).toContain('Consultation — Monday, 2 Nov at 10:30 am');
     expect(summary).toContain('Callback: +91 98765 43210');
     expect(getSectorGreeting('sharma_dental', 50_000, 'GOLD', CLINIC)).toContain('₹500.00 in store credit');
+  });
+});
+
+describe('country dropdown defaults', () => {
+  it('India fills in rupees, en-IN, IST and +91', () => {
+    expect(countryDefaults('IN', 'America/Chicago')).toEqual({ countryCode: 'IN', currency: 'INR', locale: 'en-IN', timezone: 'Asia/Kolkata' });
+    expect(COUNTRIES.IN.dialCode).toBe('+91');
+  });
+
+  it('switching back to the US restores exactly what a US business had', () => {
+    expect(countryDefaults('US', 'Asia/Kolkata')).toEqual({ countryCode: 'US', currency: 'USD', locale: 'en-US', timezone: 'America/Chicago' });
+    // A US business in another US zone keeps it.
+    expect(countryDefaults('US', 'America/New_York').timezone).toBe('America/New_York');
+    expect(COUNTRIES.US.dialCode).toBe('+1');
+  });
+
+  it('only listed countries are accepted', () => {
+    expect(Object.keys(COUNTRIES).every(isValidCountryCode)).toBe(true);
+    expect(isValidCountryCode('GB')).toBe(false);
+    expect(countryDefaults('GB').countryCode).toBe('US');
   });
 });

@@ -18,6 +18,39 @@ export interface BusinessLocale {
 
 export const DEFAULT_LOCALE: BusinessLocale = { currency: 'USD', locale: 'en-US', countryCode: 'US' };
 
+export interface CountryDefaults {
+  name: string;
+  flag: string;
+  /** International dialling code, e.g. "+91". */
+  dialCode: string;
+  currency: string;
+  locale: string;
+  timezone: string;
+}
+
+/**
+ * Supported countries and what picking one sets up for a business. The admin
+ * UI's Country dropdown and the worker's validation both read this list; add
+ * a country here (and its phone rules in normalizePhone) to support it.
+ */
+export const COUNTRIES: Record<string, CountryDefaults> = {
+  US: { name: 'United States', flag: '🇺🇸', dialCode: '+1', currency: 'USD', locale: 'en-US', timezone: 'America/Chicago' },
+  IN: { name: 'India', flag: '🇮🇳', dialCode: '+91', currency: 'INR', locale: 'en-IN', timezone: 'Asia/Kolkata' },
+};
+
+/**
+ * The currency, locale and timezone a business gets when switched to
+ * `countryCode`. A timezone the business already has in that country (an
+ * "America/…" zone for the US) is kept, so switching a US business back to
+ * the US restores exactly what it had.
+ */
+export function countryDefaults(countryCode: string, currentTimezone?: string): BusinessLocale & { timezone: string } {
+  const c = COUNTRIES[countryCode] ?? COUNTRIES[DEFAULT_LOCALE.countryCode];
+  const code = COUNTRIES[countryCode] ? countryCode : DEFAULT_LOCALE.countryCode;
+  const keepZone = currentTimezone && (code === 'US' ? currentTimezone.startsWith('America/') : currentTimezone === c.timezone);
+  return { countryCode: code, currency: c.currency, locale: c.locale, timezone: keepZone ? currentTimezone! : c.timezone };
+}
+
 /** The locale fields of a sector, with defaults for anything unset. */
 export function localeOf(meta: { currency?: string | null; locale?: string | null; countryCode?: string | null } | null | undefined): BusinessLocale {
   return {
@@ -44,8 +77,9 @@ export function isValidLocale(v: unknown): v is string {
   try { return Intl.getCanonicalLocales(v).length === 1; } catch { return false; }
 }
 
+/** Only countries in COUNTRIES: phone numbers are read per country, so an unknown one can't be served. */
 export function isValidCountryCode(v: unknown): v is string {
-  return typeof v === 'string' && /^[A-Z]{2}$/.test(v);
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(COUNTRIES, v);
 }
 
 export function isValidTimeZone(v: unknown): v is string {

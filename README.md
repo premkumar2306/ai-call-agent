@@ -233,8 +233,10 @@ customers' visits may start at the same time (bays), with `POST /admin/sectors`
 
 ### Business locale (currency, dates, phone numbers)
 
-Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business locale**
-(which has a one-click India preset):
+Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business locale**.
+There, the **Country** dropdown (United States +1 / India +91) fills in that country's currency, locale and
+timezone, each of which can still be changed. Supported countries are listed once, in `COUNTRIES`
+(`worker/src/utils/locale.ts`); the worker rejects any other `country_code`.
 
 | Field | Default | India | Effect |
 |-------|---------|-------|--------|
