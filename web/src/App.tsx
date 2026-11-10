@@ -5,9 +5,10 @@ import WhatsApp from './pages/WhatsApp';
 import Calls from './pages/Calls';
 import Settings from './pages/Settings';
 import Calendar from './pages/Calendar';
+import Billing from './pages/Billing';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 
-const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Calendar', 'Settings', 'Overview'] as const;
+const TABS = ['Customize', 'Voice Test', 'Calls', 'WhatsApp', 'Calendar', 'Billing', 'Settings', 'Overview'] as const;
 type Tab = typeof TABS[number];
 
 const BASE = import.meta.env.VITE_API_URL
@@ -113,6 +114,7 @@ export default function App() {
             oauthResult={calendarRedirect?.business === sector ? calendarRedirect : null}
           />
         )}
+        {tab === 'Billing' && sector && <Billing key={sector} sector={sector} base={BASE} adminKey={adminKey} />}
         {tab === 'Settings' && <Settings base={BASE} adminKey={adminKey} sectors={sectors} />}
         {tab === 'Overview' && <Overview />}
       </main>

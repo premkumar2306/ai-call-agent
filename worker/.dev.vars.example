@@ -27,3 +27,9 @@ TWILIO_WEBHOOK_URL=
 CALENDAR_TOKEN_KEY=dev-calendar-token-key
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+
+# Billing (optional). Use Razorpay *test mode* keys locally. With no
+# RAZORPAY_WEBHOOK_SECRET, development accepts unsigned webhooks (curl).
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=

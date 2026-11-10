@@ -38,6 +38,11 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["CallRelay"]
 
+# Daily jobs (src/index.ts scheduled()): month-end overage billing. Runs at
+# 02:17 IST; idempotent, so a day's failure retries the next day.
+[triggers]
+crons = ["47 20 * * *"]
+
 [vars]
 NODE_ENV = "production"
 TOKEN_TTL_SECONDS = "900"
@@ -48,6 +53,8 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 
 # ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"  # optional override, see src/config.ts
 # ALLOWED_ORIGINS = "https://admin.example.com"  # extra CORS origins for the admin UI
+# BILLING_SUPPLIER_GSTIN = "27AAAAA0000A1Z5"       # your GSTIN on invoices; same state → CGST+SGST, else IGST
+# BILLING_COST_RATES = '{"usdToInr": 88}'          # override provider cost estimates (src/services/billing/pricing.ts)
 
 # Secrets — run: wrangler secret put <NAME>
 # Required in production (the Worker fails closed without them):
@@ -69,3 +76,8 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # Calendar integration (optional — see README "Calendar integration"):
 # CALENDAR_TOKEN_KEY    (random; encrypts stored calendar refresh tokens)
 # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   (OAuth client, redirect URI <worker>/oauth/google/callback)
+#
+# Billing (optional — see README "Billing (India)"; off for every business without a plan):
+# RAZORPAY_KEY_ID       (Dashboard → Account & Settings → API keys; the key id is also sent to Checkout)
+# RAZORPAY_KEY_SECRET   (same page; signs API calls and verifies Checkout's payment signature)
+# RAZORPAY_WEBHOOK_SECRET (Dashboard → Webhooks, URL <worker>/razorpay/webhook; without it every webhook is rejected)
