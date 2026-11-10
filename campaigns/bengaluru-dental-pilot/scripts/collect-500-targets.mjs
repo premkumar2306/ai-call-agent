@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +10,15 @@ const outputPath = join(campaignDirectory, 'targets-500.json');
 const collectedAt = new Date().toISOString();
 const healthFinderBase = 'https://healthfinder.in/bangalore/dental-clinics/';
 const latrexaUrl = 'https://www.latrexa.com/specialty-directory/dental/bengaluru';
+
+try {
+  await access(outputPath);
+  if (!process.argv.includes('--force')) {
+    throw new Error(`${outputPath} already exists; pass --force to replace it`);
+  }
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
 
 const existingTargets = JSON.parse(await readFile(join(campaignDirectory, 'targets.json'), 'utf8'));
 const candidates = existingTargets.map(fromExistingTarget);
