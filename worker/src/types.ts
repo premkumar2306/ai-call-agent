@@ -11,6 +11,10 @@ export interface SectorMeta {
   hours: WeeklyHours;
   timezone: string;
   currency: string;
+  // BCP 47 locale for prices and dates ("en-US", "en-IN"). Default en-US.
+  locale?: string;
+  // ISO 3166-1 country for reading local phone numbers ("US", "IN"). Default US.
+  countryCode?: string;
   // Optional real-business fields populated from web research
   address?: string;
   phone?: string;

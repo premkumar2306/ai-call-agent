@@ -25,6 +25,7 @@ import { calendarConnections, orders as ordersTable } from '../../db/schema';
 import { tokenSecretKey } from '../../config';
 import { encryptSecret, decryptSecret } from '../../utils/calendar-crypto';
 import { toInstant, addMinutesLocal } from '../../utils/time';
+import { formatMoney, formatPhone, localeOf } from '../../utils/locale';
 import type { Env, Order, SectorMeta } from '../../types';
 import { CalendarError, type CalendarProvider, type BusyInterval, type CalendarInfo } from './types';
 import { googleCalendar } from './google';
@@ -274,8 +275,7 @@ export async function syncBookingToCalendar(env: Env, order: Order, meta: Sector
   const isLocal = !/(Z|[+-]\d{2}:\d{2})$/.test(order.scheduledAt);
   const localStart = order.scheduledAt.slice(0, 19).padEnd(19, ':00');
   // $0 means "quoted on the day" for some shops, so it's left off rather than shown as free.
-  const price = !order.priceCents ? ''
-    : `${meta?.currency === 'INR' ? '₹' : '$'}${(order.priceCents / 100).toFixed(2)}`;
+  const price = order.priceCents ? formatMoney(order.priceCents, localeOf(meta), { alwaysFraction: true }) : '';
   const test = order.customerIdHashed.startsWith('synthetic-latency-test');
   try {
     const eventId = await withToken(env, conn, (p, t) => p.createEvent(t, conn.calendarId, {
@@ -286,7 +286,7 @@ export async function syncBookingToCalendar(env: Env, order: Order, meta: Sector
         'Booked by phone through Mogi.',
         order.customerName ? `Customer: ${order.customerName}` : '',
         ...bookingDetailLines(order),
-        order.callbackPhone ? `Callback: ${order.callbackPhone}` : '',
+        order.callbackPhone ? `Callback: ${formatPhone(order.callbackPhone)}` : '',
         order.notes ? `Notes: ${order.notes}` : '',
         `Reference: ${order.id.slice(0, 8)}`, price ? `Price: ${price}` : '', `Payment: ${order.paymentMethod}`,
       ].filter(Boolean).join('\n'),

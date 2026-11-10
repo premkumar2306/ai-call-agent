@@ -3,7 +3,8 @@ import type { SessionPayload, Env, SectorMeta, Resource, WeeklyHours } from '../
 import { getProducts, getProductById, searchProducts } from './catalog.service';
 import { placeOrder, getOrders, getOrder, cancelOrder, updateOrderDetails } from './order.service';
 import { scoreProducts } from './recommendations.service';
-import { formatPrice, priceText, isResourcePriced } from './business-profile';
+import { formatPrice, priceText, spokenPriceText, isResourcePriced } from './business-profile';
+import { formatClock, formatDayLabel, localeOf, normalizePhone as normalizePhoneFor, spokenMoney, spokenPhone } from '../utils/locale';
 import { getVertical, detailsFromArgs, missingRequired, type Vertical } from './verticals';
 import { getDb } from '../db/client';
 import { orders as ordersTable, callMessages } from '../db/schema';
@@ -145,23 +146,20 @@ export interface Slot {
 }
 
 // "9:00 AM" from minutes since midnight.
-function clockLabel(mins: number): string {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-}
+const clockLabel = (mins: number) => formatClock(mins, 'en-US');
 
 // Spoken label for a business-local "YYYY-MM-DDTHH:MM[:SS]" — formatted from
 // the string itself, never via Date parsing (the Worker clock is UTC, the
 // string is wall-clock time in the business's zone).
-export function formatSlotLabel(datetime: string, todayYmd?: string, tomorrowYmd?: string): string {
+// `locale` is the business's (en-US: "Friday, Oct 30 at 9:00 AM"; en-IN:
+// "Friday, 30 Oct at 9:00 am").
+export function formatSlotLabel(datetime: string, todayYmd?: string, tomorrowYmd?: string, locale = 'en-US'): string {
   const ymd = datetime.slice(0, 10);
   const mins = parseInt(datetime.slice(11, 13), 10) * 60 + parseInt(datetime.slice(14, 16), 10);
   const day = ymd === todayYmd ? 'today'
     : ymd === tomorrowYmd ? 'tomorrow'
-    : new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
-  return `${day} at ${clockLabel(mins)}`;
+    : formatDayLabel(ymd, locale);
+  return `${day} at ${formatClock(mins, locale)}`;
 }
 
 // Earliest a same-day slot may start, so nobody is offered "today at 2"
@@ -173,6 +171,7 @@ export const AVAILABILITY_DAYS = 14;
 // apart, that leaves room for `durationMinutes` before the range closes.
 function openingSlots(
   hours: WeeklyHours | undefined, timeZone: string | undefined, durationMinutes: number, stepMin: number, now: Date,
+  locale = 'en-US',
 ): Slot[] {
   const out: Slot[] = [];
   const today = localDay(now, timeZone).ymd;
@@ -195,7 +194,7 @@ function openingSlots(
           date: dateStr,
           time: clockLabel(m),
           datetime,
-          label: formatSlotLabel(datetime, today, tomorrow),
+          label: formatSlotLabel(datetime, today, tomorrow, locale),
           minutes: m,
         });
       }
@@ -218,7 +217,7 @@ export async function getAvailableSlots(
 ): Promise<Slot[]> {
   // Any half hour inside opening hours is bookable, so "9 works" can be
   // booked even when 8:30 and 9:30 were the times read out.
-  const rawSlots = openingSlots(meta?.hours, meta?.timezone, durationMinutes, 30, now);
+  const rawSlots = openingSlots(meta?.hours, meta?.timezone, durationMinutes, 30, now, localeOf(meta).locale);
 
   // Filter out slots already booked. If the caller already has a fresh
   // booked-slot set for this call (CallRelay prefetches one at call start
@@ -332,7 +331,7 @@ export function getResourceSlots(
   chosen.forEach((r, order) => {
     const duration = opts.durationMinutes ?? r.slotMinutes;
     const mine = opts.bookings.filter(b => b.resourceId === r.id);
-    for (const slot of openingSlots(r.hours, meta?.timezone, duration, r.slotMinutes, now)) {
+    for (const slot of openingSlots(r.hours, meta?.timezone, duration, r.slotMinutes, now, localeOf(meta).locale)) {
       const start = slot.datetime.slice(0, 16);
       const end = addLocalMinutes(slot.datetime, duration).slice(0, 16);
       if (mine.some(b => b.start < end && b.end > start)) continue;
@@ -514,6 +513,11 @@ export async function executeTool(
   background?: Background,
 ): Promise<ToolResult> {
   const { businessType, account } = token;
+  const loc = localeOf(sectorMeta);
+  const normalizePhone = (raw: string | undefined) => normalizePhoneFor(raw, loc.countryCode);
+  // Caller ID in the business's country format (a no-op for E.164 from Twilio).
+  const callerPhone = token.callerPhone ? (normalizePhone(token.callerPhone) ?? token.callerPhone) : undefined;
+  const slotLabel = (dt: string) => formatSlotLabel(dt, ...todayTomorrow(sectorMeta));
   const vertical = getVertical(sectorMeta);
   const defer = async (p: Promise<unknown>) => {
     const safe = p.catch(err => console.error(`[tool:${toolName}] background error`, err?.message || err));
@@ -529,7 +533,7 @@ export async function executeTool(
         return {
           success: true,
           data: account,
-          spoken_response: `You have $${credit} in store credit and you're a ${account.tier} member.`,
+          spoken_response: `You have ${loc.currency === 'USD' ? `$${credit}` : spokenMoney(account.store_credit_cents, loc)} in store credit and you're a ${account.tier} member.`,
         };
       }
 
@@ -563,7 +567,7 @@ export async function executeTool(
         }
         // Include IDs in data so Claude can use them immediately for check_availability / book_appointment
         const topResult = top5[0];
-        const price = priceText(topResult, sectorMeta);
+        const price = spokenPriceText(topResult, sectorMeta);
         const duration = topResult.durationMinutes ? `, about ${topResult.durationMinutes} minutes` : '';
         const spoken = top5.length === 1
           ? `We have ${topResult.name} — ${price}${duration}. Want me to find you a time?`
@@ -586,7 +590,7 @@ export async function executeTool(
         const duration = p.durationMinutes ? ` Takes about ${p.durationMinutes} minutes.` : '';
         return {
           success: true, data: p,
-          spoken_response: `${p.name} — ${priceText(p, sectorMeta)}.${duration} ${p.description}`,
+          spoken_response: `${p.name} — ${spokenPriceText(p, sectorMeta)}.${duration} ${p.description}`,
         };
       }
 
@@ -661,7 +665,7 @@ export async function executeTool(
         }
         const upsell = await lookupProduct(env, cache, p.upsellProductId);
         if (!upsell) return { success: true, data: { upsells: [] }, spoken_response: "No add-ons right now." };
-        const price = priceText(upsell, sectorMeta);
+        const price = spokenPriceText(upsell, sectorMeta);
         return {
           success: true,
           data: { upsells: [upsell] },
@@ -709,7 +713,7 @@ export async function executeTool(
         }
         // The front desk needs to know who is coming and how to reach them.
         const customerName = (args.customer_name as string | undefined)?.trim();
-        const callbackPhone = normalizePhone(args.callback_phone as string | undefined, callingCode(sectorMeta)) ?? token.callerPhone;
+        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? callerPhone;
         const details = detailsFromArgs(vertical, args);
         // Booking the same thing twice (a repeated request, a retry) isn't a
         // clash with someone else — say they're already set.
@@ -721,7 +725,7 @@ export async function executeTool(
             return {
               success: true,
               data: { id: dup.id, service: dup.productName, scheduled_at: dup.scheduledAt, already_booked: true },
-              spoken_response: `You're already booked for ${dup.productName} ${formatSlotLabel(dup.scheduledAt!, ...todayTomorrow(sectorMeta))}. Anything else?`,
+              spoken_response: `You're already booked for ${dup.productName} ${slotLabel(dup.scheduledAt!)}. Anything else?`,
             };
           }
         }
@@ -873,13 +877,13 @@ export async function executeTool(
           }
         }
 
-        const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
+        const when = order.scheduledAt ? ` for ${slotLabel(order.scheduledAt)}` : '';
         // The name is read back so a misheard one ("Westfield") gets corrected now.
         const name = order.customerName ? `, ${order.customerName}` : '';
         const msg = `You're all set${name} — ${order.productName}${when}. Anything else I can help with?`;
         return {
           success: true,
-          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product) },
+          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product, loc) },
           spoken_response: msg,
         };
       }
@@ -890,7 +894,7 @@ export async function executeTool(
         const order = await getOrder(env, args.order_id as string, token.sub);
         if (!order) return { success: false, spoken_response: "I couldn't find that booking." };
         const scheduled = order.scheduledAt
-          ? ` Scheduled for ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}.`
+          ? ` Scheduled for ${slotLabel(order.scheduledAt)}.`
           : '';
         let spoken = `Booking ${order.id.slice(0, 8)} — ${order.productName} is ${order.status}.${scheduled}`;
         if (order.trackingNumber) spoken += ` Tracking: ${order.trackingNumber}.`;
@@ -909,7 +913,7 @@ export async function executeTool(
           return { success: true, data: { orders: [] }, spoken_response: "You don't have any active bookings." };
         }
         const describe = (o: typeof orders[number]) =>
-          `${o.productName}${o.scheduledAt ? ` on ${formatSlotLabel(o.scheduledAt, ...todayTomorrow(sectorMeta))}` : ''}`;
+          `${o.productName}${o.scheduledAt ? ` on ${slotLabel(o.scheduledAt)}` : ''}`;
         const spoken = `You have ${upcoming.length} booking${upcoming.length > 1 ? 's' : ''}: ${upcoming.slice(0, 3).map(describe).join(', and ')}.`;
         return {
           success: true,
@@ -919,7 +923,7 @@ export async function executeTool(
       }
 
       case 'update_booking': {
-        const callbackPhone = args.callback_phone ? normalizePhone(args.callback_phone as string, callingCode(sectorMeta)) : undefined;
+        const callbackPhone = args.callback_phone ? normalizePhone(args.callback_phone as string) : undefined;
         if (args.callback_phone && !callbackPhone) {
           return { success: false, error: 'INVALID', spoken_response: "Sorry, I didn't catch the whole number — could you say it again?" };
         }
@@ -941,7 +945,7 @@ export async function executeTool(
         const parts = [
           updated.customerName ? `under ${updated.customerName}` : '',
           updated.vehicle ? `for the ${updated.vehicle}` : '',
-          updated.callbackPhone ? `and we'll call ${updated.callbackPhone}` : '',
+          updated.callbackPhone ? `and we'll call ${spokenPhone(updated.callbackPhone, loc)}` : '',
         ].filter(Boolean).join(' ');
         return {
           success: true,
@@ -965,7 +969,7 @@ export async function executeTool(
         // New slot first, so a taken time leaves the original booking alone.
         const moved = await placeOrder(env, token.sub, businessType, old.productId, old.paymentMethod, undefined, newAt, {
           customerName: old.customerName ?? undefined, vehicle: old.vehicle ?? undefined,
-          callbackPhone: old.callbackPhone ?? token.callerPhone, notes: old.notes ?? undefined,
+          callbackPhone: old.callbackPhone ?? callerPhone, notes: old.notes ?? undefined,
           capacity: sectorMeta?.capacity,
           ...(resource ? {
             resource: { id: resource.id, name: resource.name, endsAt: addLocalMinutes(newAt, minutes) },
@@ -979,7 +983,7 @@ export async function executeTool(
         if (moved.scheduledAt) await defer(syncBookingToCalendar(env, moved, sectorMeta, resource ? minutes : product?.durationMinutes ?? 60));
         await defer(notifyBooking(env, sectorMeta, moved, 'rescheduled'));
         if (cache) { cache.orders = null; cache.ordersLoaded = false; cache.bookedDatetimes = null; cache.resourceBookings = null; }
-        const label = formatSlotLabel(moved.scheduledAt!, ...todayTomorrow(sectorMeta));
+        const label = slotLabel(moved.scheduledAt!);
         return {
           success: true,
           data: { id: moved.id, service: moved.productName, scheduled_at: moved.scheduledAt, replaced: old.id },
@@ -1005,7 +1009,7 @@ export async function executeTool(
         const callerName = (args.caller_name as string | undefined)?.trim().slice(0, 120) || null;
         // Without a name the message is "someone called" — ask before saving.
         if (!callerName) return { success: false, error: 'NAME_REQUIRED', spoken_response: 'Sure — what name should I put on the message?' };
-        const callbackPhone = normalizePhone(args.callback_phone as string | undefined, callingCode(sectorMeta)) ?? token.callerPhone ?? null;
+        const callbackPhone = normalizePhone(args.callback_phone as string | undefined) ?? callerPhone ?? null;
         if (!callbackPhone) return { success: false, error: 'PHONE_REQUIRED', spoken_response: TOOL_ERROR_MESSAGES.PHONE_REQUIRED };
         // One message per call: a second take_message (the caller adds a
         // detail or corrects their number) replaces it rather than leaving
@@ -1025,7 +1029,7 @@ export async function executeTool(
         return {
           success: true,
           data: { saved: true, updated: updating, caller_name: callerName, callback_phone: callbackPhone },
-          spoken_response: `Got it, ${callerName} — ${updating ? "I've updated your message" : "I've passed that on"}, and someone will call you back at ${callbackPhone}. Anything else?`,
+          spoken_response: `Got it, ${callerName} — ${updating ? "I've updated your message" : "I've passed that on"}, and someone will call you back at ${spokenPhone(callbackPhone, loc)}. Anything else?`,
         };
       }
 
@@ -1061,7 +1065,7 @@ export async function executeTool(
           if (order.scheduledAt) cache.bookedDatetimes = null;
           if (order.resourceId) cache.resourceBookings = null;
         }
-        const when = order.scheduledAt ? ` on ${formatSlotLabel(order.scheduledAt, ...todayTomorrow(sectorMeta))}` : '';
+        const when = order.scheduledAt ? ` on ${slotLabel(order.scheduledAt)}` : '';
         return {
           success: true,
           data: { id: order.id, service: order.productName, scheduled_at: order.scheduledAt, status: order.status },
@@ -1095,27 +1099,9 @@ const TOOL_ERROR_MESSAGES: Record<string, string> = {
   PHONE_REQUIRED: "I can't see the number you're calling from — what's the best number to reach you?",
 };
 
-// "(847) 555-1234" / "847-555-1234" / "+18475551234" → E.164 (US default).
-// With countryCode '91': "98765 43210" / "098765 43210" / "91 98765 43210".
-export function normalizePhone(raw: string | undefined, countryCode = '1'): string | undefined {
-  const digits = raw?.replace(/\D/g, '') ?? '';
-  if (countryCode === '91' && !raw?.trim().startsWith('+')) {
-    if (digits.length === 10) return `+91${digits}`;
-    if (digits.length === 11 && digits.startsWith('0')) return `+91${digits.slice(1)}`;
-    if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
-    return undefined;
-  }
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw?.trim().startsWith('+') && digits.length >= 8 && digits.length <= 15) return `+${digits}`;
-  return undefined;
-}
-
-// Country calling code for numbers said without one. Only Indian (INR)
-// businesses differ from the original US default.
-function callingCode(meta: SectorMeta | null | undefined): string {
-  return meta?.currency === 'INR' ? '91' : '1';
-}
+// "(847) 555-1234" / "847-555-1234" / "+18475551234" → E.164 (US default);
+// pass the business's country ("IN") to read local numbers there.
+export { normalizePhoneFor as normalizePhone };
 
 // A booking's length: to its recorded end (a doctor's slot), else the product's.
 function bookingMinutes(order: { scheduledAt?: string | null; endsAt?: string | null }, productMinutes: number | null | undefined): number {
@@ -1135,9 +1121,9 @@ function nowLocalIso(meta: SectorMeta | null | undefined): string {
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00`;
 }
 
-function todayTomorrow(meta: SectorMeta | null | undefined): [string, string] {
+function todayTomorrow(meta: SectorMeta | null | undefined): [string, string, string] {
   const now = new Date();
-  return [localDay(now, meta?.timezone).ymd, localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd];
+  return [localDay(now, meta?.timezone).ymd, localDay(new Date(now.getTime() + 86_400_000), meta?.timezone).ymd, localeOf(meta).locale];
 }
 
 function joinOr(items: string[]): string {

@@ -1,4 +1,5 @@
 import type { Product, SectorMeta } from '../types';
+import { formatMoney, localeGuidance, localeOf, spokenMoney } from '../utils/locale';
 import { getVertical } from './verticals';
 
 // Renders everything the database knows about a business — contact details,
@@ -28,23 +29,34 @@ const DAY_LABEL: Record<string, string> = {
 // Quote)", "Custom pricing"). Saying "free" for the second is a costly lie.
 const QUOTE_RE = /\b(quote[sd]?|custom pricing|price varies|call for)\b/i;
 
-type PriceMeta = Pick<SectorMeta, 'currency' | 'vertical'> & { resources?: SectorMeta['resources'] };
+type Priced = Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>;
 
-/** Spoken amount: "$89" (unchanged for USD), "500 rupees" for INR. */
-export function formatMoney(cents: number, currency?: string): string {
-  const amount = (cents / 100).toFixed(cents % 100 === 0 ? 0 : 2);
-  if (currency === 'INR') return `${amount} rupees`;
-  return `$${amount}`;
+// What pricing needs from a business: its locale (currency, number format)
+// and vertical (what an unpriced service is called, doctors' fees).
+type PriceMeta = Pick<SectorMeta, 'vertical'> & {
+  currency?: string | null; locale?: string | null; countryCode?: string | null;
+  resources?: SectorMeta['resources'];
+};
+type Money = (minor: number) => string;
+
+const written = (meta: PriceMeta | null | undefined): Money => c => formatMoney(c, localeOf(meta));
+const spoken = (meta: PriceMeta | null | undefined): Money => c => spokenMoney(c, localeOf(meta));
+
+// Prices are stored in the currency's minor unit (cents, paise) and written
+// per the business locale: "$89.99" (US, unchanged), "₹1,50,000" (en-IN).
+export function formatPrice(p: Priced, meta?: PriceMeta | null): string {
+  return describePrice(p, meta, written(meta));
 }
 
-export function formatPrice(
-  p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description'>,
-  meta?: PriceMeta | null,
-): string {
+/** As formatPrice, but as the voice should say it ("fifteen hundred rupees"). */
+export function formatSpokenPrice(p: Priced, meta?: PriceMeta | null): string {
+  return describePrice(p, meta, spoken(meta));
+}
+
+function describePrice(p: Priced, meta: PriceMeta | null | undefined, money: Money): string {
   if (p.priceCents === 0) {
     return QUOTE_RE.test(`${p.name} ${p.description}`) ? getVertical(meta).quotePrice : 'free';
   }
-  const money = (c: number) => formatMoney(c, meta?.currency);
   const regular = p.originalPriceCents > p.priceCents ? ` (regularly ${money(p.originalPriceCents)})` : '';
   return `${money(p.priceCents)}${regular}`;
 }
@@ -59,16 +71,24 @@ export function isResourcePriced(p: Pick<Product, 'category'>, meta: PriceMeta |
   return !!spec && !!meta?.resources?.length && spec.feeCategories.includes(p.category);
 }
 
+type PricedInCategory = Priced & Pick<Product, 'category'>;
+
 /** formatPrice, except a consultation reads as the doctor's fee. */
-export function priceText(
-  p: Pick<Product, 'priceCents' | 'originalPriceCents' | 'name' | 'description' | 'category'>,
-  meta: PriceMeta | null | undefined,
-): string {
-  if (!isResourcePriced(p, meta)) return formatPrice(p, meta);
+export function priceText(p: PricedInCategory, meta: PriceMeta | null | undefined): string {
+  return resourcePrice(p, meta, written(meta)) ?? formatPrice(p, meta);
+}
+
+/** priceText as the voice should say it. */
+export function spokenPriceText(p: PricedInCategory, meta: PriceMeta | null | undefined): string {
+  return resourcePrice(p, meta, spoken(meta)) ?? formatSpokenPrice(p, meta);
+}
+
+function resourcePrice(p: PricedInCategory, meta: PriceMeta | null | undefined, money: Money): string | undefined {
+  if (!isResourcePriced(p, meta)) return undefined;
   // Only the doctors who do it: a dental consultation is the dentist's fee.
   const who = meta!.resources!.filter(r => !r.categories?.length || r.categories.includes(p.category));
   const fees = (who.length ? who : meta!.resources!).map(r => r.feeCents);
-  if (fees[0] != null && fees.every(f => f === fees[0])) return fees[0] ? formatMoney(fees[0], meta?.currency) : 'free';
+  if (fees[0] != null && fees.every(f => f === fees[0])) return fees[0] ? money(fees[0]) : 'free';
   return getVertical(meta).resources!.feeText;
 }
 
@@ -102,6 +122,8 @@ export function buildBusinessProfile(
   if (meta?.website) lines.push(`Website: ${meta.website.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '')}`);
   lines.push(`Hours: ${formatWeeklyHours(meta?.hours)}${meta?.timezone ? ` (${meta.timezone} time)` : ''}`);
   if (meta?.about?.trim()) lines.push(`About: ${meta.about.trim()}`);
+  const guidance = localeGuidance(localeOf(meta));
+  if (guidance) lines.push(guidance);
   lines.push(...describeResources(meta));
 
   const active = products.filter(p => p.isActive);
@@ -140,7 +162,7 @@ function describeResources(meta: SectorMeta | null | undefined): string[] {
   for (const r of meta.resources) {
     const parts = [`- ${r.name} [${spec.param}: ${r.id}]${r.role ? ` — ${r.role}` : ''}.`];
     parts.push(`Hours: ${formatWeeklyHours(r.hours)}.`);
-    if (r.feeCents != null) parts.push(`${spec.feeLabel.charAt(0).toUpperCase() + spec.feeLabel.slice(1)}: ${r.feeCents ? formatMoney(r.feeCents, meta.currency) : 'free'}.`);
+    if (r.feeCents != null) parts.push(`${spec.feeLabel.charAt(0).toUpperCase() + spec.feeLabel.slice(1)}: ${r.feeCents ? formatMoney(r.feeCents, localeOf(meta)) : 'free'}.`);
     parts.push(`${r.slotMinutes}-minute appointments.`);
     if (r.categories?.length) parts.push(`Books only: ${r.categories.map(c => c.replace(/_/g, ' ').toLowerCase()).join(', ')}.`);
     if (r.about?.trim()) parts.push(r.about.trim());
@@ -153,20 +175,26 @@ function describeResources(meta: SectorMeta | null | undefined): string[] {
 // the model can turn "tomorrow" or "next Tuesday" into the YYYY-MM-DD the
 // tools need without guessing. The time is floored to the half hour so this
 // block stays byte-identical (and prompt-cacheable) for most of a call.
-export function describeLocalNow(now: Date, timeZone: string | undefined): string {
+export function describeLocalNow(now: Date, timeZone: string | undefined, locale = 'en-US'): string {
   const tz = timeZone || 'UTC';
   const floored = new Date(Math.floor(now.getTime() / 1_800_000) * 1_800_000);
-  let today: string;
   try {
-    today = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-      hour: 'numeric', minute: '2-digit',
-    }).format(floored);
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
   } catch {
-    return describeLocalNow(now, 'UTC');
+    return describeLocalNow(now, 'UTC', locale);
   }
+  // An invalid locale falls back to en-US rather than breaking the prompt.
+  const fmt = (opts: Intl.DateTimeFormatOptions) => {
+    try { return new Intl.DateTimeFormat(locale, { timeZone: tz, ...opts }); }
+    catch { return new Intl.DateTimeFormat('en-US', { timeZone: tz, ...opts }); }
+  };
+  const today = fmt({
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  }).format(floored);
   const ymd = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
-  const weekday = (d: Date) => new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' }).format(d);
+  const weekdayFmt = fmt({ weekday: 'long' });
+  const weekday = (d: Date) => weekdayFmt.format(d);
   const upcoming: string[] = [];
   for (let i = 0; i < 8; i++) {
     const d = new Date(now.getTime() + i * 86_400_000);

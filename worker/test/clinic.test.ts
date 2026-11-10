@@ -151,7 +151,7 @@ describe('clinic booking', () => {
     const res = await book({ ...base, customer_name: 'Asha Verma', patient_status: 'New', reason_for_visit: 'fever for three days' });
     expect(res.success).toBe(true);
     expect(res.spoken_response).toBe("You're all set, Asha Verma — General Consultation with Dr. Ananya Rao tomorrow at 10:00 AM. Anything else I can help with?");
-    expect(res.data).toMatchObject({ doctor: 'Dr. Ananya Rao', price: '500 rupees' });
+    expect(res.data).toMatchObject({ doctor: 'Dr. Ananya Rao', price: '₹500' });
     const row = env.DB.sqlite.prepare('SELECT * FROM orders').get();
     expect(row).toMatchObject({
       resource_id: 'demo-dr-rao', resource_name: 'Dr. Ananya Rao', price_cents: 50000,
@@ -224,10 +224,10 @@ describe('clinic prompt and tools', () => {
   it('lists doctors with OPD hours and fees, and prices consultations by doctor', async () => {
     const products = await getProducts(env, BIZ);
     const profile = buildBusinessProfile(BIZ, meta, products);
-    expect(profile).toMatch(/- Dr\. Ananya Rao \[doctor_id: demo-dr-rao\] — General physician \(MBBS, MD\)\. Hours: Monday 10am to 1pm, 5pm to 9pm;.* Sunday closed\. Consultation fee: 500 rupees\. 15-minute appointments\./);
-    expect(profile).toMatch(/General Consultation \[id: demo-clinic-consult\] — 500 rupees/);
-    expect(profile).toMatch(/Dental Consultation \[id: demo-clinic-dental-consult\] — 400 rupees/);
-    expect(profile).toMatch(/Teeth Cleaning .* — 1200 rupees, about 30 min/);
+    expect(profile).toMatch(/- Dr\. Ananya Rao \[doctor_id: demo-dr-rao\] — General physician \(MBBS, MD\)\. Hours: Monday 10am to 1pm, 5pm to 9pm;.* Sunday closed\. Consultation fee: ₹500\. 15-minute appointments\./);
+    expect(profile).toMatch(/General Consultation \[id: demo-clinic-consult\] — ₹500/);
+    expect(profile).toMatch(/Dental Consultation \[id: demo-clinic-dental-consult\] — ₹400/);
+    expect(profile).toMatch(/Teeth Cleaning .* — ₹1,200, about 30 min/);
     expect(profile).toMatch(/Root Canal Treatment .* — the doctor confirms the cost at the visit/);
     expect(profile).toMatch(/Follow-up Visit .* — free/);
     // A consultation two doctors do at different fees reads as "depends".
@@ -262,10 +262,10 @@ describe('clinic prompt and tools', () => {
 
 describe('Indian phone numbers', () => {
   it('normalises numbers said without +91 for Indian businesses only', () => {
-    expect(normalizePhone('98765 43210', '91')).toBe('+919876543210');
-    expect(normalizePhone('098765 43210', '91')).toBe('+919876543210');
-    expect(normalizePhone('91 98765 43210', '91')).toBe('+919876543210');
-    expect(normalizePhone('+1 847 555 1234', '91')).toBe('+18475551234');
+    expect(normalizePhone('98765 43210', 'IN')).toBe('+919876543210');
+    expect(normalizePhone('098765 43210', 'IN')).toBe('+919876543210');
+    expect(normalizePhone('91 98765 43210', 'IN')).toBe('+919876543210');
+    expect(normalizePhone('+1 847 555 1234', 'IN')).toBe('+18475551234');
     expect(normalizePhone('847 555 1234')).toBe('+18475551234');
   });
 

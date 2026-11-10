@@ -8,6 +8,8 @@ export const sectors = sqliteTable('sectors', {
   hours:        text('hours', { mode: 'json' }).notNull().$type<Record<string, string>>(),
   timezone:     text('timezone').notNull().default('America/Chicago'),
   currency:     text('currency').notNull().default('USD'),
+  locale:       text('locale').notNull().default('en-US'),
+  countryCode:  text('country_code').notNull().default('US'),
   address:      text('address'),
   phone:        text('phone'),
   website:      text('website'),

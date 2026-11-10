@@ -8,6 +8,7 @@ import { parseHoursRanges } from '../services/tool-router.service';
 import { getDb } from '../db/client';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
+import { COUNTRIES, isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
 import { removeBookingFromCalendar } from '../services/calendar';
 import { vendors as vendorsTable, products as productsTable, transcripts as transcriptsTable, orders as ordersTable, callMessages, resources as resourcesTable } from '../db/schema';
 
@@ -87,6 +88,15 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
   if (!body?.key || !body?.name || !body?.hours) {
     return c.json({ success: false, error: 'key, name, and hours are required' }, 400);
   }
+  // Locale fields are optional; when given they must be valid, so a typo
+  // can't silently break price or date formatting on live calls.
+  const invalid = [
+    body.currency !== undefined && !isValidCurrency(body.currency) && 'currency (ISO 4217, e.g. "INR")',
+    body.locale !== undefined && !isValidLocale(body.locale) && 'locale (BCP 47, e.g. "en-IN")',
+    body.country_code !== undefined && !isValidCountryCode(body.country_code) && `country_code (one of ${Object.keys(COUNTRIES).join(', ')})`,
+    body.timezone !== undefined && !isValidTimeZone(body.timezone) && 'timezone (IANA, e.g. "Asia/Kolkata")',
+  ].filter(Boolean);
+  if (invalid.length) return c.json({ success: false, error: `Invalid ${invalid.join(', ')}` }, 400);
   if (body.vertical != null && !isVertical(body.vertical)) {
     return c.json({ success: false, error: `Unknown vertical: ${body.vertical}` }, 400);
   }
@@ -96,7 +106,9 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     categories:   body.categories ?? [],
     hours:        body.hours,
     timezone:     body.timezone ?? 'America/Chicago',
-    currency:     body.currency ?? 'USD',
+    currency:     body.currency,
+    locale:       body.locale,
+    countryCode:  body.country_code,
     address:      body.address,
     phone:        body.phone,
     website:      body.website,
