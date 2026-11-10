@@ -32,8 +32,8 @@ Workstreams run one at a time, in the order A, G, D, C, B, E, F, to stay within 
 | # | PR | CI | State | Owner must configure |
 |---|----|----|-------|----------------------|
 | A | [#68](https://github.com/premkumar2306/ai-call-agent/pull/68) | green | done, ready for review | Pick India in Settings → Country for an Indian business |
-| G | — | — | in progress | — |
-| D | — | — | waiting | — |
+| G | [#69](https://github.com/premkumar2306/ai-call-agent/pull/69) | green | done, ready for review | Apply `worker/seeds/demo_clinic_india.sql` to try the demo clinic; live Indian-voice test calls need a Mac |
+| D | — | — | in progress | — |
 | C | — | — | waiting | — |
 | B | — | — | waiting | — |
 | E | — | — | waiting | — |
