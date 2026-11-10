@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { COUNTRIES, countryDefaults } from '../locale';
+import PrivacySettings from './PrivacySettings';
 
 interface Props {
   base: string;
@@ -56,6 +57,7 @@ export default function Settings({ base, adminKey, sectors }: Props) {
   };
 
   return (
+    <>
     <div style={card}>
       <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Phone line</h2>
       <p style={{ margin: '0 0 16px', color: '#888', fontSize: 13 }}>
@@ -96,6 +98,8 @@ export default function Settings({ base, adminKey, sectors }: Props) {
       </div>
       {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
     </div>
+    <PrivacySettings base={base} adminKey={adminKey} sectors={sectors} />
+    </>
   );
 }
 

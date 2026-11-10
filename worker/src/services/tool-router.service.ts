@@ -1021,7 +1021,7 @@ export async function executeTool(
           await db.update(callMessages).set(fields).where(eq(callMessages.id, cache.messageId));
         } else {
           const id = crypto.randomUUID();
-          await db.insert(callMessages).values({ id, businessType, callSid: cache?.callSid ?? null, ...fields });
+          await db.insert(callMessages).values({ id, businessType, callSid: cache?.callSid ?? null, customerIdHashed: token.sub, ...fields });
           if (cache) cache.messageId = id;
         }
         await defer(notifyMessage(env, sectorMeta, { ...fields, updated: updating }));

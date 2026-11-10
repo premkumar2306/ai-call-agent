@@ -298,6 +298,27 @@ Providers are adapters in `worker/src/services/calendar/`: implement
 `CalendarProvider` (`types.ts`) in a new file and register it in `PROVIDERS`
 (`index.ts`). Routes, storage, the admin UI and the booking flow need no changes.
 
+### Privacy, disclosure and retention (India DPDP)
+
+Per business, from the admin UI's **Settings → Privacy & data** (or `/admin/privacy/:businessType/*`
+with `X-Admin-Key`). Everything is off for existing businesses; see
+[`docs/compliance-india.md`](docs/compliance-india.md) for what this does and doesn't cover.
+
+- **Call-start notice** (`sectors.ai_disclosure`, `disclosure_text`): after "Thanks for calling!"
+  Avery says the caller is talking to an AI assistant and the call is transcribed (default wording
+  in English, Hindi or Hinglish to match the business's voice language). NULL = automatic:
+  on for businesses in India (country IN, or timezone `Asia/Kolkata` / currency INR), off elsewhere.
+  Each notice is logged in `consent_records` (wording version, time, heard to the end or not).
+- **Privacy notice link** (`privacy_notice_url`): added to booking confirmation texts and the first
+  WhatsApp reply while the notice is on. Template: [`docs/privacy-notice-template.md`](docs/privacy-notice-template.md).
+- **Caller data requests**: `POST /admin/privacy/:business/export { phone }` returns everything stored
+  for that caller; `POST /admin/privacy/:business/erase { phone, confirm: true }` deletes transcripts,
+  messages and live KV history, strips personal fields from bookings (kept for aggregates), cancels
+  upcoming ones and removes their calendar events. Both are logged in `data_requests`.
+- **Retention** (`retention_days`, NULL = keep): a daily Cron Trigger (`[triggers]` in
+  `wrangler.toml`, 21:17 UTC) deletes older transcripts and staff messages. Notice records are kept
+  at least 365 days; bookings are not touched.
+
 ### Database schema change
 
 1. Edit `worker/src/db/schema.ts`
@@ -375,7 +396,10 @@ curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Typ
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |
-| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, secrets list |
+| `worker/wrangler.toml` | Cloudflare bindings, vars, observability, cron, secrets list |
+| `worker/src/services/disclosure.ts` | Call-start AI/transcription notice, privacy link, notice audit records |
+| `worker/src/services/data-rights.service.ts` | Caller data export and erasure |
+| `worker/src/services/retention.service.ts` | Daily retention sweep (`scheduled` in `index.ts`) |
 
 ---
 

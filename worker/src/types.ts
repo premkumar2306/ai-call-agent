@@ -32,6 +32,13 @@ export interface SectorMeta {
   // Bookable people with their own hours (a clinic's doctors). When present,
   // availability and conflicts are per resource instead of `capacity`.
   resources?: Resource[];
+  // DPDP / AI disclosure (services/disclosure.ts). aiDisclosure undefined =
+  // automatic: on for businesses in India, off elsewhere.
+  aiDisclosure?: boolean;
+  disclosureText?: string;
+  privacyNoticeUrl?: string;
+  // Days to keep transcripts and staff messages (services/retention.ts).
+  retentionDays?: number;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */

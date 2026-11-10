@@ -3,6 +3,7 @@ import type { Env, Order, SectorMeta } from '../types';
 import { formatSlotLabel } from './tool-router.service';
 import { formatPhone, localeOf } from '../utils/locale';
 import { bookingDetailLines } from './verticals';
+import { privacyLinkSuffix } from './disclosure';
 
 // Tells people what the agent did: the business (email to the sector's
 // notify_email) and the caller (text to their callback number). Each channel
@@ -75,9 +76,11 @@ export async function notifyBooking(env: Env, meta: SectorMeta | null | undefine
   }
   if (order.callbackPhone) {
     const when = order.scheduledAt ? ` for ${formatSlotLabel(order.scheduledAt, undefined, undefined, localeOf(meta).locale)}` : '';
-    const text = event === 'cancelled'
+    let text = event === 'cancelled'
       ? `${name}: your ${order.productName}${when} is cancelled.`
       : `${name}: you're booked for ${order.productName}${when}.${meta?.address ? ` ${meta.address}.` : ''}${meta?.phone ? ` Questions: ${meta.phone}.` : ''}`;
+    // Empty unless the business has the DPDP notice on and a privacy URL set.
+    text += privacyLinkSuffix(meta);
     jobs.push(sendSms(env, order.callbackPhone, text).catch(logFail('confirmation text')));
   }
   await Promise.all(jobs);

@@ -13,6 +13,9 @@ import { adminRouter } from './routes/admin';
 import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
 import { isAllowedOrigin } from './utils/origins';
+import { privacyAdminRouter } from './routes/privacy';
+import { applyRetention } from './services/retention.service';
+import type { Env } from './types';
 
 export { CallRelay } from './durable-objects/call-relay';
 
@@ -43,6 +46,7 @@ app.route('/orders',   ordersRouter);
 app.route('/mogi',     mogiRouter);
 app.route('/twilio',   twilioRouter);
 app.route('/admin/calendar', calendarAdminRouter);
+app.route('/admin/privacy', privacyAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
@@ -86,4 +90,10 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
-export default app;
+// Cron Triggers ([triggers] in wrangler.toml): daily data-retention sweep.
+// A no-op until a business sets sectors.retention_days.
+async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  ctx.waitUntil(applyRetention(env).then(() => undefined));
+}
+
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

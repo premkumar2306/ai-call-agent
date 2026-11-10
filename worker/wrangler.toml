@@ -38,6 +38,12 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["CallRelay"]
 
+# Daily data-retention sweep (src/services/retention.service.ts), 21:17 UTC =
+# 02:47 IST / 15:17 Chicago. Deletes nothing until a business sets a
+# retention period (sectors.retention_days).
+[triggers]
+crons = ["17 21 * * *"]
+
 [vars]
 NODE_ENV = "production"
 TOKEN_TTL_SECONDS = "900"
