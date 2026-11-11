@@ -10,8 +10,8 @@
 #
 # SVT_SET picks the persona set (svt/latency-test.mjs): `us` (default, the
 # weekly run: advanced_vtech) or `india` (demo_clinic_india: Indian English,
-# Hinglish, Hindi, an elderly slow speaker, a specific-doctor request and an
-# emergency). The india set uses the macOS en_IN/hi_IN voices (Rishi, Veena,
+# Hinglish, Hindi, an elderly slow speaker, a specific-doctor request, an
+# emergency and a dental caller; persona 7 calls demo_law_firm_india). The india set uses the macOS en_IN/hi_IN voices (Rishi, Veena,
 # Lekha) when installed and says which fallback it used when not; its
 # results go to svt/results/india.
 # Needs ADMIN_KEY, ANTHROPIC_API_KEY and DEEPGRAM_API_KEY — taken from the
@@ -32,7 +32,7 @@ cd "$(dirname "$0")/.."
 SET=${SVT_SET:-us}
 case "$SET" in
   us)    OUT=${SVT_OUT:-svt/results};       ALL=$(seq 0 13) ;;
-  india) OUT=${SVT_OUT:-svt/results/india}; ALL=$(seq 0 5) ;;
+  india) OUT=${SVT_OUT:-svt/results/india}; ALL=$(seq 0 7) ;;
   *)     echo "SVT_SET must be us or india"; exit 2 ;;
 esac
 mkdir -p "$OUT"
