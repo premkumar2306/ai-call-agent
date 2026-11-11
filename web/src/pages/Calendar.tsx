@@ -129,7 +129,7 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
           ))}
           {providers.length > 0 && providers.every(p => !p.configured) && (
             <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)', alignSelf: 'center' }}>
-              No calendar provider is configured on this deployment yet.
+              Calendar connections aren't switched on for this service yet. Ask the Avery team.
             </p>
           )}
         </div>

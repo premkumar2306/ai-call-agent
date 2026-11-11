@@ -18,7 +18,7 @@ import PhoneNumbers from './pages/PhoneNumbers';
 import PhoneNumber from './pages/PhoneNumber';
 import Home from './pages/Home';
 import { NumberRequests, WhatsAppNumbers } from './pages/Operator';
-import { BUSINESS_KINDS, practitionerWords, verticalForKind } from './business';
+import { practitionerWords, verticalForKind } from './business';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 import { ApiError, api, authHeaders, loadOwnerToken, saveOwnerToken, type Auth, type Me } from './auth';
 import { Badge, Button, PageHeader, Segmented, Table } from './components/ui';
@@ -36,7 +36,7 @@ function takeCalendarRedirect(): { business: string; ok: boolean; reason?: strin
   const result = q.get('calendar');
   const business = q.get('business');
   if (!result || !business) return null;
-  window.history.replaceState(null, '', window.location.pathname);
+  window.history.replaceState(null, '', `${window.location.pathname}#/settings/calendar`);
   return { business, ok: result === 'connected', reason: q.get('reason') ?? undefined };
 }
 const calendarRedirect = takeCalendarRedirect();
@@ -120,7 +120,17 @@ export default function App() {
   const isOperator = role === 'admin';
   const canEdit = role === 'admin' || role === 'owner';
   const selected = sectors.find(s => s.key === sector);
-  const words = selected?.kind !== undefined ? practitionerWords(verticalForKind(selected?.kind), selected?.kind) : null;
+  // The public business list has no type, so the operator looks it up.
+  const [opType, setOpType] = useState<{ key: string; kind: string | null; vertical: string | null } | null>(null);
+  useEffect(() => {
+    if (!adminKey || !sector) return;
+    api<{ kind?: string | null; vertical?: string | null }>(BASE, `/admin/sectors/${encodeURIComponent(sector)}`, { 'X-Admin-Key': adminKey })
+      .then(d => setOpType({ key: sector, kind: d.kind ?? null, vertical: d.vertical ?? null }))
+      .catch(() => setOpType(null));
+  }, [adminKey, sector]);
+  const words = adminKey
+    ? (opType?.key === sector ? practitionerWords(opType.vertical ?? verticalForKind(opType.kind), opType.kind) : null)
+    : practitionerWords(verticalForKind(selected?.kind), selected?.kind);
   // Owners manage sign-ins on the Team page too; staff only see the people list.
   const showTeam = !!words || canEdit;
   const one = useMemo(() => sectors.filter(s => s.key === sector), [sectors, sector]);
@@ -214,7 +224,7 @@ export default function App() {
 
   const businessPicker = (sectors.length > 1 || auth.kind === 'user') && (
     <div style={{ padding: '0 6px 8px' }}>
-      <label htmlFor="business-picker" className="nav-group" style={{ display: 'block', padding: '0 4px 4px' }}>{isOperator ? 'Managing' : 'Business'}</label>
+      <label htmlFor="business-picker" className={isOperator ? 'sr-only' : 'nav-group'} style={{ display: 'block', padding: '0 4px 4px' }}>{isOperator ? 'Business you are managing' : 'Business'}</label>
       <select
         id="business-picker"
         className="input"
@@ -313,11 +323,10 @@ export default function App() {
           {isOperator && current === 'op/businesses' && <>
             <PageHeader title="All businesses" description="Every business on this deployment. Choose one to see its calls, settings and billing." />
             <section className="card">
-              <Table head={['Business', 'Type', 'Key', '']}>
+              <Table head={['Business', 'Key', <span className="sr-only">Actions</span>]}>
                 {allSectors.map(s => (
                   <tr key={s.key}>
                     <td style={{ fontWeight: 600, color: 'var(--text-strong)' }}>{s.name}</td>
-                    <td>{s.kind ? BUSINESS_KINDS[s.kind] ?? s.kind : '—'}</td>
                     <td><code>{s.key}</code></td>
                     <td style={{ textAlign: 'right' }}><Button size="sm" variant="secondary" onClick={() => { setSector(s.key); go('home'); }}>Manage</Button></td>
                   </tr>
