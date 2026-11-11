@@ -466,7 +466,7 @@ adminRouter.post('/products/:businessType', withBusinessAccess('owner'), async (
       contactEmail: meta.notifyEmail ?? 'info@example.com', isActive: true, createdAt: new Date(),
     }).returning();
   }
-  const category = meta.categories.includes('SERVICES') || !meta.categories.length ? 'SERVICES' : meta.categories[0];
+  const category = svc.category ?? (meta.categories.includes('SERVICES') || !meta.categories.length ? 'SERVICES' : meta.categories[0]);
   const [row] = await db.insert(productsTable).values({
     id: serviceProductId(businessType), businessType, vendorId: vendor.id, vendorName: vendor.name,
     name: svc.name, category, type: 'SERVICE_APPOINTMENT', fulfillmentType: 'SERVICE_BOOKING',
@@ -491,15 +491,19 @@ adminRouter.put('/products/:businessType/:id', withBusinessAccess('owner'), asyn
     priceCents: body?.priceCents ?? existing.priceCents,
     durationMinutes: body?.durationMinutes ?? existing.durationMinutes ?? 60,
     description: body?.description ?? existing.description,
+    // Only when sent, so saving an older service never renames its category.
+    ...(body?.category !== undefined ? { category: body.category } : {}),
   });
   if (typeof svc === 'string') return c.json({ success: false, error: svc }, 400);
   const priceChanged = svc.priceCents !== existing.priceCents;
   const [row] = await db.update(productsTable).set({
     name: svc.name, description: svc.description, durationMinutes: svc.durationMinutes,
+    ...(svc.category && svc.category !== existing.category ? { category: svc.category } : {}),
     ...(priceChanged ? { priceCents: svc.priceCents, originalPriceCents: svc.priceCents } : {}),
     ...(typeof body?.isActive === 'boolean' ? { isActive: body.isActive } : {}),
   }).where(and(eq(productsTable.id, id), eq(productsTable.businessType, businessType))).returning();
   await invalidateProduct(c.env, businessType, id, existing.category);
+  if (row.category !== existing.category) await invalidateProduct(c.env, businessType, id, row.category);
   return c.json({ success: true, data: row });
 });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildAgentRules, agentTools } from '../src/services/turn.service';
 import { buildBusinessProfile } from '../src/services/business-profile';
 import { getToolDefinitions } from '../src/services/tool-router.service';
+import { assistantNameOf, getVertical } from '../src/services/verticals';
 import type { Product, SectorMeta } from '../src/types';
 
 // The clinic vertical is data-driven; a business without one (the US auto
@@ -31,6 +32,11 @@ describe('US auto shop is unchanged', () => {
   it('voice and chat rules', async () => {
     await expect(buildAgentRules('advanced_vtech', 'Advanced VTech', 'voice')).toMatchFileSnapshot('./__snapshots__/us-rules-voice.txt');
     await expect(buildAgentRules('advanced_vtech', 'Advanced VTech', 'chat')).toMatchFileSnapshot('./__snapshots__/us-rules-chat.txt');
+  });
+  it('with its configured assistant name (migration 0018: Mogi)', async () => {
+    const name = assistantNameOf({ ...META, assistantName: 'Mogi' });
+    await expect(buildAgentRules('advanced_vtech', 'Advanced VTech', 'voice', getVertical(META), 'en', name)).toMatchFileSnapshot('./__snapshots__/us-rules-voice.txt');
+    await expect(buildAgentRules('advanced_vtech', 'Advanced VTech', 'chat', getVertical(META), 'en', name)).toMatchFileSnapshot('./__snapshots__/us-rules-chat.txt');
   });
   it('business profile', async () => {
     await expect(buildBusinessProfile('advanced_vtech', META, PRODUCTS)).toMatchFileSnapshot('./__snapshots__/us-profile.txt');

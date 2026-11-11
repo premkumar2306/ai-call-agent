@@ -254,6 +254,8 @@ export interface ServiceInput {
   priceCents: number;
   durationMinutes: number;
   description: string;
+  /** Optional category ("CONSULTATION", a practice area like "FAMILY"); default SERVICES. */
+  category?: string;
 }
 
 export interface BusinessInput {
@@ -307,7 +309,12 @@ export function parseService(s: any): ServiceInput | string {
   const durationMinutes = s.durationMinutes;
   if (!Number.isInteger(durationMinutes) || durationMinutes < 5 || durationMinutes > 600) return `Duration for “${name}” must be 5–600 minutes`;
   const description = typeof s.description === 'string' ? s.description.trim().slice(0, 500) : '';
-  return { name, priceCents, durationMinutes, description };
+  let category: string | undefined;
+  if (s.category !== undefined && s.category !== null && s.category !== '') {
+    category = typeof s.category === 'string' ? s.category.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') : '';
+    if (!category || category.length > 40) return `Category for “${name}” is not valid`;
+  }
+  return { name, priceCents, durationMinutes, description, ...(category ? { category } : {}) };
 }
 
 /** Validates the onboarding wizard's payload. Returns an error message or the clean input. */
@@ -386,7 +393,7 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
     try {
       await db.batch([
         db.insert(sectors).values({
-          key, name: input.name, model: 'service', categories: ['SERVICES'], hours: input.hours,
+          key, name: input.name, model: 'service', categories: [...new Set(['SERVICES', ...input.services.map(s => s.category ?? 'SERVICES')])], hours: input.hours,
           timezone: input.timezone, currency: input.currency, countryCode: input.countryCode, locale: input.locale, address: input.address, phone: input.phone,
           about: input.about, notifyEmail: input.notifyEmail ?? owner.email, capacity: 1, kind: input.kind,
           // The call script for this kind of business (a clinic, a law firm…).
@@ -398,7 +405,7 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
         }),
         ...input.services.map(s => db.insert(products).values({
           id: serviceProductId(key), businessType: key, vendorId: key, vendorName: input.name,
-          name: s.name, category: 'SERVICES', type: 'SERVICE_APPOINTMENT', fulfillmentType: 'SERVICE_BOOKING',
+          name: s.name, category: s.category ?? 'SERVICES', type: 'SERVICE_APPOINTMENT', fulfillmentType: 'SERVICE_BOOKING',
           description: s.description, priceCents: s.priceCents, originalPriceCents: s.priceCents,
           durationMinutes: s.durationMinutes, isActive: true, createdAt: now,
         })),
