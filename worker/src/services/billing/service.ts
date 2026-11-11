@@ -51,7 +51,7 @@ export async function getPlan(env: Env, id: string): Promise<Plan | null> {
 
 export interface PlanInput {
   name: string; currency?: string; monthlyFeePaise: number; includedMinutes: number;
-  overagePaisePerMinute: number; trialDays?: number; gstRateBps?: number; isActive?: boolean;
+  overagePaisePerMinute: number; trialDays?: number; gstRateBps?: number; isActive?: boolean; isDefault?: boolean;
   razorpayPlanId?: string | null;
 }
 
@@ -71,6 +71,7 @@ export function validatePlanInput(b: any): PlanInput | string {
     includedMinutes: b.includedMinutes, overagePaisePerMinute: b.overagePaisePerMinute,
     trialDays: b.trialDays, gstRateBps: b.gstRateBps,
     isActive: typeof b.isActive === 'boolean' ? b.isActive : undefined,
+    isDefault: typeof b.isDefault === 'boolean' ? b.isDefault : undefined,
     razorpayPlanId: typeof b.razorpayPlanId === 'string' || b.razorpayPlanId === null ? b.razorpayPlanId : undefined,
   };
 }
@@ -83,8 +84,11 @@ export async function upsertPlan(env: Env, id: string, p: PlanInput): Promise<Pl
     includedMinutes: p.includedMinutes, overagePaisePerMinute: p.overagePaisePerMinute,
     trialDays: p.trialDays ?? 0, gstRateBps: p.gstRateBps ?? 1800, isActive: p.isActive ?? true,
     ...(p.razorpayPlanId !== undefined ? { razorpayPlanId: p.razorpayPlanId } : {}),
+    ...(p.isDefault !== undefined ? { isDefault: p.isDefault } : {}),
     updatedAt: now,
   };
+  // At most one default plan.
+  if (p.isDefault) await db.update(billingPlans).set({ isDefault: false, updatedAt: now }).where(ne(billingPlans.id, id));
   await db.insert(billingPlans).values({ id, ...values, createdAt: now })
     .onConflictDoUpdate({ target: billingPlans.id, set: values });
   return (await getPlan(env, id))!;
@@ -136,6 +140,18 @@ export async function assignPlan(env: Env, businessType: string, planId: string 
     await db.insert(billingAccounts).values({ businessType, planId, trialEndsAt, createdAt: now, updatedAt: now });
   }
   return (await getAccount(env, businessType))!;
+}
+
+/**
+ * Puts a new business on the plan marked default, with its free trial, so
+ * it shows up in billing from day one. Nothing is charged until the owner
+ * subscribes. No default plan (the starting state) = billing stays off.
+ */
+export async function assignDefaultPlan(env: Env, businessType: string): Promise<Account | null> {
+  const [plan] = await getDb(env.DB).select().from(billingPlans)
+    .where(and(eq(billingPlans.isDefault, true), eq(billingPlans.isActive, true))).limit(1);
+  if (!plan || await getAccount(env, businessType)) return null;
+  return assignPlan(env, businessType, plan.id);
 }
 
 export interface BillingDetails {

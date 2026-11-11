@@ -12,6 +12,8 @@ import {
   revokeSessions, signOwnerToken,
 } from '../services/accounts';
 import { getSector } from '../services/sector.service';
+import { assignDefaultPlan } from '../services/billing/service';
+import { listNumberRequests, requestNumber } from '../services/self-serve';
 import { escapeHtml } from '../services/email.service';
 import { isAllowedOrigin } from '../utils/origins';
 import type { Env } from '../types';
@@ -144,8 +146,32 @@ accountRouter.post('/businesses', withOwner, async (c) => {
   const input = parseBusinessInput(await c.req.json().catch(() => null));
   if (typeof input === 'string') return c.json({ success: false, error: input }, 400);
   const key = await createBusiness(c.env, p.user, input);
+  // The default trial plan, if the operator marked one (no charge until the owner subscribes).
+  await assignDefaultPlan(c.env, key).catch(e => console.error('[account] default plan failed', e?.message || e));
   return c.json({ success: true, data: { key, name: input.name } }, 201);
 });
+
+// ── Phone number (connected by the Avery team) ─────────────────────────────
+
+// GET /account/businesses/:businessType/number-request — this business's requests
+accountRouter.get('/businesses/:businessType/number-request', withBusinessAccess('staff'), async (c) => {
+  const rows = await listNumberRequests(c.env, c.req.param('businessType') ?? '');
+  return c.json({ success: true, data: rows.map(r => ({ id: r.id, status: r.status, createdAt: (r.createdAt as Date).toISOString() })) });
+});
+
+// POST /account/businesses/:businessType/number-request { note? } — ask the Avery team for a number.
+// Numbers are connected by the operator (Indian numbers need carrier KYC).
+accountRouter.post('/businesses/:businessType/number-request', withBusinessAccess('owner'),
+  ipRateLimit('number-request', 10, 3600), async (c) => {
+    const businessKey = c.req.param('businessType') ?? '';
+    const meta = await getSector(c.env, businessKey);
+    if (!meta) return c.json({ success: false, error: 'Business not found' }, 404);
+    const body = await c.req.json().catch(() => null);
+    const note = typeof body?.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : null;
+    const p = c.get('principal');
+    const { row, created } = await requestNumber(c.env, businessKey, meta.name, p.kind === 'user' ? p.user.email : null, note);
+    return c.json({ success: true, data: { id: row.id, status: row.status, alreadyRequested: !created } }, created ? 201 : 200);
+  });
 
 // ── Team ───────────────────────────────────────────────────────────────────
 

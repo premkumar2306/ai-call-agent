@@ -38,6 +38,7 @@
  *     before going to production in regulated markets.
  */
 
+import { businessForWhatsApp } from '../services/self-serve';
 import { Hono } from 'hono';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { HonoEnv } from '../middleware';
@@ -120,7 +121,11 @@ async function checkAndIncrementWaRateLimit(env: Env, phoneHash: string): Promis
 
 // ── Business type resolution ───────────────────────────────────────────────────
 
-async function resolveBusinessType(phoneNumberId: string, env: Env): Promise<string> {
+// The admin UI's mapping (whatsapp_numbers) first, then WA_PHONE_NUMBER_MAP,
+// then the default business.
+export async function resolveBusinessType(phoneNumberId: string, env: Env): Promise<string> {
+  const mapped = phoneNumberId ? await businessForWhatsApp(env, phoneNumberId) : null;
+  if (mapped) return mapped;
   if (env.WA_PHONE_NUMBER_MAP) {
     try {
       const map = JSON.parse(env.WA_PHONE_NUMBER_MAP) as Record<string, string>;

@@ -3,8 +3,12 @@ import { eq, and, desc, ne } from 'drizzle-orm';
 import type { HonoEnv } from '../middleware';
 import { withAdminKey, withBusinessAccess } from '../middleware';
 import { getSectors, getSector, upsertSector, updateSector, invalidateSectors, updateSectorVoice } from '../services/sector.service';
-import { parseBusinessPatch, parseService, serviceProductId } from '../services/accounts';
-import { isVertical } from '../services/verticals';
+import { parseAssistantName, parseBusinessPatch, parseService, serviceProductId } from '../services/accounts';
+import { assistantNameOf, isVertical } from '../services/verticals';
+import {
+  createResource, deleteWhatsAppNumber, isPhoneNumberId, listNumberRequests, listResources, listWhatsAppNumbers,
+  MAX_RESOURCES, parseResourceInput, resourceRowToInput, setNumberRequestStatus, updateResource, upsertWhatsAppNumber,
+} from '../services/self-serve';
 import { parseHoursRanges } from '../services/tool-router.service';
 import { parseVoiceInput, resolveVoiceSettings } from '../services/voice-language';
 import { getDb } from '../db/client';
@@ -27,11 +31,11 @@ interface SectorConfig {
   maxRecommendations: number;
 }
 
-function defaultConfig(name: string): SectorConfig {
+function defaultConfig(name: string, agentName: string): SectorConfig {
   return {
     storeName: name,
     greeting: `Welcome to ${name}! How can I help you today?`,
-    agentName: 'Mogi',
+    agentName,
     primaryColor: '#6c47ff',
     supportEmail: '',
     maxRecommendations: 3,
@@ -41,10 +45,13 @@ function defaultConfig(name: string): SectorConfig {
 const CONFIG_KEY = (sector: string) => `admin_config:${sector}`;
 
 async function getConfig(env: HonoEnv['Bindings'], sector: string): Promise<SectorConfig> {
-  const raw = await env.CACHE.get(CONFIG_KEY(sector));
-  if (raw) return JSON.parse(raw) as SectorConfig;
+  // The assistant's name lives on the business (sectors.assistant_name), so
+  // the greeting and the call prompt always say the same name.
   const meta = await getSector(env, sector);
-  return defaultConfig(meta?.name ?? sector);
+  const agentName = assistantNameOf(meta);
+  const raw = await env.CACHE.get(CONFIG_KEY(sector));
+  if (raw) return { ...(JSON.parse(raw) as SectorConfig), agentName };
+  return defaultConfig(meta?.name ?? sector, agentName);
 }
 
 async function putConfig(env: HonoEnv['Bindings'], sector: string, cfg: SectorConfig): Promise<void> {
@@ -228,6 +235,12 @@ adminRouter.put('/config/:sector', withBusinessAccess('owner', 'sector'), async 
   for (const key of Object.keys(existing) as (keyof SectorConfig)[]) {
     if (body && typeof body[key] === typeof existing[key]) (updated as any)[key] = body[key];
   }
+  if (updated.agentName !== existing.agentName) {
+    const name = parseAssistantName(updated.agentName);
+    if (name === undefined) return c.json({ success: false, error: 'Assistant name must be 2–30 letters' }, 400);
+    await updateSector(c.env, sector, { assistantName: name });
+    updated.agentName = name ?? assistantNameOf(null);
+  }
   await putConfig(c.env, sector, updated);
   return c.json({ success: true, data: updated });
 });
@@ -335,9 +348,79 @@ adminRouter.post('/resources', withAdminKey, async (c) => {
 
 // GET /admin/resources/:businessType — a business's bookable people, inactive included
 adminRouter.get('/resources/:businessType', withBusinessAccess('staff'), async (c) => {
-  const rows = await getDb(c.env.DB).select().from(resourcesTable)
-    .where(eq(resourcesTable.businessType, c.req.param('businessType') ?? ''));
-  return c.json({ success: true, data: rows });
+  return c.json({ success: true, data: await listResources(c.env, c.req.param('businessType') ?? '') });
+});
+
+// ── Practitioners, scoped to one business (owner's Doctors / Lawyers tab) ──
+// Ids are generated and every update is matched on (id, business), so one
+// business can never change another's people.
+
+// POST /admin/resources/:businessType { name, role?, hours, slotMinutes?, feeCents?, about?, categories? }
+adminRouter.post('/resources/:businessType', withBusinessAccess('owner'), async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
+  if (!(await getSector(c.env, businessType))) return c.json({ success: false, error: 'Unknown business' }, 404);
+  const input = parseResourceInput(await c.req.json().catch(() => null));
+  if (typeof input === 'string') return c.json({ success: false, error: input }, 400);
+  const row = await createResource(c.env, businessType, input);
+  if (!row) return c.json({ success: false, error: `A business can have up to ${MAX_RESOURCES} people` }, 403);
+  return c.json({ success: true, data: row }, 201);
+});
+
+// PUT /admin/resources/:businessType/:id — change any of the fields above, or isActive
+adminRouter.put('/resources/:businessType/:id', withBusinessAccess('owner'), async (c) => {
+  const businessType = c.req.param('businessType') ?? '';
+  const id = c.req.param('id') ?? '';
+  const [existing] = await getDb(c.env.DB).select().from(resourcesTable)
+    .where(and(eq(resourcesTable.id, id), eq(resourcesTable.businessType, businessType))).limit(1);
+  if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
+  const input = parseResourceInput(await c.req.json().catch(() => null), resourceRowToInput(existing));
+  if (typeof input === 'string') return c.json({ success: false, error: input }, 400);
+  return c.json({ success: true, data: await updateResource(c.env, businessType, id, input) });
+});
+
+// DELETE /admin/resources/:businessType/:id — deactivates (bookings keep referring to them)
+adminRouter.delete('/resources/:businessType/:id', withBusinessAccess('owner'), async (c) => {
+  const row = await updateResource(c.env, c.req.param('businessType') ?? '', c.req.param('id') ?? '', { isActive: false });
+  if (!row) return c.json({ success: false, error: 'Not found' }, 404);
+  return c.json({ success: true });
+});
+
+// ── WhatsApp numbers → business (whatsapp_numbers, migration 0018) ─────────
+
+adminRouter.get('/whatsapp-numbers', withAdminKey, async (c) => {
+  return c.json({ success: true, data: await listWhatsAppNumbers(c.env) });
+});
+
+// PUT /admin/whatsapp-numbers { phoneNumberId, businessType, label? }
+adminRouter.put('/whatsapp-numbers', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!isPhoneNumberId(body?.phoneNumberId)) return c.json({ success: false, error: 'phoneNumberId must be the numeric id from Meta' }, 400);
+  if (typeof body.businessType !== 'string' || !(await getSector(c.env, body.businessType))) {
+    return c.json({ success: false, error: `Unknown business: ${body?.businessType}` }, 404);
+  }
+  const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : null;
+  await upsertWhatsAppNumber(c.env, body.phoneNumberId, body.businessType, label);
+  return c.json({ success: true, data: { phoneNumberId: body.phoneNumberId, businessType: body.businessType, label } });
+});
+
+adminRouter.delete('/whatsapp-numbers/:id', withAdminKey, async (c) => {
+  if (!(await deleteWhatsAppNumber(c.env, c.req.param('id') ?? ''))) return c.json({ success: false, error: 'Not mapped' }, 404);
+  return c.json({ success: true });
+});
+
+// ── Phone-number requests from owners (number_requests, migration 0018) ────
+
+adminRouter.get('/number-requests', withAdminKey, async (c) => {
+  return c.json({ success: true, data: await listNumberRequests(c.env) });
+});
+
+// PATCH /admin/number-requests/:id { status: 'open' | 'done' }
+adminRouter.patch('/number-requests/:id', withAdminKey, async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const status = body?.status === 'done' ? 'done' : body?.status === 'open' ? 'open' : null;
+  if (!status) return c.json({ success: false, error: 'status must be open or done' }, 400);
+  if (!(await setNumberRequestStatus(c.env, c.req.param('id') ?? '', status))) return c.json({ success: false, error: 'Not found' }, 404);
+  return c.json({ success: true });
 });
 
 // GET /admin/products/:businessType — list products for a sector
