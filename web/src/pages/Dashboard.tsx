@@ -42,10 +42,12 @@ const inputStyle: React.CSSProperties = {
 
 export default function Dashboard({ sector, base, auth }: Props) {
   const [cfg, setCfg] = useState<SectorConfig>({
-    storeName: '', greeting: '', agentName: 'Mogi',
+    storeName: '', greeting: '', agentName: 'Avery',
     primaryColor: '#6c47ff', supportEmail: '', maxRecommendations: 3,
   });
   const [saving, setSaving] = useState(false);
+  // The phone line's language: a custom greeting is spoken exactly as typed.
+  const [voiceLanguage, setVoiceLanguage] = useState<string>('en');
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'error' | '' }>({ msg: '', type: '' });
 
   const showToast = (msg: string, type: 'ok' | 'error' = 'ok') => setToast({ msg, type });
@@ -63,6 +65,12 @@ export default function Dashboard({ sector, base, auth }: Props) {
   }, [sector, base, auth]);
 
   useEffect(() => { loadConfig(); }, [loadConfig]);
+  useEffect(() => {
+    setVoiceLanguage('en');
+    if (!sector || !Object.keys(auth).length) return;
+    fetch(`${base}/admin/sectors/${encodeURIComponent(sector)}/voice`, { headers: auth })
+      .then(r => r.json()).then(j => { if (j.success) setVoiceLanguage(j.data.language ?? 'en'); }).catch(() => {});
+  }, [sector, base, auth]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -72,8 +80,9 @@ export default function Dashboard({ sector, base, auth }: Props) {
         headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify(cfg),
       });
-      if (res.ok) showToast('Saved!');
-      else showToast('Save failed', 'error');
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) { showToast('Saved!'); if (json.data) setCfg(json.data); }
+      else showToast(json.error ?? 'Save failed', 'error');
     } catch {
       showToast('Save failed', 'error');
     } finally {
@@ -96,7 +105,8 @@ export default function Dashboard({ sector, base, auth }: Props) {
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Agent Name</label>
-            <input style={inputStyle} value={cfg.agentName} onChange={set('agentName')} placeholder="Mogi" />
+            <input style={inputStyle} value={cfg.agentName} onChange={set('agentName')} placeholder="Avery" maxLength={30} />
+            <p style={{ fontSize: 12, color: '#666', margin: '6px 0 0' }}>The name the assistant gives callers, on every call.</p>
           </div>
         </div>
 
@@ -108,6 +118,12 @@ export default function Dashboard({ sector, base, auth }: Props) {
             onChange={set('greeting')}
             placeholder="Welcome! How can I help you today?"
           />
+          {voiceLanguage !== 'en' && (
+            <p style={{ fontSize: 12, color: '#fbbf24', margin: '6px 0 0' }}>
+              Your phone line speaks {voiceLanguage === 'hi' ? 'Hindi' : 'Hinglish'}. The greeting is spoken exactly as typed, so write it in
+              {voiceLanguage === 'hi' ? ' Hindi (Devanagari), e.g. “शर्मा क्लिनिक में आपका स्वागत है।”' : ' Hinglish, with Hindi words in Devanagari, e.g. “शर्मा क्लिनिक में आपका स्वागत है! Appointment के लिए हम मदद कर सकते हैं।”'}
+            </p>
+          )}
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 18 }}>

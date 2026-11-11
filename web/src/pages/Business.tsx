@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../auth';
-import { BUSINESS_KINDS, COMMON_TIMEZONES, CURRENCIES, hoursFromApi, hoursProblem, hoursToApi, type WeekHours } from '../business';
+import { BUSINESS_KINDS, COMMON_TIMEZONES, CURRENCIES, SCRIPT_NOTE, hoursFromApi, hoursProblem, hoursToApi, verticalForKind, type WeekHours } from '../business';
+import { COUNTRIES, countryDefaults } from '../locale';
 import HoursEditor from '../components/HoursEditor';
 import { btn, card, h2, hint, input, label, msgStyle } from '../ui';
 
@@ -8,7 +9,7 @@ interface Props { sector: string; base: string; auth: Record<string, string>; ca
 
 interface Form {
   name: string; kind: string; address: string; phone: string; website: string; timezone: string;
-  currency: string; about: string; notifyEmail: string; capacity: string;
+  currency: string; about: string; notifyEmail: string; capacity: string; countryCode: string;
 }
 
 // The owner's view of what Avery knows about the business (PUT /admin/sectors/:key).
@@ -17,6 +18,8 @@ export default function Business({ sector, base, auth, canEdit, onRenamed }: Pro
   const [hours, setHours] = useState<WeekHours | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [savedKind, setSavedKind] = useState('');
+  const [savedCountry, setSavedCountry] = useState('');
 
   useEffect(() => {
     setForm(null); setMsg(null);
@@ -25,8 +28,10 @@ export default function Business({ sector, base, auth, canEdit, onRenamed }: Pro
         setForm({
           name: d.name ?? '', kind: d.kind ?? '', address: d.address ?? '', phone: d.phone ?? '', website: d.website ?? '',
           timezone: d.timezone ?? '', currency: d.currency ?? '', about: d.about ?? '', notifyEmail: d.notifyEmail ?? '',
-          capacity: String(d.capacity ?? 1),
+          capacity: String(d.capacity ?? 1), countryCode: d.countryCode ?? 'US',
         });
+        setSavedKind(d.kind ?? '');
+        setSavedCountry(d.countryCode ?? 'US');
         setHours(hoursFromApi(d.hours));
       })
       .catch(e => setMsg({ text: e.message, ok: false }));
@@ -36,17 +41,21 @@ export default function Business({ sector, base, auth, canEdit, onRenamed }: Pro
     if (!form || !hours) return;
     const p = hoursProblem(hours);
     if (p) { setMsg({ text: p, ok: false }); return; }
+    const kindChanged = !!form.kind && form.kind !== savedKind;
+    if (kindChanged && !confirm(`Change the business type to ${BUSINESS_KINDS[form.kind]}?\n\n${SCRIPT_NOTE[verticalForKind(form.kind)]}\n\nThis changes what Avery asks callers from the next call.`)) return;
     setSaving(true); setMsg(null);
     try {
       await api(base, `/admin/sectors/${encodeURIComponent(sector)}`, auth, {
         method: 'PUT',
         body: {
-          name: form.name, ...(form.kind ? { kind: form.kind } : {}), address: form.address, phone: form.phone,
+          name: form.name, ...(kindChanged ? { kind: form.kind } : {}), ...(form.countryCode !== savedCountry ? { country_code: form.countryCode } : {}), address: form.address, phone: form.phone,
           website: form.website, timezone: form.timezone, currency: form.currency, about: form.about,
           notifyEmail: form.notifyEmail, capacity: parseInt(form.capacity, 10) || 1, hours: hoursToApi(hours),
         },
       });
       setMsg({ text: 'Saved. Avery uses the new details from the next call.', ok: true });
+      setSavedKind(form.kind);
+      setSavedCountry(form.countryCode);
       onRenamed?.();
     } catch (e: any) {
       setMsg({ text: e.message, ok: false });
@@ -75,10 +84,18 @@ export default function Business({ sector, base, auth, canEdit, onRenamed }: Pro
           </select>
         </label>
       </div>
+      {form.kind && form.kind !== savedKind && <p style={{ ...hint, margin: 0, color: '#fbbf24' }}>Changing the type changes Avery's call script: {SCRIPT_NOTE[verticalForKind(form.kind)]}</p>}
       <label style={label}>Address<input style={input} maxLength={300} {...f('address')} /></label>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <label style={label}>Staff phone for transfers<input style={input} type="tel" placeholder="+91 98765 43210" {...f('phone')} /></label>
         <label style={label}>Website<input style={input} maxLength={200} {...f('website')} /></label>
+        <label style={label}>Country
+          <select style={input} value={form.countryCode} disabled={!canEdit}
+            onChange={e => { const d = countryDefaults(e.target.value, form.timezone); setForm({ ...form, countryCode: d.countryCode, currency: d.currency, timezone: d.timezone }); }}>
+            {!COUNTRIES[form.countryCode] && <option value={form.countryCode}>{form.countryCode}</option>}
+            {Object.entries(COUNTRIES).map(([code, c]) => <option key={code} value={code}>{c.flag} {c.name} ({c.dialCode})</option>)}
+          </select>
+        </label>
         <label style={label}>Time zone<select style={input} {...f('timezone')}>{tzs.map(t => <option key={t}>{t}</option>)}</select></label>
         <label style={label}>Currency<select style={input} {...f('currency')}>{curs.map(c => <option key={c}>{c}</option>)}</select></label>
         <label style={label}>Booking &amp; message emails go to<input style={input} type="email" {...f('notifyEmail')} /></label>

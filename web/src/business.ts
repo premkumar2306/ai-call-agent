@@ -11,18 +11,57 @@ export type WeekHours = Record<DayKey, DayHours>;
 
 export const BUSINESS_KINDS: Record<string, string> = {
   clinic: 'Clinic / doctor', dental: 'Dental clinic', salon: 'Salon / barber', spa: 'Spa / wellness',
-  auto_shop: 'Auto repair shop', fitness: 'Gym / fitness studio', vet: 'Veterinary clinic', other: 'Other',
+  auto_shop: 'Auto repair shop', fitness: 'Gym / fitness studio', vet: 'Veterinary clinic', lawyer: 'Law firm / advocate', other: 'Other',
 };
 
+// Mirrors verticalForKind (worker/src/services/verticals.ts): the call script a business type gets.
+export function verticalForKind(kind: string | null | undefined): string {
+  switch (kind) {
+    case 'clinic': case 'dental': return 'clinic';
+    case 'lawyer': return 'legal';
+    case 'auto_shop': case null: case undefined: case '': return 'general';
+    default: return 'appointments';
+  }
+}
+
+/** What the people callers book with are called, or null when the script books none (auto shop). */
+export function practitionerWords(vertical: string | null | undefined, kind: string | null | undefined): { one: string; many: string } | null {
+  if (vertical === 'clinic') return kind === 'dental' ? { one: 'Dentist', many: 'Dentists' } : { one: 'Doctor', many: 'Doctors' };
+  if (vertical === 'legal') return { one: 'Lawyer', many: 'Lawyers' };
+  if (vertical === 'appointments') return { one: 'Team member', many: 'Team members' };
+  return null;
+}
+
+/** What each script says when the business type changes to it. */
+export const SCRIPT_NOTE: Record<string, string> = {
+  clinic: 'Avery will talk like a clinic front desk: patient details, doctors\' fees, and medical safety rules (no advice; emergencies to 112).',
+  legal: 'Avery will talk like a law firm\'s front office: matter type, the other side\'s name for conflict checks, no legal advice, urgent matters put through.',
+  appointments: 'Avery will book appointments without vehicle questions.',
+  general: 'Avery will talk like an auto repair shop (asks about the vehicle).',
+};
+
+// Service categories with a special meaning in a script: a consultation is
+// priced by the doctor's or lawyer's own fee; a lawyer's practice areas.
+export const PRACTICE_AREAS: [string, string][] = [
+  ['FAMILY', 'Family'], ['PROPERTY', 'Property'], ['CRIMINAL', 'Criminal'], ['CORPORATE', 'Corporate / business'],
+  ['CONSUMER', 'Consumer'], ['LABOUR', 'Employment / labour'], ['CIVIL', 'Civil'], ['OTHER_MATTERS', 'Other matters'],
+];
+export function serviceCategories(vertical: string | null | undefined, kind?: string | null): [string, string][] {
+  if (vertical === 'legal') return [['SERVICES', 'General (own price)'], ['CONSULTATION', 'Consultation (lawyer\'s fee)'], ...PRACTICE_AREAS.map(([k, v]) => [k, `${v} consultation (lawyer's fee)`] as [string, string])];
+  if (vertical === 'clinic') return [['SERVICES', 'General (own price)'], ['CONSULTATION', `Consultation (${kind === 'dental' ? 'dentist' : 'doctor'}'s fee)`]];
+  return [];
+}
+
 // Starting points so the services step is mostly "fill in prices".
-export const SERVICE_TEMPLATES: Record<string, { name: string; durationMinutes: number }[]> = {
-  clinic: [{ name: 'General consultation', durationMinutes: 15 }, { name: 'Follow-up visit', durationMinutes: 10 }, { name: 'Health check-up', durationMinutes: 45 }],
-  dental: [{ name: 'Consultation', durationMinutes: 20 }, { name: 'Scaling & polishing', durationMinutes: 45 }, { name: 'Filling', durationMinutes: 45 }],
+export const SERVICE_TEMPLATES: Record<string, { name: string; durationMinutes: number; category?: string }[]> = {
+  clinic: [{ name: 'General consultation', durationMinutes: 15, category: 'CONSULTATION' }, { name: 'Follow-up visit', durationMinutes: 10 }, { name: 'Health check-up', durationMinutes: 45 }],
+  dental: [{ name: 'Consultation', durationMinutes: 20, category: 'CONSULTATION' }, { name: 'Scaling & polishing', durationMinutes: 45 }, { name: 'Filling', durationMinutes: 45 }],
   salon: [{ name: 'Haircut', durationMinutes: 30 }, { name: 'Hair colour', durationMinutes: 90 }, { name: 'Beard trim', durationMinutes: 15 }],
   spa: [{ name: 'Full body massage (60 min)', durationMinutes: 60 }, { name: 'Facial', durationMinutes: 45 }],
   auto_shop: [{ name: 'Oil change', durationMinutes: 45 }, { name: 'General service', durationMinutes: 180 }, { name: 'Brake inspection', durationMinutes: 30 }],
   fitness: [{ name: 'Trial session', durationMinutes: 60 }, { name: 'Personal training session', durationMinutes: 60 }],
   vet: [{ name: 'Consultation', durationMinutes: 20 }, { name: 'Vaccination', durationMinutes: 15 }],
+  lawyer: [{ name: 'Consultation', durationMinutes: 30, category: 'CONSULTATION' }, { name: 'Document drafting (rent agreement, affidavit)', durationMinutes: 30 }],
   other: [{ name: 'Appointment', durationMinutes: 30 }],
 };
 

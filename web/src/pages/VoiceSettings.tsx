@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 
 interface Props {
   base: string;
-  adminKey: string;
+  /** authHeaders(): the operator's admin key or an owner's sign-in. */
+  auth: Record<string, string>;
   sectors: { key: string; name: string }[];
 }
 
@@ -25,7 +26,7 @@ const LANGUAGES = [
 ];
 
 // Per-business phone-line language and speech providers (PUT /admin/sectors/:key/voice).
-export default function VoiceSettings({ base, adminKey, sectors }: Props) {
+export default function VoiceSettings({ base, auth, sectors }: Props) {
   const [business, setBusiness] = useState('');
   const [voice, setVoice] = useState<Voice | null>(null);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -35,15 +36,15 @@ export default function VoiceSettings({ base, adminKey, sectors }: Props) {
 
   useEffect(() => {
     setVoice(null); setMsg(null);
-    if (!adminKey || !business) return;
-    fetch(`${base}/admin/sectors/${encodeURIComponent(business)}/voice`, { headers: { 'X-Admin-Key': adminKey } })
+    if (!Object.keys(auth).length || !business) return;
+    fetch(`${base}/admin/sectors/${encodeURIComponent(business)}/voice`, { headers: auth })
       .then(r => r.json())
       .then(json => {
         if (!json.success) throw new Error(json.error ?? 'Failed to load');
         setVoice(json.data);
       })
-      .catch((e: any) => setMsg({ text: e.message === 'Admin key required' ? 'Enter the admin key (top right) to manage this.' : e.message, ok: false }));
-  }, [base, adminKey, business]);
+      .catch((e: any) => setMsg({ text: e.message === 'Admin key required' ? 'Sign in to manage this.' : e.message, ok: false }));
+  }, [base, auth, business]);
 
   const set = (patch: Partial<Voice>) => setVoice(v => (v ? { ...v, ...patch } : v));
 
@@ -53,7 +54,7 @@ export default function VoiceSettings({ base, adminKey, sectors }: Props) {
     try {
       const res = await fetch(`${base}/admin/sectors/${encodeURIComponent(business)}/voice`, {
         method: 'PUT',
-        headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+        headers: { ...auth, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           voice_language: voice.language,
           stt_provider: voice.sttProvider,

@@ -11,20 +11,24 @@ import Business from './pages/Business';
 import Services from './pages/Services';
 import Team from './pages/Team';
 import Billing from './pages/Billing';
+import Practitioners from './pages/Practitioners';
+import PrivacySettings from './pages/PrivacySettings';
+import VoiceSettings from './pages/VoiceSettings';
+import { practitionerWords, verticalForKind } from './business';
 import { loadAdminKey, saveAdminKey } from './adminKey';
 import { ApiError, api, authHeaders, loadOwnerToken, saveOwnerToken, type Auth, type Me } from './auth';
 
 // Operator (admin key) sees every tab and every business; owners and staff see
 // their own businesses, and staff only the tabs that don't change settings.
-const ADMIN_TABS = ['Customize', 'Voice Test', 'Calls', 'Business', 'Services', 'Team', 'WhatsApp', 'Calendar', 'Billing', 'Settings', 'Overview'] as const;
-const OWNER_TABS = ['Calls', 'Business', 'Services', 'Calendar', 'Team', 'Billing', 'Voice Test', 'Customize'] as const;
-const STAFF_TABS = ['Calls', 'Business', 'Services', 'Voice Test'] as const;
+const ADMIN_TABS = ['Customize', 'Voice Test', 'Calls', 'Business', 'Services', 'Practitioners', 'Team', 'WhatsApp', 'Calendar', 'Billing', 'Settings', 'Overview'] as const;
+const OWNER_TABS = ['Calls', 'Business', 'Services', 'Practitioners', 'Calendar', 'Team', 'Billing', 'Settings', 'Voice Test', 'Customize'] as const;
+const STAFF_TABS = ['Calls', 'Business', 'Services', 'Practitioners', 'Voice Test'] as const;
 type Tab = typeof ADMIN_TABS[number];
 
 const BASE = import.meta.env.VITE_API_URL
   || 'https://mogi-platform.premkumar-2ba.workers.dev';
 
-interface SectorOption { key: string; name: string }
+interface SectorOption { key: string; name: string; kind?: string | null }
 
 // Calendar OAuth sends the browser back here with
 // ?calendar=connected|error&business=<key>[&reason=…]. Read it once, then
@@ -87,7 +91,10 @@ export default function App() {
 
   const sectors: SectorOption[] = adminKey ? allSectors : (me?.businesses ?? []);
   const role = adminKey ? 'admin' : me?.businesses.find(b => b.key === sector)?.role;
-  const tabs: readonly Tab[] = role === 'admin' ? ADMIN_TABS : role === 'owner' ? OWNER_TABS : STAFF_TABS;
+  const selectedKind = sectors.find(s => s.key === sector)?.kind;
+  const roleTabs: readonly Tab[] = role === 'admin' ? ADMIN_TABS : role === 'owner' ? OWNER_TABS : STAFF_TABS;
+  // An auto shop books by time slot, with no doctors or lawyers to manage.
+  const tabs = useMemo(() => roleTabs.filter(t => t !== 'Practitioners' || selectedKind !== 'auto_shop'), [roleTabs, selectedKind]);
 
   // Keep the selected business (and tab) valid for whoever is signed in.
   useEffect(() => {
@@ -98,6 +105,9 @@ export default function App() {
     }
   }, [sectors, sector, adminKey]);
   useEffect(() => { if (role && !tabs.includes(tab)) setTab(tabs[0]); }, [role, tabs, tab]);
+
+  // "Doctors", "Dentists", "Lawyers"… for the business's type.
+  const tabLabel = (t: Tab) => t !== 'Practitioners' ? t : (selectedKind ? practitionerWords(verticalForKind(selectedKind), selectedKind)?.many : null) ?? 'Practitioners';
 
   const header = (right: React.ReactNode) => (
     <header style={{ background: '#12121a', borderBottom: '1px solid #222', padding: '16px 32px', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
@@ -173,7 +183,7 @@ export default function App() {
               color: tab === t ? '#fff' : '#888',
             }}
           >
-            {t}
+            {tabLabel(t)}
           </button>
         ))}
       </div>
@@ -183,6 +193,7 @@ export default function App() {
       {tab === 'Calls' && <Calls base={BASE} auth={headers} sectors={sectors} />}
       {tab === 'Business' && sector && <Business sector={sector} base={BASE} auth={headers} canEdit={role !== 'staff'} onRenamed={loadMe} />}
       {tab === 'Services' && sector && <Services sector={sector} base={BASE} auth={headers} canEdit={role !== 'staff'} />}
+      {tab === 'Practitioners' && sector && <Practitioners key={sector} sector={sector} base={BASE} auth={headers} canEdit={role !== 'staff'} />}
       {tab === 'Team' && sector && <Team sector={sector} base={BASE} auth={headers} myUserId={me?.user.id} />}
       {tab === 'WhatsApp' && <WhatsApp sector={sector} base={BASE} auth={headers} />}
       {tab === 'Calendar' && sector && (
@@ -195,10 +206,18 @@ export default function App() {
         />
       )}
       {tab === 'Billing' && sector && <Billing key={sector} sector={sector} base={BASE} auth={headers} />}
-      {tab === 'Settings' && (
+      {tab === 'Settings' && auth.kind === 'admin' && (
         <div style={{ display: 'grid', gap: 24 }}>
           <Settings base={BASE} adminKey={adminKey} sectors={sectors} />
-          <LocaleSettings base={BASE} adminKey={adminKey} sectors={sectors} />
+          <LocaleSettings base={BASE} auth={headers} sectors={sectors} />
+        </div>
+      )}
+      {/* The owner's settings for the selected business, on their own login. */}
+      {tab === 'Settings' && auth.kind === 'user' && sector && (
+        <div key={sector} style={{ display: 'grid', gap: 24 }}>
+          <VoiceSettings base={BASE} auth={headers} sectors={sectors.filter(s => s.key === sector)} />
+          <PrivacySettings base={BASE} auth={headers} sectors={sectors.filter(s => s.key === sector)} />
+          <LocaleSettings base={BASE} auth={headers} sectors={sectors.filter(s => s.key === sector)} />
         </div>
       )}
       {tab === 'Overview' && <Overview />}

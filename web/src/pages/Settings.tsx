@@ -3,6 +3,7 @@ import { COUNTRIES, countryDefaults } from '../locale';
 import PrivacySettings from './PrivacySettings';
 import PhoneNumbers from './PhoneNumbers';
 import VoiceSettings from './VoiceSettings';
+import { NumberRequests, WhatsAppNumbers } from './Operator';
 
 interface Props {
   base: string;
@@ -100,9 +101,11 @@ export default function Settings({ base, adminKey, sectors }: Props) {
       </div>
       {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
     </div>
-    <PrivacySettings base={base} adminKey={adminKey} sectors={sectors} />
+    <PrivacySettings base={base} auth={{ 'X-Admin-Key': adminKey }} sectors={sectors} />
     <PhoneNumbers base={base} adminKey={adminKey} sectors={sectors} />
-    <VoiceSettings base={base} adminKey={adminKey} sectors={sectors} />
+    <WhatsAppNumbers base={base} adminKey={adminKey} sectors={sectors} />
+    <NumberRequests base={base} adminKey={adminKey} sectors={sectors} />
+    <VoiceSettings base={base} auth={{ 'X-Admin-Key': adminKey }} sectors={sectors} />
     </div>
   );
 }
@@ -128,7 +131,8 @@ function preview(f: { currency: string; locale: string; timezone: string }): str
   }
 }
 
-export function LocaleSettings({ base, adminKey, sectors }: Props) {
+// Works on the operator's admin key or an owner's sign-in (authHeaders()).
+export function LocaleSettings({ base, auth, sectors }: { base: string; auth: Record<string, string>; sectors: { key: string; name: string }[] }) {
   const [key, setKey] = useState('');
   const [record, setRecord] = useState<SectorRecord | null>(null);
   const [form, setForm] = useState({ currency: 'USD', locale: 'en-US', countryCode: 'US', timezone: 'America/Chicago' });
@@ -139,8 +143,8 @@ export function LocaleSettings({ base, adminKey, sectors }: Props) {
 
   useEffect(() => {
     setRecord(null); setMsg(null);
-    if (!key || !adminKey) return;
-    fetch(`${base}/admin/sectors/${encodeURIComponent(key)}`, { headers: { 'X-Admin-Key': adminKey } })
+    if (!key || !Object.keys(auth).length) return;
+    fetch(`${base}/admin/sectors/${encodeURIComponent(key)}`, { headers: auth })
       .then(r => r.json())
       .then(json => {
         if (!json.success) throw new Error(json.error ?? 'Failed to load');
@@ -149,22 +153,17 @@ export function LocaleSettings({ base, adminKey, sectors }: Props) {
         setForm({ currency: r.currency || 'USD', locale: r.locale || 'en-US', countryCode: r.countryCode || 'US', timezone: r.timezone || 'America/Chicago' });
       })
       .catch((e: Error) => setMsg({ text: e.message, ok: false }));
-  }, [base, adminKey, key]);
+  }, [base, auth, key]);
 
   const save = async () => {
     if (!record) return;
     setSaving(true); setMsg(null);
     try {
-      // POST /admin/sectors replaces the whole record, so send the rest back unchanged.
-      const res = await fetch(`${base}/admin/sectors`, {
-        method: 'POST',
-        headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key, name: record.name, model: record.model, categories: record.categories, hours: record.hours,
-          address: record.address, phone: record.phone, website: record.website, about: record.about,
-          notify_email: record.notifyEmail, capacity: record.capacity,
-          currency: form.currency, locale: form.locale, country_code: form.countryCode, timezone: form.timezone,
-        }),
+      // PUT changes only these fields (owners and the operator).
+      const res = await fetch(`${base}/admin/sectors/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currency: form.currency, locale: form.locale, country_code: form.countryCode, timezone: form.timezone }),
       });
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error ?? 'Save failed');
@@ -189,7 +188,7 @@ export function LocaleSettings({ base, adminKey, sectors }: Props) {
         How this business's prices, dates and phone numbers are spoken and written — on calls, WhatsApp, texts, emails and calendar events.
         Prices in the catalog are in the currency's smallest unit (cents, paise).
       </p>
-      {!adminKey ? <p style={{ fontSize: 13, color: '#f87171', margin: 0 }}>Enter the admin key (top right) to manage this.</p> : (
+      {!Object.keys(auth).length ? <p style={{ fontSize: 13, color: '#f87171', margin: 0 }}>Sign in to manage this.</p> : (
         <>
           <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', marginBottom: 12 }}>
             <label style={label}>Business
