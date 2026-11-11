@@ -40,3 +40,4 @@ npm-debug.log*
 .vscode/
 .idea/
 worker/svt/results/
+worker/e2e/.state/

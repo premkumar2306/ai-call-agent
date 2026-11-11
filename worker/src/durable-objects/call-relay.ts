@@ -24,6 +24,7 @@ import {
 import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/phone-numbers';
 import { UsageMeter } from '../services/billing/meter';
 import { recordUsage } from '../services/billing/service';
+import { installProviderMock } from '../utils/provider-mock';
 
 // One CallRelay instance per phone call: carrier media stream → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
@@ -198,6 +199,7 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    installProviderMock(this.env);   // e2e tests only; a no-op in production
     const url = new URL(request.url);
     // Query-string businessType is a fallback for our own synthetic test harness
     // (scripts/simulate-call.mjs), which connects with the full URL directly.

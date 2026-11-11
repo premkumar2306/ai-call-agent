@@ -19,6 +19,7 @@ import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/bill
 import { closePeriod } from './services/billing/service';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
+import { installProviderMock } from './utils/provider-mock';
 import { privacyAdminRouter } from './routes/privacy';
 import { applyRetention } from './services/retention.service';
 
@@ -116,4 +117,13 @@ async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionCo
   );
 }
 
-export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;
+export default {
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => {
+    installProviderMock(env);
+    return app.fetch(request, env, ctx);
+  },
+  scheduled: (event: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    installProviderMock(env);
+    return scheduled(event, env, ctx);
+  },
+} satisfies ExportedHandler<Env>;

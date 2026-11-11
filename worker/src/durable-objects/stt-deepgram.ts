@@ -170,9 +170,19 @@ export function isEchoOf(heard: string, spoken: string, lang: VoiceLanguage = 'e
     : (s: string) => s.toLowerCase().replace(/[^\p{L}\p{M}\p{N}'\s]/gu, ' ').split(/\s+/).filter(Boolean);
   const h = norm(heard);
   if (h.length < 4) return false;
-  const said = new Set(norm(spoken));
+  const spokenWords = norm(spoken);
+  const said = new Set(spokenWords);
   if (!said.size) return false;
-  return h.filter(w => said.has(w)).length / h.length >= 0.75;
+  if (h.filter(w => said.has(w)).length / h.length < 0.75) return false;
+  if (lang === 'en') return true;
+  // Hindi's short function words (मैं, से, कर, है, हूँ…) are in nearly every
+  // sentence, so a caller's own question ("क्या मैं किसी से बात कर सकता हूँ?")
+  // shares most of its words with whatever the assistant just said. An echo
+  // also keeps the assistant's word order: require most word pairs to match.
+  const pairs = (ws: string[]) => ws.slice(1).map((w, i) => `${ws[i]} ${w}`);
+  const saidPairs = new Set(pairs(spokenWords));
+  const heardPairs = pairs(h);
+  return heardPairs.filter(p => saidPairs.has(p)).length / heardPairs.length >= 0.6;
 }
 
 /**
