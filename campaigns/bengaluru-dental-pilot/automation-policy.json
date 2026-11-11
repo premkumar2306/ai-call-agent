@@ -1,0 +1,24 @@
+{
+  "campaignId": "bengaluru-dental-pilot",
+  "sender": "premkumar@deskzen.in",
+  "timezone": "Asia/Kolkata",
+  "mode": "follow_up_only",
+  "limits": {
+    "maxMessagesPerRun": 10,
+    "maxFollowUpsPerContact": 1,
+    "followUpDelayDays": 4
+  },
+  "requirements": {
+    "publicBusinessEmailOnly": true,
+    "includeOptOut": true,
+    "verifySentItems": true,
+    "recordDeliveryFailures": true
+  },
+  "skipStatuses": [
+    "bounced",
+    "replied",
+    "positive_reply",
+    "opted_out",
+    "do_not_contact"
+  ]
+}
