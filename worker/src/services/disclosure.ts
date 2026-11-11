@@ -60,11 +60,14 @@ export function isIndianBusiness(meta: CountryAware | null | undefined): boolean
   return meta.timezone === 'Asia/Kolkata' || meta.timezone === 'Asia/Calcutta' || meta.currency?.toUpperCase() === 'INR';
 }
 
-/** The explicit per-business setting wins; otherwise on only in India. */
+/**
+ * The explicit per-business setting wins; otherwise on in India, and on for
+ * law firms anywhere (callers share confidential matters).
+ */
 export function disclosureEnabled(meta: CountryAware | null | undefined): boolean {
   if (!meta) return false;
   if (typeof meta.aiDisclosure === 'boolean') return meta.aiDisclosure;
-  return isIndianBusiness(meta);
+  return isIndianBusiness(meta) || meta.vertical === 'legal';
 }
 
 export function disclosureText(meta: SectorMeta | null | undefined): string {

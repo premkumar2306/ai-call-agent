@@ -46,6 +46,8 @@ export interface SectorMeta {
   voice?: VoiceSettings;
   // What kind of business (clinic, salon, auto_shop…), set by the onboarding wizard.
   kind?: string;
+  // The assistant's spoken name (0018). Unset = "Avery" (assistantNameOf).
+  assistantName?: string;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */

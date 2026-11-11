@@ -164,10 +164,168 @@ const CLINIC: Vertical = {
   },
 };
 
-export const VERTICALS: Record<string, Vertical> = { general: GENERAL, clinic: CLINIC };
+// Salons, spas, gyms, vets and any other appointment business: the general
+// booking flow without the auto-shop wording (no vehicle, no "what are you
+// driving?"). Team members can be bookable resources with their own hours.
+const APPOINTMENTS: Vertical = {
+  key: 'appointments',
+  place: 'business',
+  desk: 'the team',
+  quotePrice: 'the exact price is confirmed at the visit',
+  bookingFields: [],
+  requiredAnyOf: [],
+  askMissing: 'Can I get a few details for the booking?',
+  askName: 'Can I get your name for the booking?',
+  customerNameDescription: "The caller's name, as they said it.",
+  notesDescription: 'Anything the team should know (requests, preferences).',
+  updateNotesDescription: 'Requests or preferences for the team.',
+  resources: {
+    param: 'staff_id',
+    noun: 'team member',
+    heading: "Team (book with the team member's [staff_id])",
+    feeCategories: [],
+    feeText: 'price depends on the team member',
+    feeLabel: 'fee',
+  },
+  prompt: {
+    priceRule: `- Price questions: say the service's listed price plainly. If something has no fixed price, say the exact price is confirmed at the visit, and offer to book it or take a message so someone calls them back with the price.`,
+    unknownRule: `- If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so someone from the team calls them back (or connect them, if they'd rather talk now). Never invent facts, prices or policies.`,
+    booking1: `1. Work out which service they need from the profile. If they ask for a team member by name, book with that person; otherwise leave it open so the earliest free person is offered. If you're unsure which service fits, pick the closest one and put what they said in notes.`,
+    booking2: `2. When they want to come in, call check_availability with the service's [id], the staff_id if they want a particular person, plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns. If it says requested_open, book that requested_slot in the same turn — they already chose it.`,
+    booking3: `3. Once they've picked a time (not before — don't ask for details while they're still asking questions), get their name in one short question, if you don't already have it from this call. Their callback number is the one they're calling from; only ask for a number if book_appointment says it needs one.`,
+    corrections: `- Corrections after booking (name misheard, different number, requests): update_booking on that booking — not a message.`,
+    afterBooking: `5. After booking, you may mention the profile's "pairs well with" add-on once, then ask if there's anything else.`,
+    transfer: `- Wants a person, or needs something only staff can do: transfer_to_staff. If the business is closed or there's no answer, take_message instead.`,
+    cantAnswer: `- Questions you can't answer from the profile (exact quotes, special requests): offer to take_message so someone from the team calls them back, instead of telling them to call.`,
+  },
+};
 
-export function getVertical(meta: Pick<SectorMeta, 'vertical'> | null | undefined): Vertical {
-  return (meta?.vertical && VERTICALS[meta.vertical]) || GENERAL;
+// Practice areas a law firm's lawyers (resources) can be booked for. A
+// consultation in any of them costs that lawyer's consultation fee.
+export const PRACTICE_AREAS = ['FAMILY', 'PROPERTY', 'CRIMINAL', 'CORPORATE', 'CONSUMER', 'LABOUR', 'CIVIL', 'OTHER_MATTERS'] as const;
+const MATTER_TYPES = ['family', 'property', 'criminal', 'corporate', 'consumer', 'labour', 'other'];
+
+// Law firms and advocates. Bookings are a consultation with a lawyer (a
+// resource with their own hours, fee and practice areas). The receptionist
+// never gives legal advice or promotes the firm (Bar Council of India rules
+// bar advocates from advertising or soliciting), keeps case details to one
+// line, and puts urgent matters (arrest, a court date within 48 hours,
+// domestic violence) straight through to the firm.
+const LEGAL: Vertical = {
+  key: 'legal',
+  place: 'firm',
+  desk: 'the office',
+  quotePrice: 'the lawyer confirms any fees beyond the consultation',
+  bookingFields: [
+    {
+      key: 'client_status',
+      label: 'New or existing client',
+      schema: { type: 'string', enum: ['new', 'existing'], description: 'Whether the caller is already a client of this firm.' },
+    },
+    {
+      key: 'matter_type',
+      label: 'Matter type',
+      schema: { type: 'string', enum: MATTER_TYPES, description: 'The kind of legal matter, from what the caller said.' },
+    },
+    {
+      key: 'matter_summary',
+      label: 'Short description',
+      schema: { type: 'string', description: 'One line in the caller\'s own words (e.g. "dispute with landlord over deposit"). Never more detail than that, and never an opinion on it.' },
+    },
+    {
+      key: 'opposing_party',
+      label: 'Opposing party (for conflict check)',
+      schema: { type: 'string', description: 'Name of the other side (person or company), if the caller knows it — the firm checks it for conflicts of interest.' },
+    },
+    {
+      key: 'urgency',
+      label: 'Urgency',
+      schema: { type: 'string', enum: ['routine', 'urgent'], description: 'urgent for an arrest or police custody, a court date within 48 hours, or domestic violence; otherwise routine.' },
+    },
+  ],
+  requiredAnyOf: [['matter_type']],
+  askMissing: 'What kind of matter is it — for example family, property, consumer or something else?',
+  askName: 'Can I get your name for the consultation?',
+  customerNameDescription: "The client's name, as the caller said it.",
+  notesDescription: 'Practical notes for the office only (e.g. prefers a call in the evening, needs an interpreter). Never case details or an opinion.',
+  updateNotesDescription: 'Practical notes for the office. Never case details or an opinion.',
+  resources: {
+    param: 'lawyer_id',
+    noun: 'lawyer',
+    heading: 'Lawyers (book with the lawyer\'s [lawyer_id])',
+    feeCategories: ['CONSULTATION', ...PRACTICE_AREAS],
+    feeText: 'fee depends on the lawyer',
+    feeLabel: 'consultation fee',
+  },
+  prompt: {
+    priceRule: `- Fee questions: a consultation costs that lawyer's consultation fee (listed under Lawyers); other services list their own price. Say the amount plainly. Never quote or estimate any other fee (case fees, retainers, court costs) — say the lawyer discusses fees at the consultation.`,
+    unknownRule: `- If the profile doesn't cover something, say you can't confirm that from here and offer to take a message so the office calls them back (or connect them, if they'd rather talk now). Never invent facts, fees or policies.`,
+    booking1: `1. Work out which lawyer and which consultation. If they ask for a lawyer by name, use that lawyer. Otherwise pick the consultation for their kind of matter and leave the lawyer open so the earliest free lawyer who handles it is offered.`,
+    booking2: `2. When they want a consultation, call check_availability with the service's [id], the lawyer_id if they want a particular lawyer, plus preferred_date (YYYY-MM-DD from the dates below), time_of_day and preferred_time if they mentioned them. Offer the times it returns (each says which lawyer). If it says requested_open, book that requested_slot in the same turn — they already chose it.`,
+    booking3: `3. Once they've picked a time (not before — don't ask for details while they're still asking questions), get the client's name, the kind of matter, a one-line description, and whether they are a new or existing client — in one or two short questions, skipping anything you already have. Ask for the other side's name too ("so the firm can check for conflicts") — if they don't know or won't say, that's fine. Their callback number is the one they're calling from; only ask for a number if book_appointment says it needs one.`,
+    corrections: `- Corrections after booking (name misheard, different number, kind of matter, other side's name): update_booking on that booking — not a message.`,
+    afterBooking: `5. After booking, ask if there's anything else. Don't suggest extra services.`,
+    transfer: `- Wants a person, or needs something only the office can do (documents, case updates, a lawyer calling them back): transfer_to_staff. If the office is closed or there's no answer, take_message instead.`,
+    cantAnswer: `- Questions you can't answer from the profile (case status, documents, special requests): offer to take_message so the office calls them back, instead of telling them to call.`,
+    extra: `LEGAL SAFETY (this overrides everything above):
+- You are a receptionist, not a lawyer. Never give legal advice: no opinion on whether they have a case, its merits or chances, what the law says, what they should do, or how it will turn out. Never promise or suggest a result. If asked, say kindly that the lawyer will advise them at the consultation.
+- Confidentiality: ask only for a one-line description of the matter. Don't ask for or note details of the case; if they start explaining, say gently that the lawyer will discuss it with them in confidence.
+- Fees: only the consultation fees listed here. Never quote, estimate or compare any other fee.
+- No promotion: never sell or praise the firm, compare it with others, or claim it is the best, most successful or most experienced. Advocates in India may not advertise or solicit work (Bar Council of India rules), so answer factual questions only (hours, address, who handles which kind of matter, consultation fees).
+- Urgent matters — someone arrested or in police custody, a court hearing or deadline within 48 hours, or domestic violence: don't book a routine consultation. Offer to connect them to the office right now (transfer_to_staff); if it's closed or no one answers, take an urgent message (take_message, saying it is urgent). If anyone is in danger right now, first tell them to call 112.`,
+  },
+};
+
+// Dental practices use the clinic vertical with dentist wording. Tool
+// argument names (doctor_id) stay the same.
+function withDentistWording(v: Vertical): Vertical {
+  const keep = '\u0000';
+  const json = JSON.stringify(v)
+    .replace(/doctor_id/g, keep)
+    .replace(/\bdoctors\b/g, 'dentists').replace(/\bdoctor\b/g, 'dentist')
+    .replace(/\bDoctors\b/g, 'Dentists').replace(/\bDoctor\b/g, 'Dentist')
+    .replace(new RegExp(keep, 'g'), 'doctor_id');
+  return JSON.parse(json) as Vertical;
+}
+const DENTAL = withDentistWording(CLINIC);
+
+export const VERTICALS: Record<string, Vertical> = { general: GENERAL, clinic: CLINIC, appointments: APPOINTMENTS, legal: LEGAL };
+
+// What a neutral appointment business calls itself ("our salon").
+const APPOINTMENT_PLACES: Record<string, string> = { salon: 'salon', spa: 'spa', fitness: 'studio', vet: 'clinic' };
+
+/**
+ * The business's vertical. A few kinds reword it: a dental practice says
+ * "dentist", a salon says "our salon". A business without a vertical gets
+ * `general`, unchanged.
+ */
+export function getVertical(meta: Pick<SectorMeta, 'vertical' | 'kind'> | null | undefined): Vertical {
+  const v = (meta?.vertical && VERTICALS[meta.vertical]) || GENERAL;
+  if (v === CLINIC && meta?.kind === 'dental') return DENTAL;
+  if (v === APPOINTMENTS && meta?.kind && APPOINTMENT_PLACES[meta.kind]) return { ...v, place: APPOINTMENT_PLACES[meta.kind] };
+  return v;
+}
+
+/** The vertical a newly chosen business type (sectors.kind) runs on. */
+export function verticalForKind(kind: string): string {
+  switch (kind) {
+    case 'clinic': case 'dental': return 'clinic';
+    case 'lawyer': return 'legal';
+    case 'auto_shop': return 'general';
+    default: return 'appointments';
+  }
+}
+
+/** What the business calls the people callers book with: "Doctors", "Dentists", "Lawyers"… null if it books none. */
+export function resourceNoun(meta: Pick<SectorMeta, 'vertical' | 'kind'> | null | undefined): string | null {
+  return getVertical(meta).resources?.noun ?? null;
+}
+
+export const DEFAULT_ASSISTANT_NAME = 'Avery';
+
+/** The assistant's spoken name for this business. */
+export function assistantNameOf(meta: Pick<SectorMeta, 'assistantName'> | null | undefined): string {
+  return meta?.assistantName?.trim() || DEFAULT_ASSISTANT_NAME;
 }
 
 export function isVertical(key: unknown): key is string {

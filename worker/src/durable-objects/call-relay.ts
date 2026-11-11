@@ -9,6 +9,7 @@ import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
 import { callStartNotice, recordConsent } from '../services/disclosure';
+import { assistantNameOf, getVertical } from '../services/verticals';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
@@ -701,9 +702,12 @@ export class CallRelay extends DurableObject<Env> {
           if (signal.aborted) return;
         }
         const storeName = sectorMeta?.name ?? businessType ?? 'us';
+        // The business's assistant name (sectors.assistant_name, default
+        // Avery); a name saved with an older custom greeting still wins there.
+        const name = assistantNameOf(sectorMeta);
         const body = custom
-          ? lines.customGreeting(custom.greeting, custom.agentName)
-          : lines.greeting(storeName, lines.capabilityHint(businessType));
+          ? lines.customGreeting(custom.greeting, custom.agentName || name)
+          : lines.greeting(storeName, lines.capabilityHint(businessType, getVertical(sectorMeta).key), name);
         await say(openerDropped ? `${lines.opener} ${body}` : body);
       })
       .catch(e => { if (e?.name !== 'AbortError') console.error('[greeting]', e?.message || e); })

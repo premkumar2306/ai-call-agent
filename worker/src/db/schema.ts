@@ -28,6 +28,7 @@ export const sectors = sqliteTable('sectors', {
   ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
   voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
   kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
+  assistantName: text('assistant_name'),      // spoken name (0018); null = "Avery"
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -229,6 +230,26 @@ export const phoneNumbers = sqliteTable('phone_numbers', {
   index('idx_phone_numbers_business').on(t.businessType),
 ]);
 
+// WhatsApp phone_number_id → business (0018); WA_PHONE_NUMBER_MAP is the fallback.
+export const whatsappNumbers = sqliteTable('whatsapp_numbers', {
+  phoneNumberId: text('phone_number_id').primaryKey(),
+  businessType:  text('business_type').notNull(),
+  label:         text('label'),
+  createdAt:     integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt:     integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [index('idx_whatsapp_numbers_business').on(t.businessType)]);
+
+// An owner's request for a phone number, handled by the operator (0018).
+export const numberRequests = sqliteTable('number_requests', {
+  id:           text('id').primaryKey(),
+  businessType: text('business_type').notNull(),
+  requestedBy:  text('requested_by'),
+  note:         text('note'),
+  status:       text('status').notNull().default('open'),   // open | done
+  createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+}, (t) => [index('idx_number_requests_status').on(t.status, t.createdAt)]);
+
 // ── Owner accounts (drizzle/0015_owner_accounts.sql) ───────────────────────
 // Business owners and their staff sign in with an emailed one-time code.
 export const users = sqliteTable('users', {
@@ -277,6 +298,7 @@ export const billingPlans = sqliteTable('billing_plans', {
   gstRateBps:            integer('gst_rate_bps').notNull().default(1800),
   razorpayPlanId:        text('razorpay_plan_id'),
   isActive:              integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  isDefault:             integer('is_default', { mode: 'boolean' }).notNull().default(false), // 0018: given to new businesses
   createdAt:             integer('created_at').notNull(),
   updatedAt:             integer('updated_at').notNull(),
 });

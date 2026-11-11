@@ -36,6 +36,7 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
       voiceId: row.voiceId ?? undefined,
     } }),
     kind:       row.kind ?? undefined,
+    ...(row.assistantName ? { assistantName: row.assistantName } : {}),
   };
 }
 
@@ -199,7 +200,7 @@ export async function updateSectorVoice(env: Env, key: string, voice: Partial<Vo
 
 /** Changes only the given columns of an existing sector. False if there's no such sector. */
 export async function updateSector(env: Env, key: string, patch: Partial<Pick<typeof sectorsTable.$inferInsert,
-  'name' | 'kind' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity'>>): Promise<boolean> {
+  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity'>>): Promise<boolean> {
   const rows = await getDb(env.DB).update(sectorsTable)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(sectorsTable.key, key))

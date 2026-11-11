@@ -6,6 +6,7 @@ import { timingSafeEqual, tokenSecretKey } from '../config';
 import { parseHoursRange } from './tool-router.service';
 import type { Env } from '../types';
 import { COUNTRIES, inferCountry, isValidCountryCode, isValidLocale } from '../utils/locale';
+import { verticalForKind } from './verticals';
 
 // Business-owner accounts: email one-time codes, owner session tokens, and
 // which businesses (sectors rows) a user may manage.
@@ -242,6 +243,7 @@ export const BUSINESS_KINDS: Record<string, string> = {
   auto_shop: 'Auto repair shop',
   fitness: 'Gym / fitness studio',
   vet: 'Veterinary clinic',
+  lawyer: 'Law firm / advocate',
   other: 'Other',
 };
 
@@ -387,6 +389,8 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
           key, name: input.name, model: 'service', categories: ['SERVICES'], hours: input.hours,
           timezone: input.timezone, currency: input.currency, countryCode: input.countryCode, locale: input.locale, address: input.address, phone: input.phone,
           about: input.about, notifyEmail: input.notifyEmail ?? owner.email, capacity: 1, kind: input.kind,
+          // The call script for this kind of business (a clinic, a law firm…).
+          vertical: storedVertical(input.kind),
           isActive: true, createdAt: now, updatedAt: now,
         }),
         db.insert(vendors).values({
@@ -413,7 +417,23 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
 
 // ── Editing a business (owner settings page) ───────────────────────────────
 
+/** sectors.vertical for a kind: null for 'general' (the column's default meaning). */
+export function storedVertical(kind: string): string | null {
+  const v = verticalForKind(kind);
+  return v === 'general' ? null : v;
+}
+
+/** A spoken assistant name: letters, spaces, apostrophes, hyphens and dots; 2–30 characters. */
+export function parseAssistantName(raw: unknown): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === '') return null;
+  if (typeof raw !== 'string') return undefined;
+  const name = raw.trim().replace(/\s+/g, ' ');
+  return name.length >= 2 && name.length <= 30 && /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u.test(name) ? name : undefined;
+}
+
 export interface BusinessPatch {
+  vertical?: string | null; assistantName?: string | null;
   name?: string; kind?: string; address?: string | null; phone?: string | null; website?: string | null;
   timezone?: string; currency?: string; hours?: Record<string, string>; about?: string | null;
   notifyEmail?: string | null; capacity?: number; countryCode?: string; locale?: string;
@@ -434,6 +454,8 @@ export function parseBusinessPatch(body: any): BusinessPatch | string {
   if (body.kind !== undefined) {
     if (typeof body.kind !== 'string' || !(body.kind in BUSINESS_KINDS)) return 'Choose a business type';
     out.kind = body.kind;
+    // A new business type brings its call script (doctor / lawyer wording, safety rules).
+    out.vertical = storedVertical(body.kind);
   }
   if (body.timezone !== undefined) {
     if (!isValidTimezone(body.timezone)) return 'Choose a valid time zone';
@@ -485,6 +507,12 @@ export function parseBusinessPatch(body: any): BusinessPatch | string {
   if (body.capacity !== undefined) {
     if (!Number.isInteger(body.capacity) || body.capacity < 1 || body.capacity > 50) return 'Capacity must be 1–50';
     out.capacity = body.capacity;
+  }
+  const assistant = body.assistant_name ?? body.assistantName;
+  if (assistant !== undefined) {
+    const n = parseAssistantName(assistant);
+    if (n === undefined) return 'Assistant name must be 2–30 letters';
+    out.assistantName = n;
   }
   const address = optionalText(body.address, 300); if (address !== undefined) out.address = address;
   const website = optionalText(body.website, 200); if (website !== undefined) out.website = website;
