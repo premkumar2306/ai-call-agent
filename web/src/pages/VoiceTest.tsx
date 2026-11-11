@@ -318,10 +318,10 @@ export default function VoiceTest({ sector: defaultSector, base, operator = fals
             {listening ? '🔴' : speaking ? '🔊' : '🎙️'}
           </button>
           <div style={{ flex: 1, fontSize: 13 }}>
-            {!hasSession && <span style={{ color: 'var(--text-subtle)' }}>Start a session to use voice</span>}
+            {!hasSession && <span style={{ color: 'var(--text-subtle)' }}>Start a test call to talk out loud</span>}
             {hasSession && !voiceMode && <span style={{ color: 'var(--text-subtle)' }}>Click mic to enable voice mode</span>}
             {hasSession && voiceMode && listening && <span style={{ color: 'var(--danger)', fontWeight: 600 }}>Listening… speak now</span>}
-            {hasSession && voiceMode && speaking && <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>Mogi is speaking…</span>}
+            {hasSession && voiceMode && speaking && <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>Speaking…</span>}
             {hasSession && voiceMode && !listening && !speaking && !loading && <span style={{ color: 'var(--success)' }}>Voice mode active — tap mic to speak</span>}
             {hasSession && voiceMode && loading && <span style={{ color: 'var(--warning)' }}>Processing…</span>}
           </div>

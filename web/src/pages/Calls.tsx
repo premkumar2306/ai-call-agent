@@ -441,7 +441,7 @@ export default function Calls({ base, auth, sectors, view = 'calls' }: Props) {
                   <div key={i} style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
                     <div style={{ maxWidth: '78%', display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
                       <span style={{ fontSize: 10, color: 'var(--text-subtle)', marginBottom: 3, padding: '0 4px' }}>
-                        {isUser ? 'Customer' : 'Mogi'}
+                        {isUser ? 'Caller' : 'Assistant'}
                       </span>
                       <div style={{
                         padding: '10px 14px',

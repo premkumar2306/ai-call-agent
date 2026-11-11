@@ -49,7 +49,7 @@ export default function Practitioners({ sector, base, auth, canEdit }: Props) {
     return (
       <div style={card}>
         <h2 style={h2}>Team</h2>
-        <p style={{ ...hint, margin: 0 }}>This business type books by time slot, not with a named person. Change the business type in the Business tab to book doctors, lawyers or team members.</p>
+        <p style={{ ...hint, margin: 0 }}>This business type books by time slot, not with a named person. Change the business type in Settings → Business details to book doctors, lawyers or team members.</p>
       </div>
     );
   }

@@ -108,7 +108,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
             body: { name: p.name.trim(), role: p.role.trim(), hours: hoursToApi(hours), slotMinutes: slot, feeCents: p.fee.trim() ? toMinorUnits(p.fee) : null },
           });
         } catch (e: any) {
-          warning = `${p.name}: ${e.message}. Add them in the ${words?.many ?? 'Team'} tab.`;
+          warning = `${p.name}: ${e.message}. Add them on the ${words?.many ?? 'Team'} page.`;
         }
       }
       setCreated({ key: data.key, warning });
@@ -137,7 +137,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
       <div style={{ ...card, padding: 28, display: 'grid', gap: 16 }}>
         <div>
           <h2 style={h2}>Your receptionist is ready</h2>
-          <p style={{ ...hint, margin: 0 }}>Try it now in the Voice Test tab — talk to it in your browser.</p>
+          <p style={{ ...hint, margin: 0 }}>Try it now with “Try your assistant” — talk to it in your browser.</p>
         </div>
         {created.warning && <p style={msgStyle(false)}>{created.warning}</p>}
         <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6 }}>
@@ -198,7 +198,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
             <input style={input} type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98765 43210" />
           </label>
           {kind && <p style={{ ...hint, margin: 0 }}>{SCRIPT_NOTE[verticalForKind(kind)]}</p>}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))', gap: 12 }}>
             <label style={label}>Country
               <select style={input} value={countryCode} onChange={e => { const d = countryDefaults(e.target.value, timezone); setCountryCode(d.countryCode); setCurrency(d.currency); setTimezone(d.timezone); }}>
                 {Object.entries(COUNTRIES).map(([code, c]) => <option key={code} value={code}>{c.flag} {c.name} ({c.dialCode})</option>)}
@@ -228,11 +228,11 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
       {step === 2 && (
         <div style={{ display: 'grid', gap: 10 }}>
           <p style={{ ...hint, margin: 0 }}>What can callers book? Price in {currency}; use 0 if it's free or varies. Duration is how long to block in the diary.</p>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 110px 32px', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,90px) minmax(0,80px) 32px', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
             <span>Service</span><span>Price ({currency})</span><span>Minutes</span><span />
           </div>
           {services.map((s, i) => (
-            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 110px 32px', gap: 8 }}>
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,90px) minmax(0,80px) 32px', gap: 8 }}>
               <input style={input} value={s.name} onChange={e => setService(i, { name: e.target.value })} placeholder="Service name" maxLength={120} aria-label="Service name" />
               <input style={input} inputMode="decimal" value={s.price} onChange={e => setService(i, { price: e.target.value })} placeholder="500" aria-label="Price" />
               <input style={input} inputMode="numeric" value={s.duration} onChange={e => setService(i, { duration: e.target.value.replace(/\D/g, '') })} placeholder="30" aria-label="Minutes" />
@@ -249,15 +249,15 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
         <div style={{ display: 'grid', gap: 10 }}>
           <p style={{ ...hint, margin: 0 }}>
             Optional: add your {words.many.toLowerCase()} so callers can book with a particular one. They start with your opening hours; set each one's own hours,
-            appointment length and {kind === 'lawyer' ? 'practice areas' : 'services'} in the {words.many} tab later. Skip this to book by opening hours.
+            appointment length and {kind === 'lawyer' ? 'practice areas' : 'services'} on the {words.many} page later. Skip this to book by opening hours.
           </p>
           {people.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 130px 32px', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr) minmax(0,100px) 32px', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
               <span>Name</span><span>Role / speciality</span><span>{kind === 'lawyer' || kind === 'clinic' || kind === 'dental' ? 'Consultation fee' : 'Fee'} ({currency})</span><span />
             </div>
           )}
           {people.map((p, i) => (
-            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 130px 32px', gap: 8 }}>
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr) minmax(0,100px) 32px', gap: 8 }}>
               <input style={input} value={p.name} onChange={e => setPerson(i, { name: e.target.value })} placeholder={kind === 'lawyer' ? 'Adv. Meera Kulkarni' : kind === 'clinic' || kind === 'dental' ? 'Dr. Ananya Rao' : 'Name'} maxLength={120} aria-label="Name" />
               <input style={input} value={p.role} onChange={e => setPerson(i, { role: e.target.value })} placeholder={kind === 'lawyer' ? 'Family and property' : kind === 'dental' ? 'Orthodontist' : 'General physician'} maxLength={120} aria-label="Role" />
               <input style={input} inputMode="decimal" value={p.fee} onChange={e => setPerson(i, { fee: e.target.value })} placeholder="optional" aria-label="Fee" />
@@ -278,7 +278,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
           <div>Open: {Object.entries(hoursToApi(hours)).map(([d, h]) => `${d[0].toUpperCase()}${d.slice(1)} ${h}`).join(', ')}</div>
           <div>{cleanServices().length} service{cleanServices().length === 1 ? '' : 's'}: {cleanServices().map(s => s.name).join(', ')}</div>
           {words && cleanPeople().length > 0 && <div>{words.many}: {cleanPeople().map(p => p.name.trim()).join(', ')}</div>}
-          <p style={{ ...hint, margin: '8px 0 0' }}>Booking and message notifications go to your sign-in email; change that in the Business tab.</p>
+          <p style={{ ...hint, margin: '8px 0 0' }}>Booking and message notifications go to your sign-in email; change that in Settings → Business details.</p>
         </div>
       )}
 

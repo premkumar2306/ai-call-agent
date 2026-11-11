@@ -282,7 +282,7 @@ export default function App() {
             <Services key={sector} sector={sector} base={BASE} auth={headers} canEdit={canEdit} />
           </>}
           {sector && current === 'try' && <>
-            <PageHeader title="Try your assistant" description="Talk or type as a caller would. Nothing here is a real call, but bookings you make are saved like real ones." />
+            <PageHeader title="Try your assistant" description="Talk or type as a caller would, and hear how your assistant answers. No phone call is made." />
             <VoiceTest sector={sector} base={BASE} operator={isOperator} />
           </>}
           {sector && currentTop === 'settings' && <>

@@ -1,6 +1,6 @@
 import { DAYS, type WeekHours } from '../business';
 
-const timeInput: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-strong)', padding: '6px 8px', colorScheme: 'dark' };
+const timeInput: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, color: 'var(--text-strong)', padding: '6px 6px', minWidth: 0, flex: '0 1 120px' };
 
 export default function HoursEditor({ value, onChange }: { value: WeekHours; onChange: (w: WeekHours) => void }) {
   const set = (d: keyof WeekHours, patch: Partial<WeekHours[keyof WeekHours]>) => onChange({ ...value, [d]: { ...value[d], ...patch } });
@@ -12,8 +12,8 @@ export default function HoursEditor({ value, onChange }: { value: WeekHours; onC
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       {DAYS.map(([d, name]) => (
-        <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', width: 130, fontSize: 14, color: 'var(--text)' }}>
+        <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', width: 110, fontSize: 14, color: 'var(--text)' }}>
             <input type="checkbox" checked={value[d].open} onChange={e => set(d, { open: e.target.checked })} />
             {name}
           </label>

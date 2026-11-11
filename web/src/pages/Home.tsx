@@ -63,15 +63,16 @@ export default function Home({ sector, name, base, auth, isOwner, go }: Props) {
           { key: 'try', title: 'Try your assistant', detail: 'Make a test call in the app and hear how it answers.', done: false, route: 'try' },
           { key: 'number', title: 'Request a phone number', detail: 'The Avery team connects a number for callers to dial.', done: !!numbers?.length, route: 'settings/phone' },
           { key: 'privacy', title: 'Add your privacy notice link', detail: 'Sent to callers in booking texts and WhatsApp replies.', done: !!privacy?.privacyNoticeUrl, route: 'settings/privacy' },
-          { key: 'billing', title: 'Choose a plan', detail: 'Start a subscription once your free trial ends.', done: billing?.state === 'active' || billing?.state === 'trialing', route: 'settings/billing' },
+          // Billing "off" means no plan is offered yet, so there is nothing to choose.
+          ...(billing && billing.state !== 'off' ? [{ key: 'billing', title: 'Choose a plan', detail: 'Subscribe before your free trial ends.', done: billing.state === 'active', route: 'settings/billing' }] : []),
         ];
-        // "Try" is a suggestion, not a requirement: don't count it.
         setSteps(list);
       });
     }
     return () => { live = false; };
   }, [sector, base, auth, isOwner]);
 
+  // "Try" is a suggestion, not a requirement: it isn't counted.
   const required = steps?.filter(s => s.key !== 'try') ?? [];
   const doneCount = required.filter(s => s.done).length;
   const ready = steps !== null && doneCount === required.length;

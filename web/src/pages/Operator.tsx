@@ -103,7 +103,7 @@ export function NumberRequests({ base, adminKey, sectors }: Props) {
   return (
     <div style={card}>
       <h2 style={h2}>Phone number requests {open.length ? <span style={{ color: 'var(--warning)' }}>({open.length} open)</span> : null}</h2>
-      <p style={hint}>Owners ask for a number at the end of sign-up. Connect one in Phone numbers above, then mark the request done.</p>
+      <p style={hint}>Owners ask for a number at the end of sign-up. Connect a number below, then mark the request done.</p>
       {rows && !rows.length && <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>No requests yet.</p>}
       {rows && rows.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>

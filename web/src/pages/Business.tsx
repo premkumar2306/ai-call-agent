@@ -73,9 +73,9 @@ export default function Business({ sector, base, auth, canEdit, onRenamed }: Pro
     <div style={{ ...card, display: 'grid', gap: 14 }}>
       <div>
         <h2 style={h2}>Business details</h2>
-        <p style={{ ...hint, margin: 0 }}>Everything Avery tells callers about you comes from here and the Services tab.{canEdit ? '' : ' Only owners can change it.'}</p>
+        <p style={{ ...hint, margin: 0 }}>Everything Avery tells callers about you comes from here and from Services &amp; prices.{canEdit ? '' : ' Only owners can change it.'}</p>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12 }}>
         <label style={label}>Name<input style={input} maxLength={80} {...f('name')} /></label>
         <label style={label}>Type
           <select style={input} {...f('kind')}>
@@ -86,7 +86,7 @@ export default function Business({ sector, base, auth, canEdit, onRenamed }: Pro
       </div>
       {form.kind && form.kind !== savedKind && <p style={{ ...hint, margin: 0, color: 'var(--warning)' }}>Changing the type changes Avery's call script: {SCRIPT_NOTE[verticalForKind(form.kind)]}</p>}
       <label style={label}>Address<input style={input} maxLength={300} {...f('address')} /></label>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 12 }}>
         <label style={label}>Staff phone for transfers<input style={input} type="tel" placeholder="+91 98765 43210" {...f('phone')} /></label>
         <label style={label}>Website<input style={input} maxLength={200} {...f('website')} /></label>
         <label style={label}>Country

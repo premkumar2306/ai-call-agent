@@ -43,7 +43,7 @@ export default function Login({ base, onSignedIn, onAdminKey }: Props) {
   };
 
   return (
-    <div style={{ ...card, maxWidth: 420, margin: '60px auto', padding: 28 }}>
+    <div style={{ ...card, padding: 28 }}>
       {step === 'admin' ? (
         <form onSubmit={e => { e.preventDefault(); if (adminKey) onAdminKey(adminKey); }} style={{ display: 'grid', gap: 14 }}>
           <h2 style={h2}>Operator sign-in</h2>

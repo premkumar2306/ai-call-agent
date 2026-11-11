@@ -215,7 +215,7 @@ export default function WhatsApp({ sector, base, auth }: Props) {
                         borderLeft: `3px solid ${turn.role === 'user' ? 'var(--accent)' : '#25d366'}`,
                       }}>
                         <span style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>
-                          {turn.role === 'user' ? 'Customer' : 'Mogi'}
+                          {turn.role === 'user' ? 'Customer' : 'Assistant'}
                         </span>
                         <span style={{ fontSize: 13, color: 'var(--text)' }}>{turn.content}</span>
                       </div>

@@ -249,7 +249,7 @@ export default function Billing({ sector, base, auth }: Props) {
       {data.cost && (
         <div style={{ ...card, borderColor: 'var(--accent-border)' }}>
           <h3 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--text-strong)' }}>Cost & margin <span style={{ ...muted, fontWeight: 400 }}>(operator only)</span></h3>
-          <p style={{ ...muted, marginTop: 0 }}>Estimated provider cost (telephony, STT, TTS, model tokens) at ₹{data.cost.usdToInr}/USD. Revenue excludes GST.</p>
+          <p style={{ ...muted, marginTop: 0 }}>Estimated provider cost (phone lines, speech recognition, voice, AI model) at ₹{data.cost.usdToInr}/USD. Revenue excludes GST.</p>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <tbody>
               <tr><td style={td}>Provider cost this month</td><td style={td}>{inr(data.cost.costPaise)}</td><td style={td}>{data.cost.costPerMinutePaise != null ? `${inr(data.cost.costPerMinutePaise)}/min` : '—'}</td></tr>

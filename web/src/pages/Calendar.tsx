@@ -115,7 +115,7 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
     <div style={card}>
       <h2 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--text-strong)' }}>Calendar</h2>
       <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
-        Connect this business's calendar. Mogi won't offer times that are busy there, and adds each booking as an event (removed again if cancelled).
+        Connect this business's calendar. The assistant won't offer times that are busy there, and adds each booking as an event (removed again if cancelled).
       </p>
 
       {loaded && !conn && (

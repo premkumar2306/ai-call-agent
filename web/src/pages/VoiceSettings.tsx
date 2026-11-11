@@ -75,10 +75,10 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
   };
 
   const voiceHint = voice?.ttsProvider === 'sarvam'
-    ? 'Sarvam Bulbul speaker, lowercase (e.g. priya, ritu, shubh). Empty = Sarvam default.'
+    ? 'Voice ID: a speaker name in lowercase (e.g. priya, ritu, shubh). Leave empty for the default speaker.'
     : voice?.language === 'en'
-      ? 'Cartesia voice id. Empty = the deployment default voice.'
-      : 'Cartesia voice id of a Hindi-native voice (required for Hindi on Cartesia).';
+      ? 'Voice ID: leave empty for the standard voice.'
+      : 'Voice ID of a Hindi-speaking voice (needed for Hindi with the standard voice).';
 
   return (
     <div style={card}>
