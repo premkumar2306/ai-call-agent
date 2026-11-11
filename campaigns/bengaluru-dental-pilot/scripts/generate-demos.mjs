@@ -15,7 +15,7 @@ const temporaryDirectory = join(generatedDirectory, '.tmp');
 const args = process.argv.slice(2);
 const targetArgument = valueAfter('--target');
 const shouldGenerateAudio = args.includes('--audio');
-const audioEngine = valueAfter('--engine') ?? 'local';
+const audioEngine = valueAfter('--engine') ?? (process.env.SARVAM_API_KEY ? 'sarvam' : 'local');
 const targetPayload = JSON.parse(await readFile(join(campaignDirectory, 'targets-500.json'), 'utf8'));
 const targets = targetPayload.targets;
 const selectedTargets = targetArgument
@@ -32,6 +32,10 @@ if (!['local', 'sarvam'].includes(audioEngine)) {
 
 if (shouldGenerateAudio && audioEngine === 'sarvam' && !process.env.SARVAM_API_KEY) {
   throw new Error('SARVAM_API_KEY is required for --engine sarvam');
+}
+
+if (shouldGenerateAudio && audioEngine === 'local' && process.platform !== 'darwin') {
+  throw new Error('Local audio generation requires macOS; use --engine sarvam in cloud environments');
 }
 
 await mkdir(generatedDirectory, { recursive: true });

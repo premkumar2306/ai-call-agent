@@ -40,3 +40,9 @@ npm-debug.log*
 .vscode/
 .idea/
 worker/svt/results/
+
+# Campaign runtime artifacts may contain recipient addresses, message IDs,
+# delivery failures, and generated audio. Keep them out of source control.
+campaigns/**/generated/
+campaigns/**/outreach/
+campaigns/**/campaign-*.json
