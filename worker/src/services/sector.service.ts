@@ -4,7 +4,11 @@ import { sectors as sectorsTable, resources as resourcesTable } from '../db/sche
 import type { Env, Resource, SectorMeta } from '../types';
 import { resolveVoiceSettings, type VoiceSettings } from './voice-language';
 
-const CACHE_KEY = 'sectors_list';
+// Versioned with the SectorMeta shape: a list cached by an older deploy lacks
+// newer fields (assistantName, 0018), so it must not be read after an upgrade.
+// The previous key simply expires.
+export const SECTORS_CACHE_KEY = 'sectors_list:v2';
+const CACHE_KEY = SECTORS_CACHE_KEY;
 const CACHE_TTL = 300; // 5 minutes
 
 function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {

@@ -14,7 +14,7 @@
 --
 -- Needs migrations up to 0018_multi_vertical.sql. Apply:
 --   npx wrangler d1 execute DB --remote --file seeds/demo_law_firm_india.sql
--- then purge KV: sectors_list, products:demo_law_firm_india:all
+-- then purge KV: sectors_list:v2, products:demo_law_firm_india:all
 -- (or wait 5 minutes for the caches to expire). Re-running it is safe.
 
 INSERT INTO sectors (key, name, model, categories, hours, timezone, currency, locale, country_code, address, phone, website, about, capacity, vertical, kind, is_active, created_at, updated_at)

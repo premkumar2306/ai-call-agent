@@ -7,6 +7,7 @@ import { parseHoursRange } from './tool-router.service';
 import type { Env } from '../types';
 import { COUNTRIES, inferCountry, isValidCountryCode, isValidLocale } from '../utils/locale';
 import { verticalForKind } from './verticals';
+import { invalidateSectors } from './sector.service';
 
 // Business-owner accounts: email one-time codes, owner session tokens, and
 // which businesses (sectors rows) a user may manage.
@@ -416,7 +417,7 @@ export async function createBusiness(env: Env, owner: UserRow, input: BusinessIn
       if (/UNIQUE|PRIMARY KEY|constraint/i.test(String(e?.message ?? e)) && attempt < 4) continue;
       throw e;
     }
-    await env.CACHE.delete('sectors_list');
+    await invalidateSectors(env);
     return key;
   }
   throw new Error('Could not allocate a business key');
