@@ -140,8 +140,8 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
           <p style={{ ...hint, margin: 0 }}>Try it now in the Voice Test tab — talk to it in your browser.</p>
         </div>
         {created.warning && <p style={msgStyle(false)}>{created.warning}</p>}
-        <div style={{ fontSize: 14, color: '#ccc', lineHeight: 1.6 }}>
-          <b style={{ color: '#fff' }}>Phone number.</b> Callers reach Avery on a phone number that the Avery team connects for you
+        <div style={{ fontSize: 14, color: 'var(--text)', lineHeight: 1.6 }}>
+          <b style={{ color: 'var(--text-strong)' }}>Phone number.</b> Callers reach Avery on a phone number that the Avery team connects for you
           {countryCode === 'IN' ? ' (Indian numbers need carrier KYC, so this is done by our team)' : ''}. You can keep your current
           number and forward calls to it. Ask for one now and we'll email you when it's live.
         </div>
@@ -170,8 +170,8 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
       <ol style={{ display: 'flex', gap: 8, listStyle: 'none', padding: 0, margin: 0, flexWrap: 'wrap' }}>
         {STEPS.map((s, i) => (
           <li key={s} style={{
-            fontSize: 12, padding: '4px 10px', borderRadius: 99,
-            background: i === step ? '#6c47ff' : i < step ? '#6c47ff33' : '#1e1e2e', color: i <= step ? '#fff' : '#777',
+            fontSize: 13, padding: '4px 10px', borderRadius: 99,
+            background: i === step ? 'var(--accent)' : i < step ? 'var(--accent-soft)' : 'var(--input-bg)', color: i === step ? '#fff' : i < step ? 'var(--accent-text)' : 'var(--text-muted)',
           }}>{i + 1}. {s}</li>
         ))}
       </ol>
@@ -185,16 +185,16 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {Object.entries(BUSINESS_KINDS).map(([k, v]) => (
                 <button key={k} type="button" onClick={() => pickKind(k)}
-                  style={{ ...ghost, padding: '6px 12px', fontSize: 13, ...(kind === k ? { background: '#6c47ff', color: '#fff', borderColor: '#6c47ff' } : {}) }}>
+                  style={{ ...ghost, padding: '6px 12px', fontSize: 13, ...(kind === k ? { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' } : {}) }}>
                   {v}
                 </button>
               ))}
             </div>
           </div>
-          <label style={label}><span>Address <span style={{ color: '#666' }}>— callers ask where you are</span></span>
+          <label style={label}><span>Address <span style={{ color: 'var(--text-subtle)' }}>— callers ask where you are</span></span>
             <input style={input} value={address} onChange={e => setAddress(e.target.value)} placeholder="12 MG Road, Bengaluru 560001" maxLength={300} />
           </label>
-          <label style={label}><span>Staff phone for transfers <span style={{ color: '#666' }}>— optional; Avery puts callers through to it during opening hours</span></span>
+          <label style={label}><span>Staff phone for transfers <span style={{ color: 'var(--text-subtle)' }}>— optional; Avery puts callers through to it during opening hours</span></span>
             <input style={input} type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91 98765 43210" />
           </label>
           {kind && <p style={{ ...hint, margin: 0 }}>{SCRIPT_NOTE[verticalForKind(kind)]}</p>}
@@ -228,7 +228,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
       {step === 2 && (
         <div style={{ display: 'grid', gap: 10 }}>
           <p style={{ ...hint, margin: 0 }}>What can callers book? Price in {currency}; use 0 if it's free or varies. Duration is how long to block in the diary.</p>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 110px 32px', gap: 8, fontSize: 12, color: '#777' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 110px 32px', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
             <span>Service</span><span>Price ({currency})</span><span>Minutes</span><span />
           </div>
           {services.map((s, i) => (
@@ -237,7 +237,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
               <input style={input} inputMode="decimal" value={s.price} onChange={e => setService(i, { price: e.target.value })} placeholder="500" aria-label="Price" />
               <input style={input} inputMode="numeric" value={s.duration} onChange={e => setService(i, { duration: e.target.value.replace(/\D/g, '') })} placeholder="30" aria-label="Minutes" />
               <button type="button" onClick={() => setServices(rows => rows.filter((_, j) => j !== i))} aria-label="Remove service"
-                style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>×</button>
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}>×</button>
             </div>
           ))}
           <button type="button" style={{ ...ghost, justifySelf: 'start' }}
@@ -252,7 +252,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
             appointment length and {kind === 'lawyer' ? 'practice areas' : 'services'} in the {words.many} tab later. Skip this to book by opening hours.
           </p>
           {people.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 130px 32px', gap: 8, fontSize: 12, color: '#777' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 130px 32px', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
               <span>Name</span><span>Role / speciality</span><span>{kind === 'lawyer' || kind === 'clinic' || kind === 'dental' ? 'Consultation fee' : 'Fee'} ({currency})</span><span />
             </div>
           )}
@@ -262,7 +262,7 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
               <input style={input} value={p.role} onChange={e => setPerson(i, { role: e.target.value })} placeholder={kind === 'lawyer' ? 'Family and property' : kind === 'dental' ? 'Orthodontist' : 'General physician'} maxLength={120} aria-label="Role" />
               <input style={input} inputMode="decimal" value={p.fee} onChange={e => setPerson(i, { fee: e.target.value })} placeholder="optional" aria-label="Fee" />
               <button type="button" onClick={() => setPeople(rows => rows.filter((_, j) => j !== i))} aria-label="Remove"
-                style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 18 }}>×</button>
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 18 }}>×</button>
             </div>
           ))}
           <button type="button" style={{ ...ghost, justifySelf: 'start' }}
@@ -271,8 +271,8 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
       )}
 
       {step === reviewStep && (
-        <div style={{ display: 'grid', gap: 8, fontSize: 14, color: '#ccc' }}>
-          <div><b style={{ color: '#fff' }}>{name}</b> · {BUSINESS_KINDS[kind]}</div>
+        <div style={{ display: 'grid', gap: 8, fontSize: 14, color: 'var(--text)' }}>
+          <div><b style={{ color: 'var(--text-strong)' }}>{name}</b> · {BUSINESS_KINDS[kind]}</div>
           {address && <div>{address}</div>}
           <div>{COUNTRIES[countryCode]?.name ?? countryCode} · {timezone} · {currency}{phone ? ` · transfers to ${phone}` : ''}</div>
           <div>Open: {Object.entries(hoursToApi(hours)).map(([d, h]) => `${d[0].toUpperCase()}${d.slice(1)} ${h}`).join(', ')}</div>

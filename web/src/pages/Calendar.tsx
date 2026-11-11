@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { card as sharedCard } from '../ui';
 
 interface Props {
   sector: string;
@@ -22,10 +23,10 @@ interface Connection {
 }
 interface CalendarOption { id: string; name: string; primary: boolean }
 
-const card: React.CSSProperties = { background: '#12121a', border: '1px solid #222', borderRadius: 12, padding: 20 };
-const btn: React.CSSProperties = { background: '#6c47ff', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer' };
-const ghost: React.CSSProperties = { background: 'transparent', color: '#a78bff', border: '1px solid #6c47ff66', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
-const select: React.CSSProperties = { background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '8px 12px', borderRadius: 8, minWidth: 260 };
+const card: React.CSSProperties = sharedCard;
+const btn: React.CSSProperties = { background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer' };
+const ghost: React.CSSProperties = { background: 'transparent', color: 'var(--accent-text)', border: '1px solid var(--accent-border)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
+const select: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, minWidth: 260 };
 
 export default function Calendar({ sector, base, auth, oauthResult }: Props) {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -112,8 +113,8 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
 
   return (
     <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Calendar</h2>
-      <p style={{ margin: '0 0 16px', color: '#888', fontSize: 13 }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--text-strong)' }}>Calendar</h2>
+      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
         Connect this business's calendar. Mogi won't offer times that are busy there, and adds each booking as an event (removed again if cancelled).
       </p>
 
@@ -127,7 +128,7 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
             </button>
           ))}
           {providers.length > 0 && providers.every(p => !p.configured) && (
-            <p style={{ margin: 0, fontSize: 13, color: '#888', alignSelf: 'center' }}>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)', alignSelf: 'center' }}>
               No calendar provider is configured on this deployment yet.
             </p>
           )}
@@ -136,19 +137,19 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
 
       {conn && (
         <div style={{ display: 'grid', gap: 14 }}>
-          <p style={{ margin: 0, fontSize: 13, color: '#aaa' }}>
-            Connected to <b style={{ color: '#fff' }}>{providerName(conn.provider)}</b>
-            {conn.accountEmail ? <> as <b style={{ color: '#fff' }}>{conn.accountEmail}</b></> : null}
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
+            Connected to <b style={{ color: 'var(--text-strong)' }}>{providerName(conn.provider)}</b>
+            {conn.accountEmail ? <> as <b style={{ color: 'var(--text-strong)' }}>{conn.accountEmail}</b></> : null}
           </p>
 
           {conn.status === 'reauth_required' && (
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <span style={{ fontSize: 13, color: '#f87171' }}>Access was revoked or expired — bookings aren't syncing.</span>
+              <span style={{ fontSize: 13, color: 'var(--danger)' }}>Access was revoked or expired — bookings aren't syncing.</span>
               <button onClick={() => connect(conn.provider)} disabled={busy} style={btn}>Reconnect</button>
             </div>
           )}
 
-          <label style={{ display: 'grid', gap: 6, fontSize: 13, color: '#888' }}>
+          <label style={{ display: 'grid', gap: 6, fontSize: 13, color: 'var(--text-muted)' }}>
             Calendar to use
             <select
               style={select}
@@ -166,19 +167,19 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
             </select>
           </label>
 
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: '#ddd' }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
             <input type="checkbox" checked={conn.checkBusy} disabled={busy}
               onChange={e => save({ checkBusy: e.target.checked }, e.target.checked ? 'Busy times will be skipped.' : 'Busy times are ignored.')} />
             Don't offer times that are busy in this calendar
           </label>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: '#ddd' }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
             <input type="checkbox" checked={conn.writeEvents} disabled={busy}
               onChange={e => save({ writeEvents: e.target.checked }, e.target.checked ? 'Bookings will be added to the calendar.' : 'Bookings won’t be added.')} />
             Add bookings to this calendar
           </label>
 
           {conn.lastError && conn.status === 'active' && (
-            <p style={{ margin: 0, fontSize: 12, color: '#fbbf24' }}>Last problem: {conn.lastError}</p>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--warning)' }}>Last problem: {conn.lastError}</p>
           )}
 
           <div>
@@ -187,7 +188,7 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
         </div>
       )}
 
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
+      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
     </div>
   );
 }

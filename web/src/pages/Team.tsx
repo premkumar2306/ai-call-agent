@@ -28,23 +28,23 @@ export default function Team({ sector, base, auth, myUserId }: Props) {
 
   return (
     <div style={card}>
-      <h2 style={h2}>Team</h2>
-      <p style={hint}>Add people by email — they sign in with that address. Staff can see calls, bookings and messages; owners can also change settings, services, the calendar and the team.</p>
+      <h2 style={h2}>Who can sign in</h2>
+      <p style={hint}>Add your front desk or partners by email. They sign in with that address, no password. Staff see calls, appointments and messages; owners can also change settings.</p>
       <form style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}
         onSubmit={e => { e.preventDefault(); run(() => api(base, path, auth, { body: { email, role } }), `Added ${email.trim()}.`).then(() => setEmail('')); }}>
-        <input style={{ ...input, flex: 1, minWidth: 220 }} type="email" required placeholder="colleague@example.com" value={email} onChange={e => setEmail(e.target.value)} />
-        <select style={{ ...input, width: 110 }} value={role} onChange={e => setRole(e.target.value as 'staff' | 'owner')}>
+        <input aria-label="Email address" style={{ ...input, flex: 1, minWidth: 220 }} type="email" required placeholder="colleague@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+        <select aria-label="Role" style={{ ...input, width: 110 }} value={role} onChange={e => setRole(e.target.value as 'staff' | 'owner')}>
           <option value="staff">Staff</option>
           <option value="owner">Owner</option>
         </select>
         <button style={btn} disabled={busy || !email}>Add</button>
       </form>
       {members?.map(m => (
-        <div key={m.userId} style={{ display: 'flex', alignItems: 'center', gap: 12, borderTop: '1px solid #1e1e2e', padding: '10px 0' }}>
-          <div style={{ flex: 1, fontSize: 14, color: '#fff' }}>
-            {m.email}{m.userId === myUserId && <span style={{ color: '#888' }}> (you)</span>}
+        <div key={m.userId} style={{ display: 'flex', alignItems: 'center', gap: 12, borderTop: '1px solid var(--border)', padding: '10px 0' }}>
+          <div style={{ flex: 1, fontSize: 14, color: 'var(--text-strong)' }}>
+            {m.email}{m.userId === myUserId && <span style={{ color: 'var(--text-muted)' }}> (you)</span>}
           </div>
-          <select style={{ ...input, width: 110 }} value={m.role} disabled={busy}
+          <select aria-label={`Role for ${m.email}`} style={{ ...input, width: 110 }} value={m.role} disabled={busy}
             onChange={e => run(() => api(base, `${path}/${m.userId}`, auth, { method: 'PATCH', body: { role: e.target.value } }), 'Role updated.')}>
             <option value="staff">Staff</option>
             <option value="owner">Owner</option>

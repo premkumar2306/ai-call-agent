@@ -1,4 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Button, Card, Field, Notice } from '../components/ui';
+
+// The assistant's name and greeting (GET|PUT /admin/config/:key). The whole
+// config is sent back on save, so the online-store fields the operator sees
+// under "More" are kept as they are for everyone else.
 
 interface SectorConfig {
   storeName: string;
@@ -14,53 +19,27 @@ interface Props {
   base: string;
   /** X-Admin-Key or owner Bearer header (see auth.ts) */
   auth: Record<string, string>;
+  canEdit?: boolean;
+  operator?: boolean;
 }
 
-function Toast({ msg, type, onClear }: { msg: string; type: 'ok' | 'error' | ''; onClear: () => void }) {
-  useEffect(() => {
-    if (!msg) return;
-    const t = setTimeout(onClear, 3000);
-    return () => clearTimeout(t);
-  }, [msg, onClear]);
-
-  if (!msg) return null;
-  return (
-    <div style={{
-      position: 'fixed', bottom: 24, right: 24, padding: '12px 20px', borderRadius: 8,
-      fontSize: 14, fontWeight: 600, color: '#fff',
-      background: type === 'error' ? '#ef4444' : '#22c55e',
-    }}>
-      {msg}
-    </div>
-  );
-}
-
-const inputStyle: React.CSSProperties = {
-  width: '100%', background: '#0a0a0f', border: '1px solid #2a2a3a', borderRadius: 8,
-  color: '#fff', padding: '10px 14px', fontSize: 14, outline: 'none', boxSizing: 'border-box',
-};
-
-export default function Dashboard({ sector, base, auth }: Props) {
-  const [cfg, setCfg] = useState<SectorConfig>({
-    storeName: '', greeting: '', agentName: 'Avery',
-    primaryColor: '#6c47ff', supportEmail: '', maxRecommendations: 3,
-  });
+export default function Dashboard({ sector, base, auth, canEdit = true, operator = false }: Props) {
+  const [cfg, setCfg] = useState<SectorConfig | null>(null);
   const [saving, setSaving] = useState(false);
   // The phone line's language: a custom greeting is spoken exactly as typed.
   const [voiceLanguage, setVoiceLanguage] = useState<string>('en');
-  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'error' | '' }>({ msg: '', type: '' });
-
-  const showToast = (msg: string, type: 'ok' | 'error' = 'ok') => setToast({ msg, type });
+  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   const loadConfig = useCallback(async () => {
+    setCfg(null); setMsg(null);
     try {
       if (!sector || !Object.keys(auth).length) return;
       const res = await fetch(`${base}/admin/config/${sector}`, { headers: auth });
       const json = await res.json();
       if (json.success) setCfg(json.data);
-      else showToast(res.status === 401 || res.status === 403 ? 'Not signed in for this business' : 'Failed to load config', 'error');
+      else setMsg({ text: res.status === 401 || res.status === 403 ? 'You are not signed in for this business.' : 'Could not load the assistant settings.', ok: false });
     } catch {
-      showToast('Failed to load config', 'error');
+      setMsg({ text: 'Could not load the assistant settings.', ok: false });
     }
   }, [sector, base, auth]);
 
@@ -73,7 +52,8 @@ export default function Dashboard({ sector, base, auth }: Props) {
   }, [sector, base, auth]);
 
   const handleSave = async () => {
-    setSaving(true);
+    if (!cfg) return;
+    setSaving(true); setMsg(null);
     try {
       const res = await fetch(`${base}/admin/config/${sector}`, {
         method: 'PUT',
@@ -81,93 +61,49 @@ export default function Dashboard({ sector, base, auth }: Props) {
         body: JSON.stringify(cfg),
       });
       const json = await res.json().catch(() => ({}));
-      if (res.ok) { showToast('Saved!'); if (json.data) setCfg(json.data); }
-      else showToast(json.error ?? 'Save failed', 'error');
+      if (res.ok) { setMsg({ text: 'Saved. Callers hear it from the next call.', ok: true }); if (json.data) setCfg(json.data); }
+      else setMsg({ text: json.error ?? 'Save failed', ok: false });
     } catch {
-      showToast('Save failed', 'error');
+      setMsg({ text: 'Save failed. Check your connection and try again.', ok: false });
     } finally {
       setSaving(false);
     }
   };
 
   const set = (field: keyof SectorConfig) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-    setCfg(prev => ({ ...prev, [field]: field === 'maxRecommendations' ? parseInt((e.target as HTMLInputElement).value) || 3 : e.target.value }));
+    setCfg(prev => prev && ({ ...prev, [field]: field === 'maxRecommendations' ? parseInt((e.target as HTMLInputElement).value) || 3 : e.target.value }));
 
   return (
-    <>
-      <div style={{ background: '#12121a', border: '1px solid #1e1e2e', borderRadius: 14, padding: 28 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 600, color: '#fff', marginBottom: 20 }}>Store Settings</h2>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 18 }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Store Name</label>
-            <input style={inputStyle} value={cfg.storeName} onChange={set('storeName')} placeholder="AutoStore" />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Agent Name</label>
-            <input style={inputStyle} value={cfg.agentName} onChange={set('agentName')} placeholder="Avery" maxLength={30} />
-            <p style={{ fontSize: 12, color: '#666', margin: '6px 0 0' }}>The name the assistant gives callers, on every call.</p>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 18 }}>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Opening Greeting</label>
-          <textarea
-            style={{ ...inputStyle, resize: 'vertical', minHeight: 80, fontFamily: 'inherit' }}
-            value={cfg.greeting}
-            onChange={set('greeting')}
-            placeholder="Welcome! How can I help you today?"
-          />
+    <Card title="Name and greeting" description="What callers hear when the assistant picks up.">
+      {!cfg ? (msg ? <Notice tone="error">{msg.text}</Notice> : <p className="muted" role="status">Loading…</p>) : (
+        <div className="stack">
+          <Field label="Assistant's name" help="The name it gives callers, e.g. “Hi, this is Avery”.">
+            {id => <input id={id} className="input" style={{ maxWidth: 320 }} value={cfg.agentName} onChange={set('agentName')} placeholder="Avery" maxLength={30} disabled={!canEdit} />}
+          </Field>
+          <Field label="Greeting" help={voiceLanguage === 'en' ? 'The first thing callers hear. Leave it short.' : undefined}>
+            {id => <textarea id={id} className="input" value={cfg.greeting} onChange={set('greeting')} placeholder="Welcome! How can I help you today?" disabled={!canEdit} />}
+          </Field>
           {voiceLanguage !== 'en' && (
-            <p style={{ fontSize: 12, color: '#fbbf24', margin: '6px 0 0' }}>
+            <Notice tone="warning">
               Your phone line speaks {voiceLanguage === 'hi' ? 'Hindi' : 'Hinglish'}. The greeting is spoken exactly as typed, so write it in
               {voiceLanguage === 'hi' ? ' Hindi (Devanagari), e.g. “शर्मा क्लिनिक में आपका स्वागत है।”' : ' Hinglish, with Hindi words in Devanagari, e.g. “शर्मा क्लिनिक में आपका स्वागत है! Appointment के लिए हम मदद कर सकते हैं।”'}
-            </p>
+            </Notice>
           )}
+          {operator && (
+            <details className="more">
+              <summary>Online store settings</summary>
+              <div className="form-grid" style={{ marginTop: 12 }}>
+                <Field label="Store name">{id => <input id={id} className="input" value={cfg.storeName} onChange={set('storeName')} />}</Field>
+                <Field label="Support email">{id => <input id={id} className="input" type="email" value={cfg.supportEmail} onChange={set('supportEmail')} />}</Field>
+                <Field label="Products to suggest at once">{id => <input id={id} className="input" type="number" min={1} max={10} value={cfg.maxRecommendations} onChange={set('maxRecommendations')} />}</Field>
+                <Field label="Brand colour">{id => <input id={id} type="color" value={cfg.primaryColor} onChange={e => setCfg({ ...cfg, primaryColor: e.target.value })} style={{ width: 56, height: 38, border: 0, background: 'none' }} />}</Field>
+              </div>
+            </details>
+          )}
+          {canEdit && <div><Button onClick={handleSave} busy={saving}>Save</Button></div>}
+          {msg && <Notice tone={msg.ok ? 'success' : 'error'}>{msg.text}</Notice>}
         </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 18 }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Support Email</label>
-            <input style={inputStyle} type="email" value={cfg.supportEmail} onChange={set('supportEmail')} placeholder="support@yourstore.com" />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Max Recommendations</label>
-            <input style={inputStyle} type="number" min={1} max={10} value={cfg.maxRecommendations}
-              onChange={set('maxRecommendations')} />
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 24 }}>
-          <label style={{ display: 'block', fontSize: 13, color: '#888', marginBottom: 6 }}>Primary Color</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input type="color" value={cfg.primaryColor}
-              onChange={e => setCfg(prev => ({ ...prev, primaryColor: e.target.value }))}
-              style={{ width: 44, height: 36, border: 'none', padding: 0, background: 'none', cursor: 'pointer', borderRadius: 6 }}
-            />
-            <input style={{ ...inputStyle, width: 120 }} value={cfg.primaryColor}
-              onChange={e => {
-                if (/^#[0-9a-fA-F]{6}$/.test(e.target.value))
-                  setCfg(prev => ({ ...prev, primaryColor: e.target.value }));
-              }}
-            />
-          </div>
-        </div>
-
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          style={{
-            background: '#6c47ff', color: '#fff', border: 'none', borderRadius: 8,
-            padding: '10px 24px', fontSize: 14, fontWeight: 600, cursor: saving ? 'default' : 'pointer',
-            opacity: saving ? 0.4 : 1,
-          }}
-        >
-          {saving ? 'Saving…' : 'Save Changes'}
-        </button>
-      </div>
-
-      <Toast msg={toast.msg} type={toast.type} onClear={() => setToast({ msg: '', type: '' })} />
-    </>
+      )}
+    </Card>
   );
 }

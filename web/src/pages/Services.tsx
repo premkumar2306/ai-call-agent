@@ -97,14 +97,14 @@ export default function Services({ sector, base, auth, canEdit }: Props) {
       {!rows && !msg && <p style={hint}>Loading…</p>}
       {rows && !rows.length && <p style={hint}>No services yet.</p>}
       {sorted.map(p => (
-        <div key={p.id} style={{ borderTop: '1px solid #1e1e2e', padding: '10px 0', opacity: p.isActive ? 1 : 0.5 }}>
+        <div key={p.id} style={{ borderTop: '1px solid var(--border)', padding: '10px 0', opacity: p.isActive ? 1 : 0.5 }}>
           {editing === p.id ? editor : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ color: '#fff', fontSize: 14 }}>{p.name}{!p.isActive && <span style={{ color: '#888' }}> (hidden)</span>}</div>
-                {p.description && <div style={{ color: '#888', fontSize: 12 }}>{p.description}</div>}
+                <div style={{ color: 'var(--text-strong)', fontSize: 14 }}>{p.name}{!p.isActive && <span style={{ color: 'var(--text-muted)' }}> (hidden)</span>}</div>
+                {p.description && <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{p.description}</div>}
               </div>
-              <div style={{ color: '#ccc', fontSize: 13, whiteSpace: 'nowrap' }}>
+              <div style={{ color: 'var(--text)', fontSize: 13, whiteSpace: 'nowrap' }}>
                 {p.priceCents ? formatMoney(p.priceCents, currency) : 'Free / varies'}{p.durationMinutes ? ` · ${p.durationMinutes} min` : ''}
               </div>
               {canEdit && (

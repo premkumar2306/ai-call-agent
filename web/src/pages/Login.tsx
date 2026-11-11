@@ -79,7 +79,7 @@ export default function Login({ base, onSignedIn, onAdminKey }: Props) {
           )}
           {msg && <p style={msgStyle(msg.ok)}>{msg.text}</p>}
           <button type="button" onClick={() => { setStep('admin'); setMsg(null); }}
-            style={{ background: 'none', border: 'none', color: '#666', fontSize: 12, cursor: 'pointer', justifySelf: 'start', padding: 0 }}>
+            style={{ background: 'none', border: 'none', color: 'var(--text-subtle)', fontSize: 13, cursor: 'pointer', justifySelf: 'start', padding: 0 }}>
             Operator? Sign in with the admin key
           </button>
         </form>
