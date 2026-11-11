@@ -52,5 +52,13 @@ Fixes made while merging:
 - privacy, voice, doctors and billing routes accept a business owner's login as well as the admin key;
 - usage records name the real carrier (Twilio, Exotel or Plivo), and cost estimates price Sarvam and Plivo.
 
+## General app (clinics, dental, law firms; self-serve)
+
+Branch `claude/multi-vertical`, migration `0018_multi_vertical.sql`: signup picks the call script from
+the business type (fixes every signed-up business getting the auto-shop script), a `legal` vertical
+for law firms and advocates, a neutral `appointments` vertical, owner-managed doctors/dentists/lawyers,
+owner Settings, a phone-number request, D1 WhatsApp number routing, an optional default trial plan, and
+a configurable assistant name (default Avery; `advanced_vtech` keeps Mogi).
+
 Still to do by the owner: Sarvam, Exotel, Razorpay and Resend accounts and secrets; live test calls;
 publishing the privacy notice.

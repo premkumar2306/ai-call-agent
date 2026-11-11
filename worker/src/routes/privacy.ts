@@ -28,6 +28,8 @@ privacyAdminRouter.get('/:businessType/settings', owner, async (c) => {
       aiDisclosure: meta.aiDisclosure ?? null,
       disclosureEffective: disclosureEnabled(meta),
       inIndia: isIndianBusiness(meta),
+      // Law firms get the notice automatically in any country.
+      legal: meta.vertical === 'legal',
       disclosureText: meta.disclosureText ?? null,
       defaultDisclosureText: defaultDisclosureText(meta),
       disclosureMaxChars: DISCLOSURE_MAX_CHARS,

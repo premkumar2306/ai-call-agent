@@ -14,6 +14,7 @@ interface Props {
 interface PrivacyState {
   aiDisclosure: boolean | null;
   disclosureEffective: boolean;
+  legal?: boolean;
   inIndia: boolean;
   disclosureText: string | null;
   defaultDisclosureText: string;
@@ -163,7 +164,7 @@ export default function PrivacySettings({ base, auth, sectors }: Props) {
           <>
             <label style={label}>AI &amp; transcription notice at the start of each call</label>
             <select value={mode} onChange={e => setMode(e.target.value as Mode)} style={{ ...input, minWidth: 220 }}>
-              <option value="auto">Automatic — {state.inIndia ? 'on (business is in India)' : 'off (business is not in India)'}</option>
+              <option value="auto">Automatic — {state.inIndia ? 'on (business is in India)' : state.legal ? 'on (law firm)' : 'off (business is not in India)'}</option>
               <option value="on">Always on</option>
               <option value="off">Off</option>
             </select>

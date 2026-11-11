@@ -141,9 +141,26 @@ every `sectors` row by hand.
   They're signed with a key derived from `TOKEN_SECRET` that no other token type uses.
   "Sign out" revokes every session of that user. Cookies aren't used because the UI
   (pages.dev) and the Worker (workers.dev) are different sites.
-- **Onboarding wizard** (4 steps: business, hours, services, review) creates the sector
-  with a unique key (`<name-slug>_<random>`), its services, and makes the user its
-  owner. Booking/message emails default to the owner's address.
+- **Onboarding wizard** (business incl. country, hours, services, optional doctors /
+  dentists / lawyers, review) creates the sector with a unique key (`<name-slug>_<random>`),
+  its services and people, and makes the user its owner. Booking/message emails default to
+  the owner's address. The business type picks the **call script** (`sectors.vertical`, see
+  *Verticals*): clinic and dental → `clinic` (dental with dentist wording), law firm →
+  `legal`, auto shop → `general`, everything else → `appointments` (no vehicle questions).
+  Changing the type in the Business tab changes the script (the UI asks to confirm).
+  The last step explains that the Avery team connects the phone number and has a
+  **Request a phone number** button (`POST /account/businesses/:key/number-request`): the
+  request is stored for the operator (Settings → Phone number requests) and emailed to
+  `ADMIN_NOTIFY_EMAIL` when that var and Resend are set.
+- **Owner self-service.** Owners manage their **Doctors / Dentists / Lawyers / Team
+  members** tab (`GET|POST /admin/resources/:key`, `PUT|DELETE /admin/resources/:key/:id`;
+  staff can read; delete deactivates), and a **Settings** tab with Voice & language,
+  Privacy and Business locale on their own login. The assistant's spoken name
+  (`sectors.assistant_name`, default "Avery") is set in Customize → Agent name.
+- **Default plan.** If the operator marks a billing plan as default (Billing → "New
+  businesses start on", or `isDefault: true` on `PUT /admin/billing/plans/:id`), each new
+  business is put on it with its free trial; nothing is charged until the owner subscribes.
+  No plan is default until the operator picks one.
 - **Roles.** A user can belong to several businesses as `owner` or `staff`
   (`business_members`). Staff see calls, bookings, transcripts and messages, and can mark
   messages handled; owners can also edit business details, services, the
@@ -163,7 +180,16 @@ Account API (`src/routes/account.ts`): `POST /account/login/start {email}`,
 `POST /account/businesses` (wizard), and `GET|POST /account/businesses/:key/members`,
 `PATCH|DELETE /account/businesses/:key/members/:userId`. Tables are in
 `drizzle/0015_owner_accounts.sql` (`users`, `business_members`, `login_codes`, plus
-`sectors.kind`).
+`sectors.kind`). `drizzle/0018_multi_vertical.sql` adds `sectors.assistant_name`,
+`whatsapp_numbers`, `number_requests` and `billing_plans.is_default`, and backfills the
+vertical of businesses that signed up before kind → vertical mapping existed (businesses
+that already have a vertical, or no kind, such as `advanced_vtech`, are untouched;
+`advanced_vtech` keeps the assistant name "Mogi").
+
+**WhatsApp routing.** The operator maps a WhatsApp Business `phone_number_id` to a
+business in Settings → WhatsApp numbers (`GET|PUT /admin/whatsapp-numbers`,
+`DELETE /admin/whatsapp-numbers/:id`; D1 table `whatsapp_numbers`), so a new business
+needs no redeploy. `WA_PHONE_NUMBER_MAP` still works as a fallback, then the default business.
 
 A new business answers in the **Voice Test** tab straight away. Real phone calls still
 reach it only once a number is routed to it (the operator's Settings → Phone line, or
@@ -568,7 +594,7 @@ Sectors, vendors and products live in D1 and can be added without a deploy via t
 admin API (`POST /admin/sectors`, `/admin/vendors`, `/admin/products`, all requiring
 `X-Admin-Key`).
 
-### Verticals: clinics and dental practices
+### Verticals: clinics, dental practices, law firms and other appointments
 
 What differs between kinds of business — the details a booking records, how the receptionist
 talks about prices and staff, extra safety rules — is data in `worker/src/services/verticals.ts`,
@@ -591,6 +617,27 @@ no vertical gets `general`, the original auto-shop wording and fields, byte for 
 - **Medical safety rules** in the prompt: never medical advice, a diagnosis or medicine; for an
   emergency, tell the caller to call 112 or go to the nearest emergency department, then offer a
   transfer to staff.
+
+`vertical: "legal"` (law firms and advocates; signup kind `lawyer`) books **consultations with
+lawyers** (resources with their own hours, consultation fee, slot length and practice areas as
+categories: `FAMILY`, `PROPERTY`, `CRIMINAL`, `CORPORATE`, `CONSUMER`, `LABOUR`, `CIVIL`,
+`OTHER_MATTERS`; a consultation in any of them, or `CONSULTATION`, costs the lawyer's fee). A
+booking records the client's name, matter type, a one-line description, the opposing party (for
+the firm's conflict check), urgency and new/existing client. The prompt's **legal safety** rules:
+no legal advice, opinions on merits or predicted outcomes, no promises; no fees beyond the listed
+consultation fee; nothing beyond a one-line description ("the lawyer will discuss it in
+confidence"); urgent matters (arrest or custody, a court date within 48 hours, domestic violence)
+are offered an immediate transfer or an urgent message, and danger to life gets "call 112"; no
+promotion or comparison (Bar Council of India rules forbid advocates advertising or soliciting).
+The AI / recording notice is on by default for legal businesses in every country (Privacy can
+still turn it off); its Hindi and Hinglish wording is the same as for clinics, and the greeting
+hint mentions consultations with "वकील" on Hindi lines. `worker/seeds/demo_law_firm_india.sql` is a
+fictional demo firm (`demo_law_firm_india`, Pune, three lawyers); the Indian svt set has a law-firm
+persona (7) and a dental persona (6).
+
+`vertical: "appointments"` (salons, spas, gyms, vets, other) is the general booking flow without the
+auto-shop wording: no vehicle field or "what are you driving?", "our salon"/"our studio" from the
+kind, and optional team members as bookable resources.
 
 `worker/seeds/demo_clinic_india.sql` is a fictional demo clinic (`demo_clinic_india`, Bengaluru,
 Asia/Kolkata, INR, OPD 10am–1pm and 5pm–9pm, Sunday closed, three doctors). It has no phone number,
