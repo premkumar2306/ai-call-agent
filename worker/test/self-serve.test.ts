@@ -9,6 +9,7 @@ import { parseResourceInput } from '../src/services/self-serve';
 import { resolveBusinessType } from '../src/routes/whatsapp';
 import { getSector } from '../src/services/sector.service';
 import { saveTranscript, webSessionCallSid } from '../src/services/transcript.service';
+import { assignPlan, callCosts, recordTestTurn, recordUsage, upsertPlan } from '../src/services/billing/service';
 import { createD1, createKV, executionCtx } from './stubs/d1';
 import type { Env, SectorMeta } from '../src/types';
 
@@ -330,6 +331,41 @@ describe('browser test sessions', () => {
     expect(JSON.parse(rows[0].turns)).toHaveLength(4);
     // A new test call (new token) is a new conversation.
     expect(webSessionCallSid({ ...session, iat: session.iat + 60 })).not.toBe(callSid);
+  });
+});
+
+describe('cost per call', () => {
+  it('splits each call into phone line, speech and AI, with revenue and margin; test calls cost but earn nothing', async () => {
+    await upsertPlan(env, 'starter', { name: 'Starter', currency: 'INR', monthlyFeePaise: 100_000, includedMinutes: 2, overagePaisePerMinute: 500, trialDays: 0, gstRateBps: 1800, isActive: true } as any);
+    await assignPlan(env, 'biz', 'starter');
+    const t0 = 1_800_000_000;
+    const llm = { input: 2000, output: 300, cacheRead: 0, cacheWrite: 0 };
+    // Two billable minutes, then three more: 2 at the plan's ₹500/min share, 1 included, 2 overage.
+    await recordUsage(env, { businessType: 'biz', channel: 'voice', provider: 'exotel', sourceId: 'CA1', startedAt: t0, durationSeconds: 90, sttSeconds: 90, ttsChars: 400, llmModel: 'claude-haiku-5-5', llm });
+    await recordUsage(env, { businessType: 'biz', channel: 'voice', provider: 'exotel', sourceId: 'CA2', startedAt: t0 + 600, durationSeconds: 150, sttSeconds: 150, ttsChars: 600, llmModel: 'claude-haiku-5-5', llm });
+    await recordTestTurn(env, 'biz', 'web-test-1', t0 + 900, 'claude-haiku-5-5', llm);
+    await recordTestTurn(env, 'biz', 'web-test-1', t0 + 900, 'claude-haiku-5-5', llm); // second turn of the same test
+    const period = new Date(t0 * 1000).toISOString().slice(0, 7);
+    const { rows, unallocatedFeePaise } = await callCosts(env, 'biz', period);
+    expect(rows).toHaveLength(3);
+    const byId = Object.fromEntries(rows.map(r => [r.sourceId, r]));
+    expect(byId.CA1.revenuePaise).toBe(100_000);          // 2 included minutes × ₹500
+    expect(byId.CA2.revenuePaise).toBe(3 * 500);          // all 3 minutes are overage
+    expect(unallocatedFeePaise).toBe(0);
+    for (const r of [byId.CA1, byId.CA2]) {
+      expect(r.costPaise).toBeGreaterThan(0);
+      expect(r.phonePaise + r.speechPaise + r.aiPaise).toBe(r.costPaise);
+      expect(r.marginPaise).toBe(r.revenuePaise - r.costPaise);
+    }
+    const test = byId['web-test-1'];
+    expect(test.billable).toBe(false);
+    expect(test.phonePaise).toBe(0);
+    expect(test.revenuePaise).toBe(0);
+    expect(test.aiPaise).toBeGreaterThan(0);              // both turns' tokens
+    expect(test.marginPaise).toBe(-test.costPaise);
+    const res = await req(`/admin/billing/calls/biz?period=${period}`, { admin: ADMIN });
+    expect(res.status).toBe(200);
+    expect((await req(`/admin/billing/calls/biz?period=${period}`, {})).status).toBe(401);
   });
 });
 
