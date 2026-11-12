@@ -122,13 +122,14 @@ export function buildActivity(ts: TranscriptRow[], bookings: BookingRow[], messa
       const transferred = t.turns.some(x => x.role === 'assistant' && /connecting you to/i.test(x.content));
       const outcome: Outcome = booking ? 'booked' : message ? 'message' : transferred ? 'transferred' : 'info';
       const phone = booking?.callbackPhone ?? message?.callbackPhone;
-      const who = booking?.customerName || message?.callerName || (phone ? formatPhone(phone) : `Caller …${t.customerIdHashed.slice(-4)}`);
+      const channel = channelOf(t.callSid);
+      const who = booking?.customerName || message?.callerName || (phone ? formatPhone(phone) : channel === 'web' ? 'Test call' : `Caller …${t.customerIdHashed.slice(-4)}`);
       const firstAsk = t.turns.find(x => x.role === 'user')?.content ?? '';
       const summary = booking ? `Booked ${booking.productName}${booking.scheduledAt ? ` for ${formatSlot(booking.scheduledAt, locale)}` : ''}`
         : message ? `Message: ${message.message}`
         : transferred ? `Asked for a person: “${clip(firstAsk, 60)}”`
         : firstAsk ? `“${clip(firstAsk)}”` : 'No words captured';
-      return { t, channel: channelOf(t.callSid), outcome, who, summary, booking, message };
+      return { t, channel, outcome, who, summary, booking, message };
     });
 }
 

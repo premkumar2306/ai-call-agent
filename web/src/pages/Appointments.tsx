@@ -133,7 +133,7 @@ export default function Appointments({ sector, locale, base, auth, canEdit, oper
             <dt>Status</dt><dd><Badge tone={STATUS[open.status]?.tone}>{STATUS[open.status]?.label ?? open.status}</Badge></dd>
             {open.callbackPhone && <><dt>Phone</dt><dd><a href={`tel:${open.callbackPhone}`}>{formatPhone(open.callbackPhone)}</a></dd></>}
             {open.priceCents != null && open.priceCents > 0 && <><dt>Price</dt><dd>{formatMoney(open.priceCents, locale)}</dd></>}
-            {bookingDetails(open) && <><dt>Details</dt><dd>{bookingDetails(open)}</dd></>}
+            {bookingDetails({ ...open, resourceName: null }) && <><dt>Details</dt><dd>{bookingDetails({ ...open, resourceName: null })}</dd></>}
             {open.notes && <><dt>Notes</dt><dd>{open.notes}</dd></>}
             {open.calendarSync && <><dt>Google Calendar</dt><dd>{open.calendarSync === 'synced' ? 'Added' : 'Not added (sync failed)'}</dd></>}
             <dt>Booked</dt><dd>{new Date(toMs(open.createdAt)).toLocaleString(loc || undefined, { dateStyle: 'medium', timeStyle: 'short' })}</dd>
