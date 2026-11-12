@@ -457,6 +457,19 @@ bidirectional `<Stream>` and, after it, a `<Redirect>` to `/plivo/after-stream` 
 **Not yet tested on a live call:** the Exotel and Plivo protocol details come from the carriers' docs
 and reference bots, and are covered by unit tests and the simulator, but no real Exotel/Plivo call has
 gone through them yet. Check the first live call's logs (`npx wrangler tail`).
+### WhatsApp setup
+
+Each WhatsApp Business number in Meta's WhatsApp Manager has a **phone number ID**. Messages
+to that number reach the Worker's webhook, and the number's mapping in the admin UI
+(**Operator → WhatsApp**) decides which business answers.
+
+1. In the Meta app, set the webhook URL to `<worker>/whatsapp/webhook` and pick a verify token.
+2. Set the Worker secrets: `WA_VERIFY_TOKEN` (the same verify token), `WA_APP_SECRET` (the
+   app secret, used to check each webhook's signature) and `WA_ACCESS_TOKEN` (a permanent
+   system-user token, used to send replies).
+3. Map each phone number ID to a business in Operator → WhatsApp. That page shows which of these
+   settings are present (`GET /admin/whatsapp-status`, booleans only).
+
 ### Hindi and Hinglish calls (optional, per business)
 
 Each business answers in `en` (default), `hi` (Hindi) or `hi-en` (Hinglish — callers mixing

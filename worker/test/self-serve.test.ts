@@ -314,6 +314,21 @@ describe('phone-number requests', () => {
   });
 });
 
+describe('WhatsApp status', () => {
+  it('reports which settings are present as booleans, to the operator only', async () => {
+    env = makeEnv({ WA_APP_SECRET: 'shh-secret', WA_VERIFY_TOKEN: 'verify-me' } as any);
+    const res = await req('/admin/whatsapp-status', { admin: ADMIN });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('shh-secret');
+    expect(text).not.toContain('verify-me');
+    expect(JSON.parse(text).data).toEqual({ appSecret: true, verifyToken: true, accessToken: false, phoneNumberMap: false, webhookPath: '/whatsapp/webhook' });
+    const token = await signIn('wastatus@example.com');
+    expect((await req('/admin/whatsapp-status', { token })).status).toBe(401);
+    expect((await req('/admin/whatsapp-status', {})).status).toBe(401);
+  });
+});
+
 describe('WhatsApp routing', () => {
   it('uses the admin mapping first, then WA_PHONE_NUMBER_MAP, then the default', async () => {
     env = makeEnv({ WA_PHONE_NUMBER_MAP: JSON.stringify({ '111111': 'from_env', '222222': 'from_env' }), WA_DEFAULT_BUSINESS_TYPE: 'fallback' } as any);

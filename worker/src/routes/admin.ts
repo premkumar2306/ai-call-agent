@@ -391,6 +391,22 @@ adminRouter.get('/whatsapp-numbers', withAdminKey, async (c) => {
   return c.json({ success: true, data: await listWhatsAppNumbers(c.env) });
 });
 
+// GET /admin/whatsapp-status — which WhatsApp settings are present on this
+// deployment (operator only). Booleans only: never the values.
+adminRouter.get('/whatsapp-status', withAdminKey, (c) => {
+  const env = c.env;
+  return c.json({
+    success: true,
+    data: {
+      appSecret: !!env.WA_APP_SECRET,
+      verifyToken: !!env.WA_VERIFY_TOKEN,
+      accessToken: !!env.WA_ACCESS_TOKEN,
+      phoneNumberMap: !!env.WA_PHONE_NUMBER_MAP,
+      webhookPath: '/whatsapp/webhook',
+    },
+  });
+});
+
 // PUT /admin/whatsapp-numbers { phoneNumberId, businessType, label? }
 adminRouter.put('/whatsapp-numbers', withAdminKey, async (c) => {
   const body = await c.req.json().catch(() => null);
