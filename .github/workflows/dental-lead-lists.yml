@@ -1,0 +1,58 @@
+name: Refresh India dental lead lists
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 2 1 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: india-dental-lead-lists
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install collector dependency
+        run: python -m pip install duckdb==2.0.0
+      - name: Build three cleaned lists
+        run: python campaigns/india-dental-leads/scripts/collect-overture.py
+      - name: Validate public email domains
+        run: node campaigns/india-dental-leads/scripts/validate-email-domains.mjs
+      - name: Enforce dataset gates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('campaigns/india-dental-leads')
+          for city in ('bengaluru', 'hyderabad', 'chennai'):
+              payload = json.loads((root / city / 'targets-1000.json').read_text())
+              targets = payload['targets']
+              assert len(targets) == 1000
+              assert len({target['overtureId'] for target in targets}) == 1000
+              assert all(target['sendEligible'] is False for target in targets)
+              assert all(target['address'] for target in targets)
+              assert all(target['publicPhones'] or target['publicWebsites'] or target['publicEmails'] for target in targets)
+          PY
+      - uses: actions/upload-artifact@v6
+        with:
+          name: india-dental-leads
+          path: |
+            campaigns/india-dental-leads/bengaluru/targets-1000.json
+            campaigns/india-dental-leads/hyderabad/targets-1000.json
+            campaigns/india-dental-leads/chennai/targets-1000.json
+            campaigns/india-dental-leads/quality-summary.json
+          retention-days: 30
+          if-no-files-found: error
