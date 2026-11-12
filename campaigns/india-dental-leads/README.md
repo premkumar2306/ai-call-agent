@@ -25,6 +25,35 @@ Domain validation is only a precheck. An MX record does not prove that a
 specific mailbox exists, and catch-all domains must remain `sendEligible:
 false` until a mailbox-validation service or a verified reply confirms them.
 
+## Cloud email workflow
+
+`Send and monitor dental email campaign` runs entirely in GitHub Actions, so
+the laptop may be off. It supports `preview`, `monitor`, and `send` actions from
+the GitHub mobile app or website. Sending is capped at ten messages per day,
+deduplicates against campaign messages in Sent Items, validates each selected
+mailbox through ZeroBounce, rejects catch-all results, saves messages in Sent
+Items, and reports replies and delivery failures without copying reply bodies
+into GitHub artifacts.
+
+The workflow fails closed until these repository secrets exist:
+
+- `MICROSOFT_TENANT_ID`
+- `MICROSOFT_CLIENT_ID`
+- `ZEROBOUNCE_API_KEY`
+
+`MICROSOFT_CLIENT_SECRET` is supported as a fallback, but GitHub OIDC is
+preferred. The Entra application needs application permissions `Mail.Send` and
+`Mail.Read`, with admin consent, and its Exchange application access should be
+restricted to `premkumar@deskzen.in`. Configure a federated credential for
+`repo:premkumar2306/ai-call-agent:ref:refs/heads/main` with audience
+`api://AzureADTokenExchange`.
+
+Scheduled monitoring is enabled with repository variable
+`DENTAL_MONITOR_ENABLED=true`. Scheduled sending additionally requires
+`DENTAL_CAMPAIGN_ENABLED=true`; configure `DENTAL_CAMPAIGN_CITY` and
+`DENTAL_CAMPAIGN_DAILY_LIMIT` before enabling it. Leave sending disabled until
+the first manual one-message test is verified in Sent Items.
+
 ## Outputs
 
 - `bengaluru/targets-1000.json`
