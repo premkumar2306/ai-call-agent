@@ -411,3 +411,13 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .brand-flat { padding: 0; }
 .picker-label { display: block; padding: 0 var(--s1) var(--s1); }
 .pad { padding: 0 var(--s4) var(--s4); }
+.grid-2 { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); align-items: start; }
+.form-row > .input.grow { flex: 1 1 200px; }
+.input-narrow { max-width: 260px; }
+.price { font-size: 24px; font-weight: 700; color: var(--text-strong); }
+.figures { display: flex; gap: var(--s5); flex-wrap: wrap; }
+.figure { font-size: 24px; font-weight: 700; color: var(--text-strong); }
+.progress > div { transition: width .3s; }
+.progress.usage-0 > div { background: var(--accent); }
+.progress.usage-80 > div { background: var(--warning); }
+.progress.usage-100 > div { background: var(--danger); }
