@@ -23,6 +23,8 @@ SARVAM_API_KEY=
 # to the UI instead of emailing it (development only).
 RESEND_API_KEY=
 EMAIL_FROM=Mogi <mogi@yourstore.example.com>
+# Optional: owners' "Request a phone number" is emailed here (needs RESEND_API_KEY)
+ADMIN_NOTIFY_EMAIL=
 TWILIO_AUTH_TOKEN=
 TWILIO_WEBHOOK_URL=
 

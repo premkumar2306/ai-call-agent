@@ -141,9 +141,9 @@ export interface VoiceLines {
   stillWorking: string[];
   stillThere: string;
   goodbye: (bizName?: string) => string;
-  greeting: (storeName: string, capabilityHint: string) => string;
+  greeting: (storeName: string, capabilityHint: string, agentName: string) => string;
   customGreeting: (greeting: string, agentName: string) => string;
-  capabilityHint: (businessType: string | undefined) => string;
+  capabilityHint: (businessType: string | undefined, vertical?: string) => string;
 }
 
 // The English lines are the ones CallRelay has always spoken — don't reword them.
@@ -153,10 +153,12 @@ const EN_LINES: VoiceLines = {
   stillWorking: ['Still checking, thanks for waiting.', 'Almost there.'],
   stillThere: 'Are you still there?',
   goodbye: (name) => `I haven't heard anything, so I'll hang up now. Thanks for calling${name ? ` ${name}` : ''}. Goodbye!`,
-  greeting: (store, hint) => `You've reached ${store}. I'm Mogi, the virtual assistant. ${hint}`,
-  customGreeting: (g, agent) => `${g} I'm ${agent || 'Mogi'}, the virtual assistant.`,
-  capabilityHint: (bt) => bt === 'health_nav'
+  greeting: (store, hint, agent) => `You've reached ${store}. I'm ${agent}, the virtual assistant. ${hint}`,
+  customGreeting: (g, agent) => `${g} I'm ${agent}, the virtual assistant.`,
+  capabilityHint: (bt, vertical) => bt === 'health_nav'
     ? "I can check your coverage, answer benefits questions, or help you find care — what's going on?"
+    : vertical === 'legal'
+    ? 'I can tell you about our consultations and fees, or book a consultation with one of our lawyers — what can I do for you?'
     : 'I can answer questions about our services and prices, or book you in — what can I do for you?',
 };
 
@@ -169,9 +171,11 @@ const HI_LINES: VoiceLines = {
   stillWorking: ['अभी देख रहे हैं, थोड़ा रुकिए।', 'बस हो गया।'],
   stillThere: 'क्या आप लाइन पर हैं?',
   goodbye: (name) => `कोई आवाज़ नहीं आ रही है, इसलिए हम कॉल रख रहे हैं। ${name ? `${name} को ` : ''}कॉल करने के लिए धन्यवाद। नमस्ते!`,
-  greeting: (store, hint) => `${store} में आपका स्वागत है। मैं Mogi हूँ, वर्चुअल असिस्टेंट। ${hint}`,
-  customGreeting: (g, agent) => `${g} मैं ${agent || 'Mogi'} हूँ, वर्चुअल असिस्टेंट।`,
-  capabilityHint: () => 'हम सर्विस और दाम के बारे में बता सकते हैं, या आपकी बुकिंग कर सकते हैं — बताइए, क्या मदद करें?',
+  greeting: (store, hint, agent) => `${store} में आपका स्वागत है। मैं ${agent} हूँ, वर्चुअल असिस्टेंट। ${hint}`,
+  customGreeting: (g, agent) => `${g} मैं ${agent} हूँ, वर्चुअल असिस्टेंट।`,
+  capabilityHint: (_bt, vertical) => vertical === 'legal'
+    ? 'हम consultation और फ़ीस के बारे में बता सकते हैं, या किसी वकील के साथ consultation बुक कर सकते हैं — बताइए, क्या मदद करें?'
+    : 'हम सर्विस और दाम के बारे में बता सकते हैं, या आपकी बुकिंग कर सकते हैं — बताइए, क्या मदद करें?',
 };
 
 export function voiceLines(lang: VoiceLanguage): VoiceLines {

@@ -1,3 +1,4 @@
+import { assistantNameOf } from './verticals';
 import type { Product, SectorMeta } from '../types';
 import { formatMoney, localeOf } from '../utils/locale';
 
@@ -53,5 +54,5 @@ export function getSectorGreeting(sector: string, storeCreditCents: number, _tie
   };
 
   const tagline = taglines[sector] ?? "How can I assist you today?";
-  return `Hi! I'm Mogi, your ${bizName} assistant.${credit} ${tagline}`;
+  return `Hi! I'm ${assistantNameOf(meta)}, your ${bizName} assistant.${credit} ${tagline}`;
 }

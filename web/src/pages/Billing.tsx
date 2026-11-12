@@ -33,7 +33,7 @@ interface Summary {
     revenuePerMinutePaise: number | null; marginPaise: number | null; testCalls: number;
   };
 }
-interface Plan { id: string; name: string; monthlyFeePaise: number; includedMinutes: number; overagePaisePerMinute: number; razorpayPlanId: string | null; isActive: boolean }
+interface Plan { id: string; name: string; monthlyFeePaise: number; includedMinutes: number; overagePaisePerMinute: number; razorpayPlanId: string | null; isActive: boolean; isDefault?: boolean; trialDays: number; gstRateBps: number; currency: string }
 
 declare global {
   interface Window { Razorpay?: new (options: Record<string, unknown>) => { open: () => void; on: (e: string, cb: (r: any) => void) => void } }
@@ -162,6 +162,16 @@ export default function Billing({ sector, base, auth }: Props) {
     method: 'PUT', body: JSON.stringify({ planId }),
   }), planId ? 'Plan assigned.' : 'Billing turned off for this business.');
 
+  // The plan (and its free trial) every new business starts on; none = billing off for new businesses.
+  const setDefaultPlan = (id: string) => {
+    const target = plans.find(p => p.id === (id || plans.find(x => x.isDefault)?.id));
+    if (!target) return;
+    const { name, currency, monthlyFeePaise, includedMinutes, overagePaisePerMinute, trialDays, gstRateBps, isActive } = target;
+    return run(() => call(`/admin/billing/plans/${encodeURIComponent(target.id)}`, {
+      method: 'PUT', body: JSON.stringify({ name, currency, monthlyFeePaise, includedMinutes, overagePaisePerMinute, trialDays, gstRateBps, isActive, isDefault: !!id }),
+    }).then(() => call('/admin/billing/plans').then(setPlans)), id ? `New businesses now start on ${target.name} (free trial first).` : 'New businesses start with billing off.');
+  };
+
   const syncPlan = (id: string) => run(() => call(`/admin/billing/plans/${encodeURIComponent(id)}/razorpay`, { method: 'POST' }),
     'Plan created in Razorpay.');
 
@@ -255,6 +265,12 @@ export default function Billing({ sector, base, auth }: Props) {
               {plans.filter(p => p.isActive || p.id === plan?.id).map(p => (
                 <option key={p.id} value={p.id}>{p.name} — {inr(p.monthlyFeePaise)} + GST, {p.includedMinutes} min</option>
               ))}
+            </select>
+            <span style={{ ...muted, marginLeft: 12 }}>New businesses start on:</span>
+            <select style={{ ...input, width: 'auto' }} value={plans.find(p => p.isDefault)?.id ?? ''} disabled={busy}
+              onChange={e => setDefaultPlan(e.target.value)}>
+              <option value="">Billing off</option>
+              {plans.filter(p => p.isActive).map(p => <option key={p.id} value={p.id}>{p.name}{p.trialDays ? ` (${p.trialDays}-day trial)` : ''}</option>)}
             </select>
             {plan && !plan.checkoutReady && (
               <button style={{ ...ghost, opacity: busy || !data.razorpayConfigured ? 0.5 : 1 }}

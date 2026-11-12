@@ -6,13 +6,15 @@ import { useEffect, useState } from 'react';
 
 interface Props {
   base: string;
-  adminKey: string;
+  /** authHeaders(): the operator's admin key or an owner's sign-in. */
+  auth: Record<string, string>;
   sectors: { key: string; name: string }[];
 }
 
 interface PrivacyState {
   aiDisclosure: boolean | null;
   disclosureEffective: boolean;
+  legal?: boolean;
   inIndia: boolean;
   disclosureText: string | null;
   defaultDisclosureText: string;
@@ -38,7 +40,7 @@ type Mode = 'auto' | 'on' | 'off';
 const toMode = (v: boolean | null): Mode => (v === null ? 'auto' : v ? 'on' : 'off');
 const fromMode = (m: Mode): boolean | null => (m === 'auto' ? null : m === 'on');
 
-export default function PrivacySettings({ base, adminKey, sectors }: Props) {
+export default function PrivacySettings({ base, auth, sectors }: Props) {
   const [business, setBusiness] = useState('');
   const [state, setState] = useState<PrivacyState | null>(null);
   const [mode, setMode] = useState<Mode>('auto');
@@ -57,7 +59,7 @@ export default function PrivacySettings({ base, adminKey, sectors }: Props) {
   const api = async (path: string, init?: RequestInit) => {
     const res = await fetch(`${base}/admin/privacy/${encodeURIComponent(business)}${path}`, {
       ...init,
-      headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      headers: { ...auth, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     });
     const json = await res.json();
     if (!res.ok || !json.success) throw new Error(json.error ?? `Request failed (${res.status})`);
@@ -75,15 +77,15 @@ export default function PrivacySettings({ base, adminKey, sectors }: Props) {
       setNotices(n);
     } catch (e: any) {
       setState(null);
-      setMsg({ text: e.message === 'Admin key required' ? 'Enter the admin key (top right) to manage this.' : e.message, ok: false });
+      setMsg({ text: e.message === 'Admin key required' ? 'Sign in to manage this.' : e.message, ok: false });
     }
   };
 
   useEffect(() => {
     setMsg(null); setReqMsg(null);
-    if (adminKey && business) load();
+    if (Object.keys(auth).length && business) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminKey, base, business]);
+  }, [auth, base, business]);
 
   const save = async () => {
     setBusy(true); setMsg(null);
@@ -162,7 +164,7 @@ export default function PrivacySettings({ base, adminKey, sectors }: Props) {
           <>
             <label style={label}>AI &amp; transcription notice at the start of each call</label>
             <select value={mode} onChange={e => setMode(e.target.value as Mode)} style={{ ...input, minWidth: 220 }}>
-              <option value="auto">Automatic — {state.inIndia ? 'on (business is in India)' : 'off (business is not in India)'}</option>
+              <option value="auto">Automatic — {state.inIndia ? 'on (business is in India)' : state.legal ? 'on (law firm)' : 'off (business is not in India)'}</option>
               <option value="on">Always on</option>
               <option value="off">Off</option>
             </select>

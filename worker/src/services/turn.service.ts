@@ -8,7 +8,7 @@ import { getOrders } from './order.service';
 import { executeTool, getToolDefinitions, formatSlotLabel, type ToolResult } from './tool-router.service';
 import { saveTranscript } from './transcript.service';
 import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
-import { getVertical, VERTICALS, type Vertical } from './verticals';
+import { assistantNameOf, getVertical, VERTICALS, type Vertical } from './verticals';
 import type { CallCache } from './call-context';
 import { languageRules, resolveVoiceSettings, type VoiceLanguage } from './voice-language';
 import type { Order, Product, SectorMeta } from '../types';
@@ -258,7 +258,10 @@ export const INTERRUPTED_MARK = '[caller interrupted]';
 
 export type Channel = 'voice' | 'chat';
 
-export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en'): string {
+// `name` is the assistant's spoken name (assistantNameOf(meta)); callers
+// always pass it. The default is what the US business has always been called,
+// so its prompt (pinned by test/us-unchanged.test.ts) is unchanged.
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en', name = 'Mogi'): string {
   const v = vertical.prompt;
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
@@ -290,7 +293,7 @@ CONVERSATION:
     channel === 'voice' && language !== 'en' ? `\n\n${languageRules(language)}` : ''}`;
 
   if (businessType === 'health_nav') {
-    return `You are Mogi, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
+    return `You are ${name}, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.
 
 ${shared}
 
@@ -300,7 +303,7 @@ HEALTH:
 - Confirm the member's date of birth or member ID before discussing specific coverage.`;
   }
 
-  return `You are Mogi, the friendly ${channel === 'voice' ? 'receptionist' : 'assistant'} for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}.
+  return `You are ${name}, the friendly ${channel === 'voice' ? 'receptionist' : 'assistant'} for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}.
 
 ${shared}
 
@@ -349,7 +352,7 @@ export function buildSystemPrompt(opts: {
 }): Anthropic.TextBlockParam[] {
   const bizName = opts.sectorMeta?.name ?? opts.businessType;
   const stable = opts.stable
-    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language)}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language, assistantNameOf(opts.sectorMeta))}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
   return [
     { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },

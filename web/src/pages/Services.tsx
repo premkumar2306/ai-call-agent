@@ -1,20 +1,21 @@
 import { useEffect, useState } from 'react';
 import { api } from '../auth';
-import { formatMoney, toMinorUnits } from '../business';
+import { formatMoney, serviceCategories, toMinorUnits } from '../business';
 import { btn, card, ghost, h2, hint, input, msgStyle } from '../ui';
 
 interface Props { sector: string; base: string; auth: Record<string, string>; canEdit: boolean }
 
-interface Product { id: string; name: string; priceCents: number; durationMinutes: number | null; description: string; isActive: boolean }
-interface Draft { name: string; price: string; duration: string; description: string }
+interface Product { id: string; name: string; priceCents: number; durationMinutes: number | null; description: string; isActive: boolean; category: string }
+interface Draft { name: string; price: string; duration: string; description: string; category: string }
 
-const blank: Draft = { name: '', price: '', duration: '30', description: '' };
-const toDraft = (p: Product): Draft => ({ name: p.name, price: String(p.priceCents / 100), duration: String(p.durationMinutes ?? 60), description: p.description });
+const blank: Draft = { name: '', price: '', duration: '30', description: '', category: '' };
+const toDraft = (p: Product): Draft => ({ name: p.name, price: String(p.priceCents / 100), duration: String(p.durationMinutes ?? 60), description: p.description, category: p.category });
 
 // What callers can book. Edits are scoped to this business server-side.
 export default function Services({ sector, base, auth, canEdit }: Props) {
   const [rows, setRows] = useState<Product[] | null>(null);
   const [currency, setCurrency] = useState('USD');
+  const [cats, setCats] = useState<[string, string][]>([]);
   const [editing, setEditing] = useState<string | null>(null); // product id, or 'new'
   const [draft, setDraft] = useState<Draft>(blank);
   const [busy, setBusy] = useState(false);
@@ -23,7 +24,7 @@ export default function Services({ sector, base, auth, canEdit }: Props) {
 
   const load = () => Promise.all([
     api<Product[]>(base, path, auth).then(setRows),
-    api<{ currency: string }>(base, `/admin/sectors/${encodeURIComponent(sector)}`, auth).then(s => setCurrency(s.currency)),
+    api<{ currency: string; vertical?: string; kind?: string }>(base, `/admin/sectors/${encodeURIComponent(sector)}`, auth).then(s => { setCurrency(s.currency); setCats(serviceCategories(s.vertical, s.kind)); }),
   ]).catch(e => setMsg({ text: e.message, ok: false }));
 
   useEffect(() => { setRows(null); setEditing(null); setMsg(null); load(); },
@@ -36,7 +37,7 @@ export default function Services({ sector, base, auth, canEdit }: Props) {
     if (priceCents === null) return setMsg({ text: 'Enter a price (0 if free or it varies).', ok: false });
     setBusy(true); setMsg(null);
     try {
-      const body = { name: draft.name.trim(), priceCents, durationMinutes: parseInt(draft.duration, 10) || 0, description: draft.description.trim() };
+      const body = { name: draft.name.trim(), priceCents, durationMinutes: parseInt(draft.duration, 10) || 0, description: draft.description.trim(), ...(draft.category ? { category: draft.category } : {}) };
       if (editing === 'new') await api(base, path, auth, { body });
       else await api(base, `${path}/${encodeURIComponent(editing!)}`, auth, { method: 'PUT', body });
       setEditing(null);
@@ -68,6 +69,12 @@ export default function Services({ sector, base, auth, canEdit }: Props) {
       <input style={input} placeholder={`Price (${currency})`} inputMode="decimal" value={draft.price} onChange={e => setDraft({ ...draft, price: e.target.value })} />
       <input style={input} placeholder="Minutes" inputMode="numeric" value={draft.duration} onChange={e => setDraft({ ...draft, duration: e.target.value.replace(/\D/g, '') })} />
       <input style={{ ...input, gridColumn: '1 / -1' }} placeholder="Short description (optional) — what's included" value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} maxLength={500} />
+      {cats.length > 0 && (
+        <select style={{ ...input, gridColumn: '1 / -1' }} value={draft.category || 'SERVICES'} onChange={e => setDraft({ ...draft, category: e.target.value })}>
+          {!cats.some(([k]) => k === (draft.category || 'SERVICES')) && <option value={draft.category}>{draft.category}</option>}
+          {cats.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      )}
       <div style={{ display: 'flex', gap: 8, gridColumn: '1 / -1' }}>
         <button style={btn} disabled={busy} onClick={save}>Save</button>
         <button style={ghost} disabled={busy} onClick={() => setEditing(null)}>Cancel</button>

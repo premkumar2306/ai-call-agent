@@ -52,6 +52,8 @@ TWILIO_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 TWILIO_DEFAULT_CUSTOMER_HASH = "demo-caller"
 WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_PHONE_NUMBER_MAP = '{"PHONE_NUMBER_ID_1":"dental","PHONE_NUMBER_ID_2":"auto_shop"}'
+# (fallback: WhatsApp numbers are normally mapped in admin Settings → WhatsApp numbers, table whatsapp_numbers)
+# ADMIN_NOTIFY_EMAIL = "ops@yourdomain.com"   # optional: emailed when an owner requests a phone number
 # Business for Exotel / Plivo numbers with no row in phone_numbers (admin Settings →
 # Phone numbers). Unset = calls to unmapped numbers are refused.
 # EXOTEL_DEFAULT_BUSINESS_TYPE = "kovai_wellness_clinic"

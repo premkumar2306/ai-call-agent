@@ -46,6 +46,8 @@ export interface SectorMeta {
   voice?: VoiceSettings;
   // What kind of business (clinic, salon, auto_shop…), set by the onboarding wizard.
   kind?: string;
+  // The assistant's spoken name (0018). Unset = "Avery" (assistantNameOf).
+  assistantName?: string;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */
@@ -150,6 +152,8 @@ export interface Env {
   RELAY_DO: DurableObjectNamespace;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
+  /** Optional: where owners' phone-number requests are emailed (needs RESEND_API_KEY). */
+  ADMIN_NOTIFY_EMAIL?: string;
   TWILIO_AUTH_TOKEN?: string;
   /** Enables confirmation texts (with TWILIO_SMS_FROM, a Twilio number that can send SMS). */
   TWILIO_ACCOUNT_SID?: string;

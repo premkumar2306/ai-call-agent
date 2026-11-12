@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { assistantNameOf } from '../src/services/verticals';
 import {
   DEFAULT_VOICE, endsSentence, isDefaultVoice, languageRules, parseVoiceInput, resolveVoiceSettings,
   sttDiffers, voiceLines, wordsOf, type VoiceSettings,
@@ -147,15 +148,17 @@ describe('canned lines and prompt rules', () => {
     const en = voiceLines('en');
     expect(en.opener).toBe('Thanks for calling!');
     expect(en.fillers).toEqual(['One moment.', 'Let me check.', 'Just a second.']);
-    expect(en.greeting('Advanced Vtech', en.capabilityHint('advanced_vtech')))
+    // advanced_vtech's assistant name is configured as Mogi (migration 0018).
+    expect(en.greeting('Advanced Vtech', en.capabilityHint('advanced_vtech'), assistantNameOf({ assistantName: 'Mogi' })))
       .toBe("You've reached Advanced Vtech. I'm Mogi, the virtual assistant. I can answer questions about our services and prices, or book you in — what can I do for you?");
+    expect(en.greeting('Sharma Clinic', '', assistantNameOf(null))).toContain("I'm Avery, the virtual assistant.");
     expect(en.goodbye('Shop')).toBe("I haven't heard anything, so I'll hang up now. Thanks for calling Shop. Goodbye!");
   });
 
   it('speaks Hindi lines in Devanagari, chunkable on the danda', () => {
     const hi = voiceLines('hi');
     expect(hi.opener).toMatch(/[ऀ-ॿ]/);
-    expect(extractCompleteSentences(hi.greeting('शर्मा क्लिनिक', hi.capabilityHint('clinic')) + ' ').chunks.length).toBeGreaterThanOrEqual(2);
+    expect(extractCompleteSentences(hi.greeting('शर्मा क्लिनिक', hi.capabilityHint('clinic'), 'Avery') + ' ').chunks.length).toBeGreaterThanOrEqual(2);
   });
 
   it('adds language rules only for Hindi / Hinglish voice lines', () => {

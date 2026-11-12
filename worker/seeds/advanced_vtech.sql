@@ -9,7 +9,7 @@
 -- bookings keep their product.
 --
 -- Apply: npx wrangler d1 execute DB --remote --file seeds/advanced_vtech.sql
--- then purge KV: sectors_list, products:advanced_vtech:all
+-- then purge KV: sectors_list:v2, products:advanced_vtech:all
 
 UPDATE sectors SET
   name = 'Advanced VTech',
