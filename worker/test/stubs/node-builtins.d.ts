@@ -18,3 +18,7 @@ declare module 'node:fs' {
   export function readdirSync(path: URL | string): string[];
 }
 interface ImportMeta { url: string }
+declare module 'node:crypto' {
+  interface Hmac { update(data: string): Hmac; digest(enc: 'hex' | 'base64'): string }
+  export function createHmac(alg: string, key: string): Hmac;
+}
