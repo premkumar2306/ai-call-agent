@@ -234,7 +234,7 @@ async function placeCall(mocks, { carrier, number, from, lines }) {
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
-  const call = { callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false };
+  const call = { startedAt: Date.now(), callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false };
   const opened = await c.open({ number, from, callSid });
   call.webhook = opened;
   if (!opened.ok) return call;
@@ -344,7 +344,8 @@ async function callScenario(mocks, s) {
 
   const bookings = await api('GET', `/admin/bookings/${s.key}`);
   const booked = (Array.isArray(bookings) ? bookings : bookings?.bookings ?? []).find(b => (b.customerName ?? b.customer_name) === 'Priya Sharma');
-  check(n, 'spoken booking is saved', !!booked, booked ? `${booked.productName ?? booked.product_name} at ${booked.scheduledAt ?? booked.scheduled_at}` : JSON.stringify(call.turns?.map(t => t.heard)).slice(0, 200));
+  const toolResults = mocks.log.anthropic.filter(a => a.toolResult && a.at >= call.startedAt).map(a => a.toolResult);
+  check(n, 'spoken booking is saved', !!booked, booked ? `${booked.productName ?? booked.product_name} at ${booked.scheduledAt ?? booked.scheduled_at}` : `tool results: ${JSON.stringify(toolResults).slice(0, 400)}`);
   if (s.transfer) {
     check(n, '"speak to someone" ends the stream', call.closedByServer);
     check(n, 'after-stream webhook dials the staff phone', call.transferTo && call.transferTo.replace(/\D/g, '').endsWith(s.staffPhone.replace(/\D/g, '').slice(-10)), `dials ${call.transferTo}`);

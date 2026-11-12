@@ -1,0 +1,68 @@
+name: Prepare Bengaluru dental campaign assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target slug from targets-500.json
+        required: true
+        type: string
+      include_audio:
+        description: Generate Sarvam MP3 audio
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dental-campaign-${{ inputs.target }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare campaign asset
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+      TARGET_SLUG: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Validate campaign files
+        run: |
+          case "$TARGET_SLUG" in
+            (*[!a-z0-9-]*) echo "::error::Target must be a lowercase slug"; exit 1 ;;
+          esac
+          node --check campaigns/bengaluru-dental-pilot/scripts/collect-500-targets.mjs
+          node --check campaigns/bengaluru-dental-pilot/scripts/generate-demos.mjs
+          node -e "const p=require('./campaigns/bengaluru-dental-pilot/targets-500.json'); if (p.targets.length !== 500) process.exit(1)"
+
+      - name: Generate text asset
+        if: ${{ !inputs.include_audio }}
+        run: node campaigns/bengaluru-dental-pilot/scripts/generate-demos.mjs --target "$TARGET_SLUG"
+
+      - name: Generate text and audio assets
+        if: ${{ inputs.include_audio }}
+        run: |
+          if [ -z "$SARVAM_API_KEY" ]; then
+            echo "::error::SARVAM_API_KEY is required when Include audio is enabled"
+            exit 1
+          fi
+          node campaigns/bengaluru-dental-pilot/scripts/generate-demos.mjs \
+            --target "$TARGET_SLUG" \
+            --audio \
+            --engine sarvam
+
+      - name: Upload campaign asset
+        uses: actions/upload-artifact@v6
+        with:
+          name: dental-campaign-asset
+          path: campaigns/bengaluru-dental-pilot/generated/
+          if-no-files-found: error
+          retention-days: 7

@@ -41,3 +41,9 @@ npm-debug.log*
 .idea/
 worker/svt/results/
 worker/e2e/.state/
+
+# Campaign runtime artifacts may contain recipient addresses, message IDs,
+# delivery failures, and generated audio. Keep them out of source control.
+campaigns/**/generated/
+campaigns/**/outreach/
+campaigns/**/campaign-*.json

@@ -119,7 +119,13 @@ function decide(req) {
   const say = (en, hi) => ({ text: hindi && hi ? hi : en });
   const toolResults = msgs.flatMap(m => Array.isArray(m.content) ? m.content.filter(b => b.type === 'tool_result') : []);
   const lastIsToolResult = Array.isArray(last?.content) && last.content.some(b => b.type === 'tool_result');
-  if (lastIsToolResult) return say('Done. Anything else I can help with?', 'हो गया। और कुछ मदद चाहिए?');
+  if (lastIsToolResult) {
+    // Say what the tool said (its spoken_response), as the real model would.
+    const r = last.content.find(b => b.type === 'tool_result');
+    const text = typeof r.content === 'string' ? r.content : (r.content ?? []).map(c => c.text ?? '').join('');
+    const spoken = (text.match(/"spoken_response":"((?:[^"\\]|\\.)*)"/) ?? [])[1];
+    return { text: spoken ? JSON.parse(`"${spoken}"`) : (hindi ? 'हो गया। और कुछ मदद चाहिए?' : 'Done. Anything else I can help with?'), toolResult: text.slice(0, 300) };
+  }
 
   const userText = (Array.isArray(last?.content) ? last.content.map(b => b.text ?? '').join(' ') : String(last?.content ?? '')).toLowerCase();
   const serviceId = (system.match(/\[id: ([^\]]+)\]/) ?? [])[1];
@@ -148,7 +154,7 @@ function decide(req) {
 
 function anthropic(req, res, log) {
   const d = decide(req);
-  log.anthropic.push({ model: req.model, stream: !!req.stream, decision: d.tool ?? 'text', tools: (req.tools ?? []).length, at: Date.now() });
+  log.anthropic.push({ model: req.model, stream: !!req.stream, decision: d.tool ?? 'text', toolResult: d.toolResult, tools: (req.tools ?? []).length, at: Date.now() });
   const usage = { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 };
   const id = `msg_mock_${Date.now()}`;
   const block = d.tool

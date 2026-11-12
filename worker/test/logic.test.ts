@@ -47,6 +47,12 @@ describe('validateScheduledAt', () => {
     expect(validateScheduledAt('2026-13-40T09:00:00', now)).not.toBeNull();
     expect(validateScheduledAt('2026-04-01T09:00:00', now)).not.toBeNull();
   });
+  it('accepts a same-day evening booking in the Americas after UTC midnight', () => {
+    // 02:28 UTC on 12 Nov is 20:28 on 11 Nov in Chicago: 21:30 that evening is upcoming.
+    const evening = new Date('2026-11-12T02:28:00Z');
+    expect(validateScheduledAt('2026-11-11T21:30:00', evening)).toBeNull();
+    expect(validateScheduledAt('2026-11-10T21:30:00', evening)).not.toBeNull();
+  });
 });
 
 describe('sanitizeHistory', () => {
