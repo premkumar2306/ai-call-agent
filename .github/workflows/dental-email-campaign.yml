@@ -65,7 +65,7 @@ jobs:
       MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
       MICROSOFT_CLIENT_SECRET: ${{ secrets.MICROSOFT_CLIENT_SECRET }}
       ZEROBOUNCE_API_KEY: ${{ secrets.ZEROBOUNCE_API_KEY }}
-      CAMPAIGN_OUTPUT_DIR: ${{ runner.temp }}/dental-email-campaign
+      CAMPAIGN_OUTPUT_DIR: ${{ github.workspace }}/.campaign-report
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -85,6 +85,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: dental-email-campaign-report
-          path: ${{ runner.temp }}/dental-email-campaign/
+          path: .campaign-report/
           if-no-files-found: warn
           retention-days: 30
