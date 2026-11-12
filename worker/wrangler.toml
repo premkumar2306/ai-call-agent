@@ -90,6 +90,8 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # WA_VERIFY_TOKEN       (arbitrary string you pick, enter in Meta webhook config)
 # WA_PHONE_NUMBER_ID    (found in Meta for Developers → WhatsApp → Phone Numbers)
 # WA_ACCESS_TOKEN       (permanent system user token with whatsapp_business_messaging scope)
+# Optional: WA_CONFIRMATION_TEMPLATE (approved utility template for confirmations outside the 24 h window),
+#           WA_TEMPLATE_LANGUAGE, WA_GRAPH_API_VERSION (override the pinned Graph version). See docs/whatsapp-setup.md.
 #
 # Indian numbers via Exotel (optional — see README "Indian phone numbers"):
 # EXOTEL_WEBHOOK_SECRET (random; Exotel doesn't sign webhooks, so every /exotel/* URL

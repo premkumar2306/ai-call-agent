@@ -211,6 +211,9 @@ export interface Env {
   WA_ACCESS_TOKEN?: string;          // Permanent system-user access token
   WA_DEFAULT_BUSINESS_TYPE?: string; // Sector for this WhatsApp number (default: 'advanced_vtech')
   WA_PHONE_NUMBER_MAP?: string;      // Optional JSON: {"<id>":"dental","<id2>":"auto_shop"}
+  WA_GRAPH_API_VERSION?: string;     // Optional override of the pinned Graph API version (e.g. "v24.0")
+  WA_CONFIRMATION_TEMPLATE?: string; // Approved template (one body param {{1}}) for confirmations outside the 24 h window
+  WA_TEMPLATE_LANGUAGE?: string;     // Optional template language code; default from the business language (en / hi)
   // External calendars (services/calendar/). CALENDAR_TOKEN_KEY encrypts
   // stored refresh tokens and is required for any provider; each provider
   // then needs its own OAuth client. All secrets.

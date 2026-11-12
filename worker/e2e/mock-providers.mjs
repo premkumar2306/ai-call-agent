@@ -9,13 +9,15 @@
 //   Cartesia    POST /tts/bytes              raw µ-law 8 kHz
 //   Sarvam TTS  POST /text-to-speech/stream  raw µ-law 8 kHz
 //   Razorpay    /v1/plans, /v1/subscriptions, /v1/subscriptions/:id
-//   Resend / Twilio REST / WhatsApp          accepted and logged
+//   WhatsApp    graph.facebook.com           messages / mark-as-read logged; media → voice-note bytes
+//   Deepgram    POST /v1/listen              voice-note transcription (the "audio" is the text)
+//   Resend / Twilio REST                     accepted and logged
 
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 
 export async function startMocks({ port = 0 } = {}) {
-  const log = { tts: [], stt: [], anthropic: [], razorpay: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
+  const log = { tts: [], stt: [], anthropic: [], razorpay: [], whatsapp: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
 
   const server = http.createServer(async (req, res) => {
@@ -34,6 +36,11 @@ export async function startMocks({ port = 0 } = {}) {
         const b = JSON.parse(body);
         log.tts.push({ provider: 'sarvam', text: b.text, format: { codec: b.output_audio_codec, sample_rate: b.speech_sample_rate, language: b.language_code }, at: Date.now() });
         return audioResponse(res, b.text);
+      }
+      if (host === 'graph.facebook.com') return graph(req, path, body, res, log);
+      if (host === 'api.deepgram.com' && path === '/v1/listen' && req.method === 'POST') {
+        log.deepgramRest.push({ query: Object.fromEntries(url.searchParams), contentType: req.headers['content-type'], at: Date.now() });
+        return json(res, 200, { results: { channels: [{ alternatives: [{ transcript: body, confidence: 0.97 }] }] } });
       }
       if (host === 'api.razorpay.com') return razorpay(req.method, path, body, req.headers.authorization, res, log);
       log.other.push({ host, path, method: req.method });
@@ -119,11 +126,25 @@ function decide(req) {
   const say = (en, hi) => ({ text: hindi && hi ? hi : en });
   const toolResults = msgs.flatMap(m => Array.isArray(m.content) ? m.content.filter(b => b.type === 'tool_result') : []);
   const lastIsToolResult = Array.isArray(last?.content) && last.content.some(b => b.type === 'tool_result');
+  const userTexts = msgs.filter(m => m.role === 'user' && !(Array.isArray(m.content) && m.content.some(b => b.type === 'tool_result')))
+    .map(m => (Array.isArray(m.content) ? m.content.map(b => b.text ?? '').join(' ') : String(m.content ?? '')).toLowerCase());
+  const lastUserText = userTexts.at(-1) ?? '';
+  const serviceIdOf = () => (system.match(/\[id: ([^\]]+)\]/) ?? [])[1];
+  const wantsFirst = t => /(first one|that works|yes please|book it|पहला)/.test(t);
   if (lastIsToolResult) {
+    // A chat keeps only the text of earlier turns, so after "the first one
+    // works" the model re-checks availability, then books the first slot.
+    const r0 = last.content.find(b => b.type === 'tool_result');
+    const t0 = typeof r0.content === 'string' ? r0.content : (r0.content ?? []).map(c => c.text ?? '').join('');
+    const slot0 = (t0.match(/"datetime":"([^"]+)"/) ?? [])[1];
+    const booked = msgs.some(m => m.role === 'assistant' && Array.isArray(m.content) && m.content.some(b => b.type === 'tool_use' && b.name === 'book_appointment'));
+    if (slot0 && wantsFirst(lastUserText) && !booked && tools.has('book_appointment') && serviceIdOf()) {
+      return { tool: 'book_appointment', input: { product_id: serviceIdOf(), scheduled_at: slot0, customer_name: 'Priya Sharma' } };
+    }
     // Say what the tool said (its spoken_response), as the real model would.
     const r = last.content.find(b => b.type === 'tool_result');
     const text = typeof r.content === 'string' ? r.content : (r.content ?? []).map(c => c.text ?? '').join('');
-    const spoken = (text.match(/"spoken_response":"((?:[^"\\]|\\.)*)"/) ?? [])[1];
+    const spoken = (text.match(/"(?:spoken_response|_spoken_hint)":"((?:[^"\\]|\\.)*)"/) ?? [])[1];
     return { text: spoken ? JSON.parse(`"${spoken}"`) : (hindi ? 'हो गया। और कुछ मदद चाहिए?' : 'Done. Anything else I can help with?'), toolResult: text.slice(0, 300) };
   }
 
@@ -144,6 +165,7 @@ function decide(req) {
   if (/(first one|that works|yes please|book it|पहला)/.test(userText) && tools.has('book_appointment')) {
     const slot = findSlot();
     if (slot && serviceId) return { tool: 'book_appointment', input: { product_id: serviceId, scheduled_at: slot, customer_name: 'Priya Sharma' } };
+    if (!slot && serviceId && tools.has('check_availability')) return { tool: 'check_availability', input: { service_id: serviceId } };
   }
   if (/(book|appointment|बुक|अपॉइंटमेंट)/.test(userText) && tools.has('check_availability') && serviceId) {
     return { tool: 'check_availability', input: { service_id: serviceId } };
@@ -161,6 +183,10 @@ function anthropic(req, res, log) {
     ? { type: 'tool_use', id: `toolu_${Date.now()}`, name: d.tool, input: d.input }
     : { type: 'text', text: d.text };
   const stop = d.tool ? 'tool_use' : 'end_turn';
+  if (!req.stream && (req.tools ?? []).length) {
+    // Non-streaming agent loop (WhatsApp): the same decision as one message.
+    return json(res, 200, { id, type: 'message', role: 'assistant', model: req.model, content: [block], stop_reason: stop, stop_sequence: null, usage });
+  }
   if (!req.stream) {
     // Non-streaming callers (the after-call classifier) get a plain message.
     return json(res, 200, { id, type: 'message', role: 'assistant', model: req.model, content: [{ type: 'text', text: '{"category":"booking","summary":"Caller booked a consultation."}' }], stop_reason: 'end_turn', stop_sequence: null, usage });
@@ -181,6 +207,29 @@ function anthropic(req, res, log) {
   ev('message_delta', { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: usage.output_tokens } });
   ev('message_stop', {});
   res.end();
+}
+
+// ── WhatsApp Cloud API (Graph) ───────────────────────────────────────────────
+// A voice note's media id is `voice-<base64url text>`; its "audio" is that text,
+// which the Deepgram mock then "recognises".
+
+function graph(req, path, body, res, log) {
+  const auth = req.headers.authorization ?? '';
+  const parsed = body ? JSON.parse(body) : null;
+  const m = path.match(/^\/(v\d+\.\d+)\/([^/]+)(\/messages)?$/);
+  log.whatsapp.push({ method: req.method, path, version: m?.[1], phoneNumberId: m?.[3] ? m[2] : null, body: parsed, auth: auth.startsWith('Bearer '), at: Date.now() });
+  if (!auth.startsWith('Bearer ')) return json(res, 401, { error: { code: 190, message: 'Invalid OAuth access token' } });
+  const dl = path.match(/^\/media-download\/(.+)$/);
+  if (dl) {
+    res.writeHead(200, { 'content-type': 'audio/ogg' });
+    return res.end(Buffer.from(dl[1].replace(/^voice-/, ''), 'base64url').toString('utf8'));
+  }
+  if (m && m[3] && req.method === 'POST') {
+    if (parsed?.status === 'read') return json(res, 200, { success: true });
+    return json(res, 200, { messaging_product: 'whatsapp', contacts: [{ input: parsed?.to, wa_id: parsed?.to }], messages: [{ id: `wamid.mock${Date.now()}${Math.floor(Math.random() * 1e6)}` }] });
+  }
+  if (m && req.method === 'GET') return json(res, 200, { url: `https://graph.facebook.com/media-download/${m[2]}`, mime_type: 'audio/ogg; codecs=opus', id: m[2] });
+  return json(res, 404, { error: { message: `mock has no ${req.method} ${path}` } });
 }
 
 // ── Razorpay ─────────────────────────────────────────────────────────────────

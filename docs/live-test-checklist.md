@@ -44,3 +44,20 @@ be exactly the URL Plivo calls. A wrong value gives a 403, because the signature
 ## Resend (owner sign-in)
 - [ ] Set `RESEND_API_KEY` and `EMAIL_FROM` (on a verified domain), sign up with a real email, and
   check the code arrives within a minute.
+
+## WhatsApp (Meta Cloud API)
+Follow [`docs/whatsapp-setup.md`](whatsapp-setup.md) first. `npm run whatsapp-setup -- --dry-run` should end with no ✗.
+1. `npm run whatsapp-setup -- --test-to <your WhatsApp number>`, then reply to the hello_world message.
+   - [ ] For an Indian business, the first reply is the AI/privacy notice, then the answer. Your
+     next message gets no second notice.
+   - [ ] Blue ticks appear on your message, and "typing…" shows while Avery writes.
+   - [ ] "I'd like to book an appointment" → times offered → "the first one works" → booked. The
+     booking shows in the Calls tab, with your WhatsApp number as the callback.
+   - [ ] A voice note ("Can I book for tomorrow?") gets a sensible answer.
+   - [ ] A photo with no caption gets a polite "please type it" reply; a location pin is understood.
+   - [ ] In a Hindi business (Settings → Voice → Hindi) the replies are in Devanagari.
+   - [ ] "STOP" gets the unsubscribe confirmation; writing again starts a fresh chat.
+2. Admin → Billing → usage shows one WhatsApp conversation for the day.
+3. Optional, after a `booking_confirmation` template is approved and `WA_CONFIRMATION_TEMPLATE` is set:
+   - [ ] Book by **phone call** from a number that hasn't messaged on WhatsApp for 24 hours. The
+     WhatsApp confirmation arrives as the template.

@@ -185,6 +185,22 @@ export function voiceLines(lang: VoiceLanguage): VoiceLines {
 // ── Prompt rules ────────────────────────────────────────────────────────────
 
 /**
+ * The written-chat counterpart of languageRules (WhatsApp / web chat): no
+ * voice-specific rules. Empty for 'en', so English chat prompts are unchanged.
+ */
+export function chatLanguageRules(lang: VoiceLanguage): string {
+  if (lang === 'en') return '';
+  const lead = lang === 'hi'
+    ? '- Customers here mostly write Hindi. Reply in Hindi, in Devanagari (मैं, आपका, कल), unless the customer writes in English — then reply in English.'
+    : '- Customers here mix Hindi and English (Hinglish). Reply the way the customer writes: romanised Hinglish if they write Hinglish ("Aapka appointment book ho gaya hai"), Hindi in Devanagari if they write Devanagari, English if they write English.';
+  return `LANGUAGE (Hindi / Hinglish business):
+${lead}
+- Be polite, like a front-desk person in India: "जी", "आप". English words people actually use are fine ("appointment", "booking").
+- Prices, times and phone numbers as digits ("₹1,500", "4:30 बजे").
+- Tool results and the business profile are in English — translate what you say from them; keep service names as they are.`;
+}
+
+/**
  * Extra system-prompt section for a non-English voice line. Empty for 'en',
  * so the English prompt (and its prompt-cache prefix) is unchanged.
  */
