@@ -15,7 +15,9 @@
 // right; speech recognition gets the right audio format; a spoken booking
 // lands in the database; "speak to someone" ends the stream and the
 // after-stream webhook dials staff; the call is metered for billing; the
-// notice is in the consent audit trail. Plus Razorpay: plan sync →
+// notice is in the consent audit trail. Plus WhatsApp: the Meta webhook
+// handshake, signatures, a chat booking, voice notes, retries, status
+// webhooks, unmapped numbers, Hindi, the DPDP notice and billing. Plus Razorpay: plan sync →
 // subscription → signed webhook → account active.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -39,6 +41,9 @@ const SECRETS = {
   EXOTEL_WEBHOOK_SECRET: 'ex-secret-mock', PLIVO_AUTH_TOKEN: 'pl-auth-mock', PLIVO_WEBHOOK_URL: BASE,
   RAZORPAY_KEY_ID: 'rzp_test_mock', RAZORPAY_KEY_SECRET: 'rzp-secret-mock', RAZORPAY_WEBHOOK_SECRET: 'rzp-webhook-mock',
   RESEND_API_KEY: 're_mock', EMAIL_FROM: 'Avery <test@example.com>',
+  WA_APP_SECRET: 'wa-app-secret-mock', WA_VERIFY_TOKEN: 'wa-verify-mock', WA_ACCESS_TOKEN: 'EAAmockwhatsapptoken0123456789',
+  // The legacy single number; any other unmapped number is refused.
+  WA_PHONE_NUMBER_ID: '109000000000999',
 };
 
 const only = process.argv[2]?.toLowerCase();
@@ -379,6 +384,129 @@ async function razorpayScenario(mocks) {
   check(n, 'account becomes active', summary?.state === 'active', `state=${summary?.state}`);
 }
 
+// ── WhatsApp (Meta Cloud API webhook → Graph API mock) ───────────────────────
+
+const WA = { pnid: '109000000000001', pnidHi: '109000000000002', unmapped: '109000000000777' };
+let waSeq = 0;
+
+function waBody(pnid, messages, extra = {}) {
+  return JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA_E2E', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { display_phone_number: '918047100099', phone_number_id: pnid }, contacts: messages.map(m => ({ profile: { name: 'Priya' }, wa_id: m.from })), messages, ...extra } }] }] });
+}
+const waSig = raw => `sha256=${createHmac('sha256', SECRETS.WA_APP_SECRET).update(raw).digest('hex')}`;
+async function waPost(raw, sig = waSig(raw)) {
+  return fetch(`${BASE}/whatsapp/webhook`, { method: 'POST', body: raw, headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sig } });
+}
+const waText = (from, text) => ({ from, id: `wamid.e2e${Date.now()}${waSeq++}`, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: text } });
+const sends = (mocks, to, since = 0) => mocks.log.whatsapp.filter(w => w.method === 'POST' && w.body?.to === to && w.body?.type && w.at >= since);
+
+/** Waits until the Worker has replied to `to` and gone quiet; returns the texts sent since `since`. */
+async function waReplies(mocks, to, since, { min = 1, timeoutMs = 15000 } = {}) {
+  const t0 = Date.now();
+  let n = -1, stableAt = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const got = sends(mocks, to, since);
+    if (got.length !== n) { n = got.length; stableAt = Date.now(); }
+    if (n >= min && Date.now() - stableAt > 1200) break;
+    await sleep(150);
+  }
+  return sends(mocks, to, since);
+}
+const textOf = s => s.body?.text?.body ?? '';
+
+async function whatsappScenario(mocks) {
+  const n = 'WhatsApp (Meta Cloud API)';
+  console.log(`\n▶ ${n}`);
+  const notice = /AI assistant/;
+
+  // Verification handshake.
+  const ok = await fetch(`${BASE}/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=${SECRETS.WA_VERIFY_TOKEN}&hub.challenge=1158201444`);
+  const bad = await fetch(`${BASE}/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=1158201444`);
+  const body = await ok.text();
+  check(n, 'verification: right token → challenge, wrong → 403', ok.status === 200 && body === '1158201444' && bad.status === 403, `${ok.status} "${body}", ${bad.status}`);
+
+  // Badly signed POST.
+  const customer = '919812300001';
+  let t = Date.now();
+  const forged = await waPost(waBody(WA.pnid, [waText(customer, 'hello')]), 'sha256=' + '0'.repeat(64));
+  await sleep(800);
+  check(n, 'badly signed POST is refused (403, nothing sent)', forged.status === 403 && sends(mocks, customer, t).length === 0, `${forged.status}`);
+
+  // A question.
+  t = Date.now();
+  const q = await waPost(waBody(WA.pnid, [waText(customer, 'Hi, what services do you offer?')]));
+  const r1 = await waReplies(mocks, customer, t, { min: 2 });
+  const first = r1.filter(s => s.body.type === 'text');
+  check(n, 'signed message is acknowledged with 200', q.status === 200, `${q.status}`);
+  check(n, 'reply goes from the mapped phone_number_id to the customer', first.length >= 1 && first.every(s => s.phoneNumberId === WA.pnid && s.version && s.auth), first.map(s => `${s.version}/${s.phoneNumberId}→${s.body.to}`).join(', '));
+  check(n, 'DPDP notice comes first, then the answer', first.length >= 2 && notice.test(textOf(first[0])) && !notice.test(textOf(first.at(-1))) && textOf(first.at(-1)).length > 0, first.map(s => textOf(s).slice(0, 50)).join(' | '));
+  check(n, 'message is marked as read (with typing indicator)', mocks.log.whatsapp.some(w => w.at >= t && w.body?.status === 'read' && w.body?.typing_indicator && w.phoneNumberId === WA.pnid));
+
+  // Book through chat, with the same tools as calls.
+  t = Date.now();
+  await waPost(waBody(WA.pnid, [waText(customer, "I'd like to book an appointment.")]));
+  const r2 = await waReplies(mocks, customer, t);
+  t = Date.now();
+  await waPost(waBody(WA.pnid, [waText(customer, 'The first one works.')]));
+  const r3 = await waReplies(mocks, customer, t);
+  const bookings = await api('GET', '/admin/bookings/in_wa');
+  const booked = (Array.isArray(bookings) ? bookings : bookings?.bookings ?? []).find(b => (b.customerName ?? b.customer_name) === 'Priya Sharma');
+  check(n, 'availability is offered in chat', r2.length >= 1 && /\d/.test(textOf(r2.at(-1))), textOf(r2.at(-1)).slice(0, 90));
+  check(n, 'chat booking is saved, with the WhatsApp number as callback', !!booked && String(booked.callbackPhone ?? booked.callback_phone ?? '').replace(/\D/g, '').endsWith(customer.slice(-10)), booked ? `${booked.productName ?? booked.product_name} at ${booked.scheduledAt ?? booked.scheduled_at}` : 'no booking');
+  check(n, 'booking confirmation is the reply', r3.length >= 1 && /book|confirm|all set/i.test(textOf(r3.at(-1))), textOf(r3.at(-1)).slice(0, 90));
+  check(n, 'DPDP notice was sent once in the whole conversation', sends(mocks, customer).filter(s => notice.test(textOf(s))).length === 1);
+
+  // Voice note (Deepgram).
+  t = Date.now();
+  const dgBefore = mocks.log.deepgramRest.length;
+  const voiceId = `voice-${Buffer.from('Can I book an appointment please').toString('base64url')}`;
+  await waPost(waBody(WA.pnid, [{ from: customer, id: `wamid.e2evoice${Date.now()}`, timestamp: String(Math.floor(Date.now() / 1000)), type: 'audio', audio: { id: voiceId, mime_type: 'audio/ogg; codecs=opus', voice: true } }]));
+  const r4 = await waReplies(mocks, customer, t);
+  const dg = mocks.log.deepgramRest.slice(dgBefore)[0];
+  check(n, 'voice note is downloaded and transcribed', !!dg && dg.query.language === 'en' && mocks.log.whatsapp.some(w => w.at >= t && w.path.startsWith('/media-download/')), dg ? JSON.stringify(dg.query) : 'Deepgram not called');
+  check(n, 'voice note gets an answer', r4.length >= 1 && textOf(r4.at(-1)).length > 0, textOf(r4.at(-1)).slice(0, 90));
+
+  // Retried duplicate.
+  t = Date.now();
+  const dup = waBody(WA.pnid, [waText(customer, 'What are your hours?')]);
+  const d1 = await waPost(dup);
+  const d2 = await waPost(dup);
+  await waReplies(mocks, customer, t);
+  const d3 = await waPost(dup);
+  await sleep(1500);
+  check(n, 'retried webhook (same message id) is answered once', d1.ok && d2.ok && d3.ok && sends(mocks, customer, t).length === 1, `${sends(mocks, customer, t).length} replies`);
+
+  // Status-only webhook.
+  t = Date.now();
+  const st = await waPost(waBody(WA.pnid, [], { messages: undefined, statuses: [{ id: 'wamid.x', status: 'delivered', timestamp: String(Math.floor(Date.now() / 1000)), recipient_id: customer }] }));
+  await sleep(1500);
+  check(n, 'status-only webhook: 200, no reply', st.status === 200 && mocks.log.whatsapp.filter(w => w.at >= t).length === 0, `${st.status}`);
+
+  // Unmapped number.
+  t = Date.now();
+  const stranger = '919812300009';
+  const um = await waPost(waBody(WA.unmapped, [waText(stranger, 'hello?')]));
+  await sleep(2000);
+  check(n, 'message to an unmapped number: 200, no reply as another business', um.status === 200 && mocks.log.whatsapp.filter(w => w.at >= t).length === 0, `${um.status}`);
+
+  // Hindi business.
+  const hiCustomer = '919812300002';
+  t = Date.now();
+  await waPost(waBody(WA.pnidHi, [waText(hiCustomer, 'नमस्ते, आपके यहाँ क्या सेवाएँ हैं?')]));
+  const r5 = (await waReplies(mocks, hiCustomer, t, { min: 2 })).filter(s => s.body.type === 'text');
+  const deva = /[\u0900-\u097F]/;
+  check(n, 'Hindi business: notice and reply in Hindi, from its own number', r5.length >= 2 && r5.every(s => deva.test(textOf(s)) && s.phoneNumberId === WA.pnidHi) && /AI सहायक/.test(textOf(r5[0])), r5.map(s => textOf(s).slice(0, 40)).join(' | '));
+
+  // Billing usage.
+  const usage = await api('GET', '/admin/billing/usage/in_wa');
+  const recs = (Array.isArray(usage) ? usage : usage?.records ?? []).filter(r => r.channel === 'whatsapp');
+  check(n, 'WhatsApp conversation is recorded for billing (one, with model tokens)', recs.length === 1 && recs[0].provider === 'meta' && Number(recs[0].llmInputTokens ?? recs[0].llm_input_tokens ?? 0) > 0, recs[0] ? JSON.stringify({ provider: recs[0].provider, in: recs[0].llmInputTokens ?? recs[0].llm_input_tokens }) : 'no record');
+
+  // Consent audit trail: one notice per customer.
+  const notices = await api('GET', '/admin/privacy/in_wa/notices');
+  const waNotices = (Array.isArray(notices) ? notices : []).filter(r => r.channel === 'whatsapp');
+  check(n, 'notice is in the consent audit trail once', waNotices.length === 1, `${waNotices.length} row(s)`);
+}
+
 const SCENARIOS = [
   {
     name: 'US business over Twilio (English)', key: 'us_twilio', carrier: 'twilio', country: 'US',
@@ -411,8 +539,15 @@ try {
   for (const s of SCENARIOS) {
     await setupBusiness({ key: s.key, name: s.name.split(' over ')[0], country: s.country, phone: s.staffPhone, number: s.number, provider: s.carrier, voice: s.voice });
   }
+  if (!only || 'whatsapp'.includes(only)) {
+    await setupBusiness({ key: 'in_wa', name: 'WhatsApp Clinic', country: 'IN', phone: '+919876500002', number: '+918047100098', provider: 'exotel' });
+    await setupBusiness({ key: 'in_wa_hi', name: 'WhatsApp Hindi Clinic', country: 'IN', phone: '+919876500003', number: '+918047100097', provider: 'exotel', voice: { voice_language: 'hi', stt_provider: 'sarvam', tts_provider: 'sarvam' } });
+    await api('PUT', '/admin/whatsapp-numbers', { phoneNumberId: WA.pnid, businessType: 'in_wa', label: 'E2E clinic' });
+    await api('PUT', '/admin/whatsapp-numbers', { phoneNumberId: WA.pnidHi, businessType: 'in_wa_hi', label: 'E2E Hindi clinic' });
+  }
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only) await callScenario(mocks, s);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
+  if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
 } catch (e) {
   console.error('\n✗ e2e run failed:', e.stack || e);
   results.push({ scenario: 'run', name: 'harness', ok: false, detail: String(e.message || e) });
