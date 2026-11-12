@@ -8,6 +8,7 @@ import { getToolDefinitions } from '../src/services/tool-router.service';
 import { parseResourceInput } from '../src/services/self-serve';
 import { resolveBusinessType } from '../src/routes/whatsapp';
 import { getSector } from '../src/services/sector.service';
+import { saveTranscript, webSessionCallSid } from '../src/services/transcript.service';
 import { createD1, createKV, executionCtx } from './stubs/d1';
 import type { Env, SectorMeta } from '../src/types';
 
@@ -311,6 +312,43 @@ describe('phone-number requests', () => {
     const emails = sentEmails.length;
     expect((await req(`/account/businesses/${key}/number-request`, { token, body: {} })).status).toBe(201);
     expect(sentEmails.length).toBe(emails);
+  });
+});
+
+describe('browser test sessions', () => {
+  it('keep one transcript row per session, updated each turn', async () => {
+    const session = { sub: 'abcdef0123456789abcdef', iat: 1_800_000_000 };
+    const callSid = webSessionCallSid(session);
+    expect(callSid).toBe('web-abcdef0123456789-1800000000');
+    const t1 = [{ role: 'user' as const, content: 'hi' }, { role: 'assistant' as const, content: 'hello' }];
+    const t2 = [...t1, { role: 'user' as const, content: 'book' }, { role: 'assistant' as const, content: 'done' }];
+    const id1 = await saveTranscript(env, { callSid, customerIdHashed: session.sub, businessType: 'x', turns: t1 });
+    const id2 = await saveTranscript(env, { callSid, customerIdHashed: session.sub, businessType: 'x', turns: t2 });
+    expect(id2).toBe(id1);
+    const rows = (await env.DB.prepare('select turns from transcripts where call_sid = ?').bind(callSid).all()).results as any[];
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].turns)).toHaveLength(4);
+    // A new test call (new token) is a new conversation.
+    expect(webSessionCallSid({ ...session, iat: session.iat + 60 })).not.toBe(callSid);
+  });
+});
+
+describe('WhatsApp status', () => {
+  it('reports which settings are present as booleans, to the operator only', async () => {
+    env = makeEnv({ WA_APP_SECRET: 'shh-secret', WA_VERIFY_TOKEN: 'verify-me', WA_CONFIRMATION_TEMPLATE: 'booking_confirmed' } as any);
+    const res = await req('/admin/whatsapp-status', { admin: ADMIN });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('shh-secret');
+    expect(text).not.toContain('verify-me');
+    expect(text).not.toContain('booking_confirmed');
+    expect(JSON.parse(text).data).toEqual({
+      appSecret: true, verifyToken: true, accessToken: false, phoneNumberMap: false,
+      confirmationTemplate: true, templateLanguage: false, graphApiVersion: false, webhookPath: '/whatsapp/webhook',
+    });
+    const token = await signIn('wastatus@example.com');
+    expect((await req('/admin/whatsapp-status', { token })).status).toBe(401);
+    expect((await req('/admin/whatsapp-status', {})).status).toBe(401);
   });
 });
 

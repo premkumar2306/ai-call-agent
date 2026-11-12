@@ -1,6 +1,5 @@
 import { DAYS, type WeekHours } from '../business';
 
-const timeInput: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', borderRadius: 6, color: 'var(--text-strong)', padding: '6px 6px', minWidth: 0, flex: '0 1 120px' };
 
 export default function HoursEditor({ value, onChange }: { value: WeekHours; onChange: (w: WeekHours) => void }) {
   const set = (d: keyof WeekHours, patch: Partial<WeekHours[keyof WeekHours]>) => onChange({ ...value, [d]: { ...value[d], ...patch } });
@@ -10,26 +9,23 @@ export default function HoursEditor({ value, onChange }: { value: WeekHours; onC
     onChange(next);
   };
   return (
-    <div style={{ display: 'grid', gap: 8 }}>
+    <div className="hours">
       {DAYS.map(([d, name]) => (
-        <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', width: 110, fontSize: 14, color: 'var(--text)' }}>
+        <div key={d} className="hours-row">
+          <label className="day">
             <input type="checkbox" checked={value[d].open} onChange={e => set(d, { open: e.target.checked })} />
             {name}
           </label>
           {value[d].open ? (
             <>
-              <input type="time" style={timeInput} value={value[d].from} onChange={e => set(d, { from: e.target.value })} aria-label={`${name} opens`} />
-              <span style={{ color: 'var(--text-subtle)' }}>to</span>
-              <input type="time" style={timeInput} value={value[d].to} onChange={e => set(d, { to: e.target.value })} aria-label={`${name} closes`} />
+              <input type="time" className="input" value={value[d].from} onChange={e => set(d, { from: e.target.value })} aria-label={`${name} opens`} />
+              <span className="muted">to</span>
+              <input type="time" className="input" value={value[d].to} onChange={e => set(d, { to: e.target.value })} aria-label={`${name} closes`} />
             </>
-          ) : <span style={{ color: 'var(--text-subtle)', fontSize: 13 }}>Closed</span>}
+          ) : <span className="muted small">Closed</span>}
         </div>
       ))}
-      <button type="button" onClick={copyMonday}
-        style={{ justifySelf: 'start', background: 'none', border: 'none', color: 'var(--accent-text)', fontSize: 13, cursor: 'pointer', padding: 0 }}>
-        Copy Monday's hours to Tue–Fri
-      </button>
+      <div><button type="button" className="btn-link small" onClick={copyMonday}>Copy Monday's hours to Tue–Fri</button></div>
     </div>
   );
 }

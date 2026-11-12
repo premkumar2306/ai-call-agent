@@ -1,11 +1,20 @@
 import { eq, and, desc } from 'drizzle-orm';
 import { getDb } from '../db/client';
 import { transcripts as transcriptsTable } from '../db/schema';
-import type { Env } from '../types';
+import type { Env, SessionPayload } from '../types';
 
 export interface Turn {
   role: 'user' | 'assistant';
   content: string;
+}
+
+/**
+ * A browser test session (/mogi/voice-turn) has no carrier call id. Each
+ * "Start a test call" gets a fresh token, so the token's customer and issue
+ * time identify the session: every turn updates the same transcript row.
+ */
+export function webSessionCallSid(session: Pick<SessionPayload, 'sub' | 'iat'>): string {
+  return `web-${session.sub.slice(0, 16)}-${session.iat}`;
 }
 
 export async function saveTranscript(
