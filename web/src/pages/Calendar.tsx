@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { card as sharedCard } from '../ui';
+import { Badge, Button, Card, Notice, Status } from '../components/ui';
 
 interface Props {
   sector: string;
@@ -7,6 +7,9 @@ interface Props {
   auth: Record<string, string>;
   /** Result of the OAuth round trip, from the URL the provider sent us back to. */
   oauthResult?: { ok: boolean; reason?: string } | null;
+  canEdit?: boolean;
+  /** Operator: when Google isn't set up, show which Worker settings are missing. */
+  operator?: boolean;
 }
 
 interface Provider { id: string; name: string; configured: boolean }
@@ -23,12 +26,8 @@ interface Connection {
 }
 interface CalendarOption { id: string; name: string; primary: boolean }
 
-const card: React.CSSProperties = sharedCard;
-const btn: React.CSSProperties = { background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer' };
-const ghost: React.CSSProperties = { background: 'transparent', color: 'var(--accent-text)', border: '1px solid var(--accent-border)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
-const select: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, minWidth: 260 };
 
-export default function Calendar({ sector, base, auth, oauthResult }: Props) {
+export default function Calendar({ sector, base, auth, oauthResult, canEdit = true, operator = false }: Props) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [conn, setConn] = useState<Connection | null>(null);
   const [calendars, setCalendars] = useState<CalendarOption[]>([]);
@@ -110,85 +109,95 @@ export default function Calendar({ sector, base, auth, oauthResult }: Props) {
   };
 
   const providerName = (id: string) => providers.find(p => p.id === id)?.name ?? id;
+  const available = providers.filter(p => p.configured);
 
   return (
-    <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--text-strong)' }}>Calendar</h2>
-      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
-        Connect this business's calendar. The assistant won't offer times that are busy there, and adds each booking as an event (removed again if cancelled).
-      </p>
+    <Card
+      className="card-accent"
+      title={<>Google Calendar {loaded && (conn ? (conn.status === 'active' ? <Badge tone="success">Connected</Badge> : <Badge tone="danger">Needs reconnecting</Badge>) : <Badge>Not connected</Badge>)}</>}
+      description="Connect your calendar so the assistant never offers a time you're busy, and every booking appears in your calendar (removed again if cancelled)."
+    >
+      {!loaded && <p className="muted" role="status">Loading…</p>}
 
-      {loaded && !conn && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {providers.map(p => (
-            <button key={p.id} onClick={() => connect(p.id)} disabled={busy || !p.configured}
-              title={p.configured ? '' : 'Not configured on this deployment'}
-              style={{ ...btn, opacity: busy || !p.configured ? 0.5 : 1 }}>
-              Connect {p.name}
-            </button>
-          ))}
-          {providers.length > 0 && providers.every(p => !p.configured) && (
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)', alignSelf: 'center' }}>
-              Calendar connections aren't switched on for this service yet. Ask the Avery team.
-            </p>
-          )}
-        </div>
+      {loaded && !conn && available.length > 0 && (
+        canEdit ? (
+          <div className="row">
+            {available.map(p => <Button key={p.id} onClick={() => connect(p.id)} busy={busy}>Connect {p.name}</Button>)}
+          </div>
+        ) : <p className="muted">Ask the business owner to connect the calendar.</p>
       )}
 
+      {loaded && !conn && available.length === 0 && (operator ? (
+        <Notice tone="warning">
+          <div className="stack-sm">
+            <strong>Google Calendar isn't set up on this deployment.</strong>
+            <span>Add these Worker settings, then reload this page:</span>
+            <ul className="plain-list">
+              <li><code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>: an OAuth client (type “Web application”) in Google Cloud, with the Calendar API enabled</li>
+              <li><code>CALENDAR_TOKEN_KEY</code>: a random key that encrypts the stored calendar tokens</li>
+              <li>Authorised redirect URI on that client: <code>{base}/oauth/google/callback</code></li>
+            </ul>
+            <span>See “Calendar integration” in the README.</span>
+          </div>
+        </Notice>
+      ) : (
+        <Notice tone="info">Google Calendar isn't available yet. The Avery team is setting it up; you'll be able to connect it here.</Notice>
+      ))}
+
       {conn && (
-        <div style={{ display: 'grid', gap: 14 }}>
-          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
-            Connected to <b style={{ color: 'var(--text-strong)' }}>{providerName(conn.provider)}</b>
-            {conn.accountEmail ? <> as <b style={{ color: 'var(--text-strong)' }}>{conn.accountEmail}</b></> : null}
+        <div className="stack">
+          <p>
+            Connected to <span className="strong">{providerName(conn.provider)}</span>
+            {conn.accountEmail ? <> as <span className="strong">{conn.accountEmail}</span></> : null}
           </p>
 
           {conn.status === 'reauth_required' && (
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <span style={{ fontSize: 13, color: 'var(--danger)' }}>Access was revoked or expired — bookings aren't syncing.</span>
-              <button onClick={() => connect(conn.provider)} disabled={busy} style={btn}>Reconnect</button>
+            <div className="row">
+              <span className="bad">Access was revoked or expired, so bookings aren't syncing.</span>
+              {canEdit && <Button onClick={() => connect(conn.provider)} busy={busy}>Reconnect</Button>}
             </div>
           )}
 
-          <label style={{ display: 'grid', gap: 6, fontSize: 13, color: 'var(--text-muted)' }}>
-            Calendar to use
-            <select
-              style={select}
-              value={conn.calendarId}
-              disabled={busy || !calendars.length}
-              onChange={e => {
-                const c = calendars.find(x => x.id === e.target.value);
-                if (c) save({ calendarId: c.id, calendarName: c.name }, `Using “${c.name}”.`);
-              }}
-            >
-              {!calendars.some(c => c.id === conn.calendarId) && (
-                <option value={conn.calendarId}>{conn.calendarName ?? conn.calendarId}</option>
-              )}
-              {calendars.map(c => <option key={c.id} value={c.id}>{c.name}{c.primary ? ' (primary)' : ''}</option>)}
-            </select>
-          </label>
-
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-            <input type="checkbox" checked={conn.checkBusy} disabled={busy}
-              onChange={e => save({ checkBusy: e.target.checked }, e.target.checked ? 'Busy times will be skipped.' : 'Busy times are ignored.')} />
-            Don't offer times that are busy in this calendar
-          </label>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-            <input type="checkbox" checked={conn.writeEvents} disabled={busy}
-              onChange={e => save({ writeEvents: e.target.checked }, e.target.checked ? 'Bookings will be added to the calendar.' : 'Bookings won’t be added.')} />
-            Add bookings to this calendar
-          </label>
-
-          {conn.lastError && conn.status === 'active' && (
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--warning)' }}>Last problem: {conn.lastError}</p>
+          {canEdit && (
+            <>
+              <div className="field">
+                <label htmlFor="cal-pick">Calendar to use</label>
+                <select
+                  id="cal-pick"
+                  className="input"
+                  value={conn.calendarId}
+                  disabled={busy || !calendars.length}
+                  onChange={e => {
+                    const c = calendars.find(x => x.id === e.target.value);
+                    if (c) save({ calendarId: c.id, calendarName: c.name }, `Using “${c.name}”.`);
+                  }}
+                >
+                  {!calendars.some(c => c.id === conn.calendarId) && (
+                    <option value={conn.calendarId}>{conn.calendarName ?? conn.calendarId}</option>
+                  )}
+                  {calendars.map(c => <option key={c.id} value={c.id}>{c.name}{c.primary ? ' (primary)' : ''}</option>)}
+                </select>
+              </div>
+              <label className="check-row">
+                <input type="checkbox" checked={conn.checkBusy} disabled={busy}
+                  onChange={e => save({ checkBusy: e.target.checked }, e.target.checked ? 'Busy times will be skipped.' : 'Busy times are ignored.')} />
+                Don't offer times that are busy in this calendar
+              </label>
+              <label className="check-row">
+                <input type="checkbox" checked={conn.writeEvents} disabled={busy}
+                  onChange={e => save({ writeEvents: e.target.checked }, e.target.checked ? 'Bookings will be added to the calendar.' : 'Bookings won’t be added.')} />
+                Add bookings to this calendar
+              </label>
+            </>
           )}
 
-          <div>
-            <button onClick={disconnect} disabled={busy} style={ghost}>Disconnect</button>
-          </div>
+          {conn.lastError && conn.status === 'active' && <p className="warn small">Last problem: {conn.lastError}</p>}
+
+          {canEdit && <div><Button variant="danger" onClick={disconnect} busy={busy}>Disconnect</Button></div>}
         </div>
       )}
 
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
-    </div>
+      <Status msg={msg} />
+    </Card>
   );
 }
