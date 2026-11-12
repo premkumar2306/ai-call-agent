@@ -160,6 +160,9 @@ export interface Env {
   TWILIO_SMS_FROM?: string;
   TWILIO_WEBHOOK_URL?: string;
   NODE_ENV?: string;
+  // End-to-end tests only (worker/e2e): base URL of the local provider stand-ins.
+  // Ignored when NODE_ENV is "production". See utils/provider-mock.ts.
+  PROVIDER_MOCK_URL?: string;
   // Set to '1'/'true' to enable verbose Deepgram STT logging (Results /
   // UtteranceEnd messages + which signal triggered finalize()). Off by
   // default to avoid flooding wrangler tail.

@@ -133,6 +133,11 @@ describe('Hindi text rules', () => {
     const said = 'जी, सोमवार सुबह 10 बजे का slot खाली है। बुक कर दें?';
     expect(isEchoOf('सोमवार सुबह 10 बजे का slot खाली है', said, 'hi')).toBe(true);
     expect(isEchoOf('हाँ सोमवार ठीक है', said, 'hi')).toBe(false);
+    // A caller's own Hindi question shares the common words with what was just
+    // said (found by the e2e simulator), but not the word order: not an echo.
+    const notice = 'आपकी जानकारी के लिए, आप एक AI सहायक से बात कर रहे हैं। मैं Mogi हूँ, हम आपकी बुकिंग कर सकते हैं। क्या मदद करें?';
+    expect(isEchoOf('क्या मैं किसी से बात कर सकता हूँ?', notice, 'hi')).toBe(false);
+    expect(isEchoOf('आप एक AI सहायक से बात कर रहे हैं', notice, 'hi')).toBe(true);
     // The English normaliser can't see Devanagari at all.
     expect(isEchoOf('सोमवार सुबह 10 बजे का slot खाली है', said)).toBe(false);
   });
