@@ -5,9 +5,9 @@
  *    This handler only replies — it never sends outbound proactive messages.
  *
  * 2. 24-HOUR SERVICE WINDOW: Free-form replies are only allowed within 24 hours
- *    of the user's last message. KV TTL is set to 86 400 s to match this window.
- *    After expiry, use approved Message Templates (not implemented here — escalate
- *    to a human agent or ask the user to message again).
+ *    of the user's last message. Replies to a message older than that are not
+ *    sent; business-initiated confirmations outside the window use the approved
+ *    template WA_CONFIRMATION_TEMPLATE (services/whatsapp-api.ts).
  *
  * 3. AI / AUTOMATION DISCLOSURE: If a user asks "am I talking to a bot/AI?", Mogi
  *    MUST answer honestly. The system prompt includes an explicit rule for this.
@@ -27,15 +27,14 @@
  *    the WhatsApp Cloud API can send messages. See setup instructions in the
  *    admin dashboard WhatsApp tab.
  *
- * 8. RATE LIMITS: Meta enforces per-number rate limits. This handler also applies
- *    a local KV counter (20 messages / 60 s per customer) to cap Anthropic spend.
+ * 8. RATE LIMITS: Meta enforces per-number rate limits (Graph calls retry once
+ *    on throttling). This handler also applies a local KV counter (20 messages
+ *    / 60 s per customer) to cap Anthropic spend, and says so once per minute.
  *
- * 9. TEMPLATE MESSAGES: Proactive outbound messages (booking reminders, etc.) must
- *    use pre-approved templates and are NOT handled by this route.
+ * 9. TEMPLATE MESSAGES: Proactive outbound messages must use pre-approved
+ *    templates; see sendBusinessMessage in services/whatsapp-api.ts.
  *
- * 10. GDPR / CCPA: Customer data (hashed IDs, orders, transcripts) must be
- *     deletable on request. Implement a DELETE /admin/customers/:idHashed endpoint
- *     before going to production in regulated markets.
+ * 10. DATA RIGHTS: export/erase per customer is /admin/privacy/:business/* (DPDP).
  */
 
 import { businessForWhatsApp } from '../services/self-serve';
@@ -49,23 +48,23 @@ import { getProducts } from '../services/catalog.service';
 import { agentTools, buildSystemPrompt } from '../services/turn.service';
 import { saveTranscript } from '../services/transcript.service';
 import { whatsappNotice, recordConsent } from '../services/disclosure';
+import { resolveVoiceSettings } from '../services/voice-language';
 import { UsageMeter } from '../services/billing/meter';
 import { recordWhatsAppTurn } from '../services/billing/service';
+import {
+  cannedReply, downloadMedia, inboundMessages, markRead, maskId, noteInbound, sendText, setOptedOut,
+  utteranceOf, withinServiceWindow, type ReplyLanguage, type WaMessage,
+} from '../services/whatsapp-api';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
-import { getDefaultBusiness } from '../services/line-config';import type { Env, SessionPayload } from '../types';
+import { getDefaultBusiness } from '../services/line-config';
+import type { Env, SectorMeta, SessionPayload } from '../types';
 import {
   agentModel, createAnthropic, customerHashSalt, HTTP_TIMEOUT_MS, isProduction, MAX_TOOL_ROUNDS, timingSafeEqual,
 } from '../config';
 
 const whatsappRouter = new Hono<HonoEnv>();
 
-// ── Local types ────────────────────────────────────────────────────────────────
-
 type Turn = { role: 'user' | 'assistant'; content: string };
-
-type WaTextMessage  = { from: string; id: string; type: 'text';  text:  { body: string } };
-type WaAudioMessage = { from: string; id: string; type: 'audio'; audio: { id: string; mime_type: string } };
-type WaMessage      = WaTextMessage | WaAudioMessage | { from: string; id: string; type: string };
 
 // ── Signature verification ─────────────────────────────────────────────────────
 
@@ -74,13 +73,14 @@ export async function verifyMetaSignature(
   rawBody: string,
   header: string,
 ): Promise<boolean> {
+  if (!header.startsWith('sha256=')) return false;
   const key = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(appSecret),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
   );
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
   const computed = 'sha256=' + Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-  return timingSafeEqual(computed, header);
+  return timingSafeEqual(computed, header.toLowerCase());
 }
 
 // ── KV helpers ─────────────────────────────────────────────────────────────────
@@ -98,32 +98,44 @@ async function saveWaHistory(env: Env, phoneHash: string, businessType: string, 
   await env.CART.put(waHistoryKey(phoneHash, businessType), JSON.stringify(history), { expirationTtl: 86400 });
 }
 
-// ── Dedup helpers ──────────────────────────────────────────────────────────────
+// ── Dedup ──────────────────────────────────────────────────────────────────────
+// Meta redelivers a webhook it thinks failed, for up to a few days; a message
+// id is answered once. KV is eventually consistent, so two deliveries in the
+// same second could in theory both pass — Meta's retries are minutes apart.
 
-async function isSeenMessage(env: Env, messageId: string): Promise<boolean> {
-  return (await env.CACHE.get(`wa:seen:${messageId}`)) !== null;
-}
+export const DEDUP_TTL_SECONDS = 3 * 86400;
 
-async function markMessageSeen(env: Env, messageId: string): Promise<void> {
-  await env.CACHE.put(`wa:seen:${messageId}`, '1', { expirationTtl: 600 });
+/** True the first time a message id is seen; false for a redelivery. */
+export async function claimMessage(env: Env, messageId: string): Promise<boolean> {
+  const key = `wa:seen:${messageId}`;
+  if ((await env.CACHE.get(key)) !== null) return false;
+  await env.CACHE.put(key, '1', { expirationTtl: DEDUP_TTL_SECONDS });
+  return true;
 }
 
 // ── Rate limit ─────────────────────────────────────────────────────────────────
 
-async function checkAndIncrementWaRateLimit(env: Env, phoneHash: string): Promise<boolean> {
+export const WA_RATE_LIMIT = 20;
+
+/** 'ok', 'limited' (tell the customer, once), or 'silent' (already told this minute). */
+export async function rateLimit(env: Env, phoneHash: string): Promise<'ok' | 'limited' | 'silent'> {
   const key = `rl:wa:${phoneHash}`;
-  const raw = await env.CACHE.get(key);
-  const count = raw ? parseInt(raw, 10) : 0;
-  if (count >= 20) return true;
+  const count = parseInt((await env.CACHE.get(key)) ?? '0', 10) || 0;
   await env.CACHE.put(key, String(count + 1), { expirationTtl: 60 });
-  return false;
+  if (count < WA_RATE_LIMIT) return 'ok';
+  return count === WA_RATE_LIMIT ? 'limited' : 'silent';
 }
 
-// ── Business type resolution ───────────────────────────────────────────────────
+// ── Business resolution ────────────────────────────────────────────────────────
 
-// The admin UI's mapping (whatsapp_numbers) first, then WA_PHONE_NUMBER_MAP,
-// then the default business.
-export async function resolveBusinessType(phoneNumberId: string, env: Env): Promise<string> {
+/**
+ * The business a WhatsApp number answers for: the operator's mapping
+ * (whatsapp_numbers), then WA_PHONE_NUMBER_MAP, then — only for the one
+ * configured number WA_PHONE_NUMBER_ID, or when none is configured — the
+ * default business. Any other unmapped number gets null: no reply as some
+ * other business.
+ */
+export async function resolveBusinessType(phoneNumberId: string, env: Env): Promise<string | null> {
   const mapped = phoneNumberId ? await businessForWhatsApp(env, phoneNumberId) : null;
   if (mapped) return mapped;
   if (env.WA_PHONE_NUMBER_MAP) {
@@ -132,6 +144,7 @@ export async function resolveBusinessType(phoneNumberId: string, env: Env): Prom
       if (map[phoneNumberId]) return map[phoneNumberId];
     } catch { /* ignore malformed JSON */ }
   }
+  if (env.WA_PHONE_NUMBER_ID && phoneNumberId && phoneNumberId !== env.WA_PHONE_NUMBER_ID) return null;
   return (await getDefaultBusiness(env)) ?? env.WA_DEFAULT_BUSINESS_TYPE ?? 'advanced_vtech';
 }
 
@@ -144,68 +157,50 @@ export function isOptOut(text: string): boolean {
   return /^\s*(stop|stop all|unsubscribe|cancel|end|quit|opt[\s-]?out)\s*[.!]*\s*$/i.test(text);
 }
 
-// ── Meta Graph API helpers ─────────────────────────────────────────────────────
+// ── Voice notes ────────────────────────────────────────────────────────────────
 
-async function downloadWaAudio(env: Env, mediaId: string): Promise<ArrayBuffer | null> {
-  try {
-    const urlRes = await fetch(`https://graph.facebook.com/v22.0/${encodeURIComponent(mediaId)}`, {
-      headers: { Authorization: `Bearer ${env.WA_ACCESS_TOKEN}` },
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
-    if (!urlRes.ok) return null;
-    const { url } = await urlRes.json() as { url: string };
-    const audioRes = await fetch(url, {
-      headers: { Authorization: `Bearer ${env.WA_ACCESS_TOKEN}` },
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
-    if (!audioRes.ok) return null;
-    return audioRes.arrayBuffer();
-  } catch {
-    return null;
-  }
+/** Deepgram query for a voice note in the business's language (nova-3: hi, multi for Hinglish). */
+export function voiceNoteQuery(lang: ReplyLanguage): string {
+  const language = lang === 'hi' ? 'hi' : lang === 'hi-en' ? 'multi' : 'en';
+  return new URLSearchParams({ model: 'nova-3', language, smart_format: 'true' }).toString();
 }
 
-async function transcribeWaAudio(env: Env, audioBuffer: ArrayBuffer): Promise<string> {
+async function transcribeVoiceNote(env: Env, mediaId: string, lang: ReplyLanguage): Promise<string> {
+  if (!env.DEEPGRAM_API_KEY) return '';
+  const media = await downloadMedia(env, mediaId);
+  if (!media) return '';
   try {
-    const res = await fetch('https://api.deepgram.com/v1/listen?model=nova-2&language=en&smart_format=true', {
+    const res = await fetch(`https://api.deepgram.com/v1/listen?${voiceNoteQuery(lang)}`, {
       method: 'POST',
-      headers: {
-        Authorization: `Token ${env.DEEPGRAM_API_KEY}`,
-        'Content-Type': 'audio/ogg; codecs=opus',
-      },
-      body: audioBuffer,
+      headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}`, 'Content-Type': media.mimeType.split(';')[0] || 'audio/ogg' },
+      body: media.bytes,
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
-    if (!res.ok) return '';
+    if (!res.ok) {
+      console.error(`[wa] voice note transcription failed: HTTP ${res.status}`);
+      return '';
+    }
     const data = await res.json() as any;
-    return data?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '';
-  } catch {
+    return String(data?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? '').trim();
+  } catch (e: any) {
+    console.error('[wa] voice note transcription failed:', e?.message || e);
     return '';
   }
 }
 
-async function sendWaReply(env: Env, to: string, text: string): Promise<void> {
-  const res = await fetch(`https://graph.facebook.com/v22.0/${env.WA_PHONE_NUMBER_ID}/messages`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.WA_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { preview_url: false, body: text },
-    }),
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`sendWaReply failed: ${res.status} ${errBody}`);
+// ── DPDP notice: once per customer per business ────────────────────────────────
+
+async function noticeAlreadyGiven(env: Env, businessType: string, phoneHash: string): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT 1 FROM consent_records WHERE business_type = ? AND channel = 'whatsapp' AND customer_id_hashed = ? LIMIT 1`,
+    ).bind(businessType, phoneHash).first();
+    return !!row;
+  } catch (e: any) {
+    console.error('[wa] consent lookup failed', e?.message || e);
+    return false;   // fail towards telling them
   }
 }
-
-// ── History trim ───────────────────────────────────────────────────────────────
 
 function trimHistory(turns: Turn[], max = 30): Turn[] {
   return turns.slice(-max);
@@ -228,10 +223,9 @@ whatsappRouter.get('/webhook', async (c) => {
 // ── POST /whatsapp/webhook — message handler ───────────────────────────────────
 
 whatsappRouter.post('/webhook', async (c) => {
-  // 1. Read raw body
   const rawBody = await c.req.text();
 
-  // 2. Verify Meta signature. In production a missing WA_APP_SECRET rejects
+  // Verify Meta's signature. In production a missing WA_APP_SECRET rejects
   // everything rather than silently accepting unsigned payloads.
   const sigHeader = c.req.header('x-hub-signature-256') ?? '';
   if (c.env.WA_APP_SECRET) {
@@ -241,119 +235,108 @@ whatsappRouter.post('/webhook', async (c) => {
     return c.text('Forbidden', 403);
   }
 
-  // 3. Parse body
   let payload: any;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return c.text('OK', 200);
+  try { payload = JSON.parse(rawBody); } catch { return c.text('OK', 200); }
+
+  // Status-only webhooks (sent / delivered / read / failed) yield no messages.
+  for (const { message, phoneNumberId } of inboundMessages(payload)) {
+    if (!await claimMessage(c.env, message.id)) continue;
+    // Meta retries any webhook that isn't acknowledged quickly, so the LLM
+    // loop runs after the 200 goes out (dedup above makes retries harmless).
+    c.executionCtx.waitUntil(
+      handleMessage(c.env, message, phoneNumberId)
+        .catch(err => console.error('[wa] unhandled error:', err?.message || err)),
+    );
   }
-
-  if (payload?.object !== 'whatsapp_business_account') {
-    return c.text('OK', 200);
-  }
-
-  // 4. Navigate to message value
-  const value = payload?.entry?.[0]?.changes?.[0]?.value;
-  if (!value) return c.text('OK', 200);
-
-  // Delivery receipts — skip silently
-  if (value.statuses && !value.messages) return c.text('OK', 200);
-
-  // 5. Extract message
-  const message: WaMessage | undefined = value.messages?.[0];
-  if (!message) return c.text('OK', 200);
-  const phoneNumberId: string = value.metadata?.phone_number_id ?? '';
-
-  // 6. Dedup
-  if (await isSeenMessage(c.env, message.id)) return c.text('OK', 200);
-  await markMessageSeen(c.env, message.id);
-
-  // Meta retries any webhook that isn't acknowledged quickly, so the LLM
-  // loop runs after the 200 goes out (dedup above makes retries harmless).
-  c.executionCtx.waitUntil(
-    handleMessage(c.env, message, phoneNumberId)
-      .catch(err => console.error('[wa] unhandled error:', err?.message || err)),
-  );
   return c.text('OK', 200);
 });
 
 async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string): Promise<void> {
-  // 7. Hash phone
-  const phoneHash = await hashId(message.from, customerHashSalt(env));
-
-  // 8. Resolve business type
   const businessType = await resolveBusinessType(phoneNumberId, env);
-
-  // 9. Rate limit
-  const overLimit = await checkAndIncrementWaRateLimit(env, phoneHash);
-  if (overLimit) {
-    await sendWaReply(env, message.from, "You've sent a lot of messages recently. Please wait a moment before continuing.").catch(() => {});
+  if (!businessType) {
+    console.warn(`[wa] message to unmapped phone_number_id ${maskId(phoneNumberId)}; map it in Operator → WhatsApp. Not replying.`);
     return;
   }
+  // Replies go out from the number the customer wrote to.
+  const fromNumber = phoneNumberId || env.WA_PHONE_NUMBER_ID || '';
+  const phoneHash = await hashId(message.from, customerHashSalt(env));
+  const sentAt = Number(message.timestamp) || Math.floor(Date.now() / 1000);
 
-  // 10. Opt-out check (text only)
-  if (message.type === 'text') {
-    const textMsg = message as WaTextMessage;
-    if (isOptOut(textMsg.text.body)) {
-      await sendWaReply(env, message.from, "You've been unsubscribed. Text us any time to start again.").catch(() => {});
-      return;
-    }
+  // A redelivery older than the 24-hour window can't be answered free-form.
+  if (!withinServiceWindow(sentAt)) {
+    console.warn(`[wa:${phoneHash.slice(-8)}] message older than 24 h; not replying`);
+    return;
   }
+  await noteInbound(env, phoneHash, sentAt, fromNumber);
+  const reply = (text: string) => sendText(env, fromNumber, message.from, text);
 
-  // 11. Resolve utterance
+  const sectorMeta = await getSector(env, businessType) as SectorMeta | null;
+  const lang = resolveVoiceSettings(sectorMeta).language as ReplyLanguage;
+
+  const limit = await rateLimit(env, phoneHash);
+  if (limit !== 'ok') {
+    if (limit === 'limited') await reply(cannedReply('rateLimited', lang));
+    return;
+  }
+  await markRead(env, fromNumber, message.id);
+
+  const said = utteranceOf(message);
+  if (said.kind === 'ignore') return;
+  if (said.kind === 'reply') { await reply(cannedReply(said.canned, lang)); return; }
+
   let utterance = '';
-  if (message.type === 'text') {
-    utterance = (message as WaTextMessage).text.body.trim();
-  } else if (message.type === 'audio') {
-    const audioMsg = message as WaAudioMessage;
-    const buf = await downloadWaAudio(env, audioMsg.audio.id);
-    if (buf) {
-      utterance = await transcribeWaAudio(env, buf);
-    }
-    if (!utterance) {
-      await sendWaReply(env, message.from, "I couldn't make out that voice message. Could you type your request instead?").catch(() => {});
+  if (said.kind === 'text') {
+    utterance = said.text;
+    if (isOptOut(utterance)) {
+      await setOptedOut(env, phoneHash, true);
+      await reply(cannedReply('optedOut', lang));
       return;
     }
   } else {
-    await sendWaReply(env, message.from, "I can only handle text and voice messages. Please type your request.").catch(() => {});
-    return;
+    utterance = await transcribeVoiceNote(env, said.mediaId, lang);
+    if (!utterance) { await reply(cannedReply('voiceFailed', lang)); return; }
   }
+  // Writing again after "STOP" is a new opt-in.
+  await setOptedOut(env, phoneHash, false);
 
   try {
-    // 12. Get/create customer
     const account = await getOrCreateCustomer(env, phoneHash);
-
-    // 13. Build session
     const now = Math.floor(Date.now() / 1000);
     const session: SessionPayload = {
       sub: phoneHash,
       businessType,
+      // The WhatsApp number is the callback number for bookings and messages.
+      callerPhone: `+${message.from.replace(/\D/g, '')}`,
       iat: now,
       exp: now + 86400,
       account,
     };
 
-    // 14–16. History, orders, sector metadata and catalog are independent —
-    // fetch them in one wave.
-    const [history, orders, sectorMeta, products] = await Promise.all([
+    const [history, orders, products, noticeGiven] = await Promise.all([
       loadWaHistory(env, phoneHash, businessType),
       getOrders(env, phoneHash, businessType).catch(() => []),
-      getSector(env, businessType),
       getProducts(env, businessType).catch(() => []),
+      noticeAlreadyGiven(env, businessType, phoneHash),
     ]);
 
-    // 17. System prompt — same rules and business profile as the phone
-    // agent, chat-formatted.
+    // DPDP: the AI/privacy notice before the first reply this customer ever
+    // gets from this business (not every 24 hours).
+    const notice = noticeGiven ? null : whatsappNotice(sectorMeta);
+    if (notice && await reply(notice)) {
+      await recordConsent(env, {
+        businessType, channel: 'whatsapp', callSid: `wa:${phoneHash.slice(0, 8)}`,
+        customerIdHashed: phoneHash, noticeText: notice, playedAt: new Date(),
+      });
+    }
+
+    // Same rules, business profile and tools as the phone agent, chat-formatted.
     const systemPrompt: Anthropic.TextBlockParam[] = [
       ...buildSystemPrompt({ businessType, sectorMeta, products, session, orders, channel: 'chat' }),
       { type: 'text', text: 'OPT-OUT: if the customer says "stop" or "unsubscribe", acknowledge it politely. (Handled before you see it; this is a backstop.)' },
     ];
 
-    // 18. Agentic loop
     const anthropic = createAnthropic(env);
     const tools = agentTools(businessType, sectorMeta, products.length);
-
     const messages: Anthropic.MessageParam[] = [
       ...history.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
       { role: 'user', content: utterance },
@@ -393,13 +376,11 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
 
       replyText = response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map(b => b.text.trim()).filter(Boolean).join(' ') || "Sorry, I had trouble with that. Please try again.";
+        .map(b => b.text.trim()).filter(Boolean).join(' ');
       break;
     }
+    if (!replyText) replyText = cannedReply('error', lang);
 
-    if (!replyText) replyText = "I'm having trouble right now. Please try again.";
-
-    // 20-21. Trim and save history
     const updatedHistory = trimHistory([
       ...history,
       { role: 'user', content: utterance },
@@ -407,18 +388,8 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
     ], 30);
     await saveWaHistory(env, phoneHash, businessType, updatedHistory);
 
-    // 22. Send reply. A new conversation (no history in the last 24h) also
-    // gets the AI/privacy notice when the business has it on (DPDP).
-    const notice = history.length === 0 ? whatsappNotice(sectorMeta) : null;
-    await sendWaReply(env, message.from, notice ? `${replyText}\n\n${notice}` : replyText);
-    if (notice) {
-      await recordConsent(env, {
-        businessType, channel: 'whatsapp', callSid: `wa:${phoneHash.slice(0, 8)}`,
-        customerIdHashed: phoneHash, noticeText: notice, playedAt: new Date(),
-      });
-    }
+    await reply(replyText);
 
-    // 23. Transcript (already off the response path — see waitUntil above)
     await saveTranscript(env, {
       callSid: `wa:${phoneHash.slice(0, 8)}`,
       customerIdHashed: phoneHash,
@@ -426,12 +397,11 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
       turns: updatedHistory,
     }).catch(err => console.error('wa transcript error', err.message));
 
-    // 24. Usage metering (conversation count + model tokens); never throws.
+    // Usage metering (conversation count + model tokens); never throws.
     await recordWhatsAppTurn(env, businessType, phoneHash, meter.llmModel ?? agentModel(env), meter.llm);
-
   } catch (err: any) {
-    console.error(`[wa:${phoneHash.slice(-8)}] error:`, err.message);
-    await sendWaReply(env, message.from, "I'm having technical difficulties. Please try again shortly.").catch(() => {});
+    console.error(`[wa:${phoneHash.slice(-8)}] error:`, err?.message || err);
+    await reply(cannedReply('error', lang));
   }
 }
 

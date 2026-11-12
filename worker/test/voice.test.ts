@@ -161,7 +161,7 @@ describe('canned lines and prompt rules', () => {
     expect(extractCompleteSentences(hi.greeting('शर्मा क्लिनिक', hi.capabilityHint('clinic'), 'Avery') + ' ').chunks.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('adds language rules only for Hindi / Hinglish voice lines', () => {
+  it('adds language rules only for Hindi / Hinglish businesses (voice and chat)', () => {
     expect(languageRules('en')).toBe('');
     expect(buildAgentRules('auto', 'Biz', 'voice')).not.toMatch(/LANGUAGE/);
     const hi = buildAgentRules('auto', 'Biz', 'voice', undefined, 'hi-en');
@@ -169,7 +169,13 @@ describe('canned lines and prompt rules', () => {
     expect(hi).toMatch(/Devanagari/);
     expect(hi).toMatch(/₹1,500/);
     expect(hi).not.toMatch(/Plain spoken English/);
-    expect(buildAgentRules('auto', 'Biz', 'chat', undefined, 'hi')).not.toMatch(/LANGUAGE/);
+    // Chat (WhatsApp / web) follows the business language with written-chat rules.
+    expect(buildAgentRules('auto', 'Biz', 'chat')).not.toMatch(/LANGUAGE/);
+    const chatHi = buildAgentRules('auto', 'Biz', 'chat', undefined, 'hi');
+    expect(chatHi).toMatch(/LANGUAGE \(Hindi/);
+    expect(chatHi).toMatch(/Reply in Hindi, in Devanagari/);
+    expect(chatHi).not.toMatch(/voice reads/);
+    expect(buildAgentRules('auto', 'Biz', 'chat', undefined, 'hi-en')).toMatch(/romanised Hinglish/);
     const meta: any = { name: 'Biz', model: 'service', categories: [], hours: {}, timezone: 'Asia/Kolkata', currency: 'INR', voice: { language: 'hi' } };
     const session: any = { sub: 'x', businessType: 'auto', iat: 0, exp: 0, account: { tier: 'BASIC', store_credit_cents: 0 } };
     expect(buildSystemPrompt({ businessType: 'auto', sectorMeta: meta, products: [], session, orders: [] })[0].text).toMatch(/Reply in Hindi/);

@@ -10,7 +10,7 @@ import { saveTranscript } from './transcript.service';
 import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
 import { assistantNameOf, getVertical, VERTICALS, type Vertical } from './verticals';
 import type { CallCache } from './call-context';
-import { languageRules, resolveVoiceSettings, type VoiceLanguage } from './voice-language';
+import { chatLanguageRules, languageRules, resolveVoiceSettings, type VoiceLanguage } from './voice-language';
 import type { Order, Product, SectorMeta } from '../types';
 
 // ── Call history stored in CART KV (1-hour TTL per call) ─────────────────────
@@ -290,7 +290,7 @@ CONVERSATION:
 - ${channel === 'voice' ? 'Speech recognition makes mistakes. If words look garbled, make your best guess from context and confirm it in a few words.' : 'Typos happen. Make your best guess from context and confirm it briefly.'}
 - A reply of yours ending in "${INTERRUPTED_MARK}" was cut off — the ${who} only heard the part before it. Respond to what they said; don't restart the whole reply.
 - If asked, you are an AI assistant — never claim to be human. If they want a person, use transfer_to_staff.${
-    channel === 'voice' && language !== 'en' ? `\n\n${languageRules(language)}` : ''}`;
+    language === 'en' ? '' : `\n\n${channel === 'voice' ? languageRules(language) : chatLanguageRules(language)}`}`;
 
   if (businessType === 'health_nav') {
     return `You are ${name}, a health plan member services specialist for ${bizName}${channel === 'voice' ? ', on a live phone call' : ''}. You are empathetic, clear and warm.

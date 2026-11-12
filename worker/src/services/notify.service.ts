@@ -4,6 +4,10 @@ import { formatSlotLabel } from './tool-router.service';
 import { formatPhone, localeOf } from '../utils/locale';
 import { bookingDetailLines } from './verticals';
 import { privacyLinkSuffix } from './disclosure';
+import { confirmBookingOnWhatsApp } from './whatsapp-api';
+import { resolveVoiceSettings } from './voice-language';
+import { hashId } from '../utils/identity';
+import { customerHashSalt } from '../config';
 
 // Tells people what the agent did: the business (email to the sector's
 // notify_email) and the caller (text to their callback number). Each channel
@@ -82,6 +86,13 @@ export async function notifyBooking(env: Env, meta: SectorMeta | null | undefine
     // Empty unless the business has the DPDP notice on and a privacy URL set.
     text += privacyLinkSuffix(meta);
     jobs.push(sendSms(env, order.callbackPhone, text).catch(logFail('confirmation text')));
+    // WhatsApp too, via the approved template — only once WA_CONFIRMATION_TEMPLATE is set.
+    if (env.WA_CONFIRMATION_TEMPLATE) {
+      const phone = order.callbackPhone;
+      jobs.push(hashId(phone.replace(/\D/g, ''), customerHashSalt(env)).then(phoneHash => confirmBookingOnWhatsApp(env, {
+        businessType: order.businessType, phone, phoneHash, text, lang: resolveVoiceSettings(meta).language,
+      })).then(() => undefined).catch(logFail('WhatsApp confirmation')));
+    }
   }
   await Promise.all(jobs);
 }
