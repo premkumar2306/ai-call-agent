@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { card as sharedCard } from '../ui';
+import { Button, Card, EmptyState, Status, Table } from '../components/ui';
 
 // Called number → business (admin API /admin/phone-numbers). A mapped number
 // answers as its business on Twilio, Exotel or Plivo; unmapped numbers fall
@@ -20,10 +20,6 @@ const PROVIDERS = [
   { key: 'plivo', name: 'Plivo (India)' },
 ];
 
-const card: React.CSSProperties = sharedCard;
-const input: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8 };
-const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 500, borderBottom: '1px solid var(--border)' };
-const td: React.CSSProperties = { padding: '6px 8px', color: 'var(--text)', borderBottom: '1px solid var(--border)' };
 
 export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -94,56 +90,38 @@ export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
   if (!adminKey) return null;
 
   return (
-    <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--text-strong)' }}>Phone numbers</h2>
-      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
-        Which business answers each number. A mapped number overrides the phone-line default; Indian numbers
-        (Exotel/Plivo) can be entered as 080…, 98… or +91….
-      </p>
-
+    <Card title="Phone numbers" description="Which business answers each number. A routed number overrides the default line. Indian numbers (Exotel or Plivo) can be typed as 080…, 98… or +91….">
+      {rows && rows.length === 0 && <EmptyState title="No numbers routed yet">Add a number below once the carrier has connected it.</EmptyState>}
       {rows && rows.length > 0 && (
-        <div style={{ overflowX: 'auto', marginBottom: 16 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr><th style={th}>Number</th><th style={th}>Carrier</th><th style={th}>Business</th><th style={th}>Label</th><th style={th} /></tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={`${r.provider}:${r.number}`}>
-                  <td style={{ ...td, fontFamily: 'monospace' }}>{r.number}</td>
-                  <td style={td}>{providerName(r.provider)}</td>
-                  <td style={td}>{nameOf(r.businessType)}</td>
-                  <td style={{ ...td, color: 'var(--text-muted)' }}>{r.label ?? ''}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>
-                    <button onClick={() => remove(r)} disabled={busy}
-                      style={{ background: 'transparent', color: 'var(--danger)', border: '1px solid var(--danger-border)', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }}>
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table head={['Number', 'Carrier', 'Business', 'Label', <span className="sr-only">Actions</span>]}>
+          {rows.map(r => (
+            <tr key={`${r.provider}:${r.number}`}>
+              <td className="mono" data-label="Number">{r.number}</td>
+              <td data-label="Carrier">{providerName(r.provider)}</td>
+              <td data-label="Business">{nameOf(r.businessType)}</td>
+              <td className="dim" data-label="Label">{r.label ?? ''}</td>
+              <td className="num"><Button variant="danger" size="sm" onClick={() => remove(r)} disabled={busy}>Remove</Button></td>
+            </tr>
+          ))}
+        </Table>
       )}
-      {rows && rows.length === 0 && <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--text-muted)' }}>No numbers mapped yet.</p>}
-
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input placeholder="+91 80 4712 3456" value={number} onChange={e => setNumber(e.target.value)} style={{ ...input, width: 170 }} />
-        <select value={provider} onChange={e => setProvider(e.target.value)} style={input}>
-          {PROVIDERS.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
-        </select>
-        <select value={business} onChange={e => setBusiness(e.target.value)} style={{ ...input, minWidth: 180 }}>
-          <option value="">Business…</option>
-          {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
-        </select>
-        <input placeholder="Label (optional)" value={label} onChange={e => setLabel(e.target.value)} style={{ ...input, width: 150 }} />
-        <button onClick={add} disabled={busy || !rows || !number.trim() || !business}
-          style={{ background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: busy || !rows || !number.trim() || !business ? 0.5 : 1 }}>
-          {busy ? 'Saving…' : 'Map number'}
-        </button>
-      </div>
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
-    </div>
+      <form className="form-row" onSubmit={e => { e.preventDefault(); add(); }}>
+        <div className="field grow"><label htmlFor="pn-number">Number</label><input id="pn-number" className="input" placeholder="+91 80 4712 3456" value={number} onChange={e => setNumber(e.target.value)} /></div>
+        <div className="field grow"><label htmlFor="pn-carrier">Carrier</label>
+          <select id="pn-carrier" className="input" value={provider} onChange={e => setProvider(e.target.value)}>
+            {PROVIDERS.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
+          </select>
+        </div>
+        <div className="field grow"><label htmlFor="pn-biz">Business</label>
+          <select id="pn-biz" className="input" value={business} onChange={e => setBusiness(e.target.value)}>
+            <option value="">Choose…</option>
+            {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
+          </select>
+        </div>
+        <div className="field grow"><label htmlFor="pn-label">Label (optional)</label><input id="pn-label" className="input" value={label} onChange={e => setLabel(e.target.value)} /></div>
+        <Button type="submit" busy={busy} disabled={!rows || !number.trim() || !business}>Add number</Button>
+      </form>
+      <Status msg={msg} />
+    </Card>
   );
 }

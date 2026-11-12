@@ -1,12 +1,13 @@
 // Shared building blocks for the admin UI. Styling lives in index.css.
-import { useId, type ReactNode, type ButtonHTMLAttributes } from 'react';
+import { useEffect, useId, useState, type ReactNode, type ButtonHTMLAttributes } from 'react';
+import { applyTheme, loadTheme, type ThemeChoice } from '../theme';
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ');
 
 export function PageHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
     <header className="page-header">
-      <div style={{ minWidth: 0 }}>
+      <div>
         <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
@@ -15,16 +16,18 @@ export function PageHeader({ title, description, actions }: { title: ReactNode; 
   );
 }
 
-export function Card({ title, description, children, actions }: { title?: ReactNode; description?: ReactNode; children?: ReactNode; actions?: ReactNode }) {
+export function Card({ title, description, children, actions, className }: { title?: ReactNode; description?: ReactNode; children?: ReactNode; actions?: ReactNode; className?: string }) {
   return (
-    <section className="card">
-      {(title || actions) && (
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          {title && <h2 className="card-title">{title}</h2>}
+    <section className={cx('card', className)}>
+      {(title || actions || description) && (
+        <div className="card-head">
+          <div>
+            {title && <h2>{title}</h2>}
+            {description && <p className="card-hint">{description}</p>}
+          </div>
           {actions}
         </div>
       )}
-      {description && <p className="card-hint">{description}</p>}
       {children}
     </section>
   );
@@ -53,11 +56,11 @@ export function Field({ label, help, children }: { label: ReactNode; help?: Reac
   );
 }
 
-export function Badge({ tone, children }: { tone?: 'success' | 'warning' | 'danger' | 'accent'; children: ReactNode }) {
+export function Badge({ tone, children }: { tone?: 'success' | 'warning' | 'danger' | 'accent' | 'info'; children: ReactNode }) {
   return <span className={cx('badge', tone && `badge-${tone}`)}>{children}</span>;
 }
 
-export function Notice({ tone, children }: { tone?: 'success' | 'error' | 'warning'; children: ReactNode }) {
+export function Notice({ tone, children }: { tone?: 'success' | 'error' | 'warning' | 'info'; children: ReactNode }) {
   return <div className={cx('notice', tone && `notice-${tone}`)} role={tone === 'error' ? 'alert' : 'status'}>{children}</div>;
 }
 
@@ -66,15 +69,16 @@ export function EmptyState({ title, children, action }: { title: ReactNode; chil
     <div className="empty">
       <strong>{title}</strong>
       {children}
-      {action && <div style={{ marginTop: 12 }}>{action}</div>}
+      {action && <div className="row">{action}</div>}
     </div>
   );
 }
 
-export function Table({ head, children }: { head: ReactNode[]; children: ReactNode }) {
+/** A table; `cards` turns each row into a small card on phones (give cells data-label). */
+export function Table({ head, children, cards = true }: { head: ReactNode[]; children: ReactNode; cards?: boolean }) {
   return (
     <div className="table-wrap">
-      <table className="table">
+      <table className={cx('table', cards && 'cards')}>
         <thead><tr>{head.map((h, i) => <th key={i} scope="col">{h}</th>)}</tr></thead>
         <tbody>{children}</tbody>
       </table>
@@ -95,4 +99,58 @@ export function Segmented<T extends string>({ items, value, onChange, label }: {
 
 export function Loading({ what = 'Loading…' }: { what?: string }) {
   return <p className="muted" role="status">{what}</p>;
+}
+
+/** A message after an action: green when it worked, red when it didn't. */
+export function Status({ msg }: { msg: { text: string; ok: boolean } | null }) {
+  if (!msg) return null;
+  return <Notice tone={msg.ok ? 'success' : 'error'}>{msg.text}</Notice>;
+}
+
+/** Modal dialog; closes on Escape or a click outside. */
+export function Dialog({ title, subtitle, onClose, children }: { title: ReactNode; subtitle?: ReactNode; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const id = useId();
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby={id} onClick={e => e.stopPropagation()}>
+        <div className="dialog-head">
+          <div>
+            <h2 id={id}>{title}</h2>
+            {subtitle && <p className="muted small">{subtitle}</p>}
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} autoFocus aria-label="Close">✕</button>
+        </div>
+        <div className="dialog-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/** Light / Dark / System, remembered in this browser. */
+export function ThemeToggle() {
+  const [theme, setTheme] = useState<ThemeChoice>(loadTheme);
+  const pick = (t: ThemeChoice) => { setTheme(t); applyTheme(t); };
+  return (
+    <div className="toggle toggle-full" role="group" aria-label="Theme">
+      {(['light', 'dark', 'system'] as const).map(t => (
+        <button key={t} type="button" aria-pressed={theme === t} onClick={() => pick(t)}>
+          {t === 'light' ? '☀ Light' : t === 'dark' ? '☾ Dark' : 'System'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Two or more views of the same thing (Week / List). */
+export function ViewToggle<T extends string>({ value, options, onChange, label }: { value: T; options: { key: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+  return (
+    <div className="toggle" role="group" aria-label={label}>
+      {options.map(o => <button key={o.key} type="button" aria-pressed={value === o.key} onClick={() => onChange(o.key)}>{o.label}</button>)}
+    </div>
+  );
 }

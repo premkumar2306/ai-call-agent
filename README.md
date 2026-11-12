@@ -121,10 +121,11 @@ npm run dev
 
 Sign in with any email address: without `RESEND_API_KEY` the local Worker hands the
 one-time code back to the UI (development only), so no email is needed. A new account
-goes straight to the onboarding wizard, then to **Home** (today's calls, appointments and
-messages, plus a setup checklist). Owners and staff get a left sidebar (a bottom bar and menu on
-phones): Home, Calls & messages, Appointments, Doctors / Dentists / Lawyers, Services & prices,
-Try your assistant and, for owners, Settings. The UI is plain React with one stylesheet
+goes straight to the onboarding wizard, then to **Home** (recent calls and WhatsApp chats with
+their outcome, today's numbers, and a setup checklist). Owners and staff get a left sidebar (a bottom bar and menu on
+phones): Home, Calls & messages, Calendar (week / list view of appointments and the Google
+Calendar connection), Doctors / Dentists / Lawyers, Services & prices, Try your assistant and, for
+owners, Settings. Light, dark or follow-the-system theme (sidebar footer). The UI is plain React with one stylesheet
 (`web/src/index.css`) and shared components in `web/src/components/ui.tsx`. To use the operator view instead, pick
 "Operator? Sign in with the admin key" and enter `ADMIN_SECRET` (`dev-admin-key` in
 `.dev.vars.example`); it is kept in `sessionStorage` for the tab only. The operator gets an
@@ -457,6 +458,19 @@ bidirectional `<Stream>` and, after it, a `<Redirect>` to `/plivo/after-stream` 
 **Not yet tested on a live call:** the Exotel and Plivo protocol details come from the carriers' docs
 and reference bots, and are covered by unit tests and the simulator, but no real Exotel/Plivo call has
 gone through them yet. Check the first live call's logs (`npx wrangler tail`).
+### WhatsApp setup
+
+Each WhatsApp Business number in Meta's WhatsApp Manager has a **phone number ID**. Messages
+to that number reach the Worker's webhook, and the number's mapping in the admin UI
+(**Operator → WhatsApp**) decides which business answers.
+
+1. In the Meta app, set the webhook URL to `<worker>/whatsapp/webhook` and pick a verify token.
+2. Set the Worker secrets: `WA_VERIFY_TOKEN` (the same verify token), `WA_APP_SECRET` (the
+   app secret, used to check each webhook's signature) and `WA_ACCESS_TOKEN` (a permanent
+   system-user token, used to send replies).
+3. Map each phone number ID to a business in Operator → WhatsApp. That page shows which of these
+   settings are present (`GET /admin/whatsapp-status`, booleans only).
+
 ### Hindi and Hinglish calls (optional, per business)
 
 Each business answers in `en` (default), `hi` (Hindi) or `hi-en` (Hinglish — callers mixing
@@ -505,7 +519,7 @@ adapters behind one interface (`worker/src/durable-objects/voice-providers.ts`).
 
 ### Calendar integration (optional)
 
-Each business can connect its own calendar from the admin UI's **Settings → Calendar**.
+Each business can connect its own calendar from the admin UI's **Calendar** page.
 Mogi then skips times that are busy in that calendar and adds every booking to it
 as an event (deleted again on cancel). D1 stays the source of truth: if the calendar
 is unreachable, bookings still go through and the tab shows the error.

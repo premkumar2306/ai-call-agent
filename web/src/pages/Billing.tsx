@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { card as sharedCard } from '../ui';
+import { Badge, Button, Card, Notice, Status, Table } from '../components/ui';
 
 // Billing tab: plan, minutes this month, GST-inclusive amounts, invoices and
 // the Razorpay Checkout button. Cost and margin come back from the API only
@@ -40,24 +40,16 @@ declare global {
   interface Window { Razorpay?: new (options: Record<string, unknown>) => { open: () => void; on: (e: string, cb: (r: any) => void) => void } }
 }
 
-const card: React.CSSProperties = sharedCard;
-const btn: React.CSSProperties = { background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer' };
-const ghost: React.CSSProperties = { background: 'transparent', color: 'var(--accent-text)', border: '1px solid var(--accent-border)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
-const input: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, width: '100%', boxSizing: 'border-box' };
-const muted: React.CSSProperties = { color: 'var(--text-muted)', fontSize: 13 };
-const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 500, fontSize: 13 };
-const td: React.CSSProperties = { padding: '6px 8px', fontSize: 13, borderTop: '1px solid var(--border)' };
-
 export const inr = (paise: number) =>
   '₹' + (paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const STATE_LABEL: Record<Summary['state'], [string, string]> = {
-  off: ['Billing off', 'var(--text-muted)'],
-  trialing: ['Free trial', 'var(--success)'],
-  active: ['Subscribed', 'var(--success)'],
-  past_due: ['Payment failed', 'var(--danger)'],
-  cancelled: ['Cancelled', 'var(--danger)'],
-  unpaid: ['Trial ended — subscribe to continue billing', 'var(--warning)'],
+const STATE_LABEL: Record<Summary['state'], [string, 'success' | 'warning' | 'danger' | undefined]> = {
+  off: ['Billing off', undefined],
+  trialing: ['Free trial', 'success'],
+  active: ['Subscribed', 'success'],
+  past_due: ['Payment failed', 'danger'],
+  cancelled: ['Cancelled', 'danger'],
+  unpaid: ['Trial ended — subscribe to continue billing', 'warning'],
 };
 
 const INVOICE_STATUS: Record<string, string> = {
@@ -80,8 +72,8 @@ function GstLines({ g, rateBps }: { g: Gst; rateBps: number }) {
   const pct = rateBps / 100;
   return (
     <>
-      {g.igst > 0 && <div style={muted}>IGST {pct}%: {inr(g.igst)}</div>}
-      {g.cgst > 0 && <div style={muted}>CGST {pct / 2}%: {inr(g.cgst)} · SGST {pct / 2}%: {inr(g.sgst)}</div>}
+      {g.igst > 0 && <p className="muted small">IGST {pct}%: {inr(g.igst)}</p>}
+      {g.cgst > 0 && <p className="muted small">CGST {pct / 2}%: {inr(g.cgst)} · SGST {pct / 2}%: {inr(g.sgst)}</p>}
     </>
   );
 }
@@ -176,116 +168,106 @@ export default function Billing({ sector, base, auth }: Props) {
   const syncPlan = (id: string) => run(() => call(`/admin/billing/plans/${encodeURIComponent(id)}/razorpay`, { method: 'POST' }),
     'Plan created in Razorpay.');
 
-  if (!data) return <div style={card}>{msg ? <span style={{ color: 'var(--danger)' }}>{msg.text}</span> : <span style={muted}>Loading…</span>}</div>;
+  if (!data) return msg ? <Notice tone="error">{msg.text}</Notice> : <p className="muted" role="status">Loading…</p>;
 
   const { plan, usage, account } = data;
-  const [stateLabel, stateColor] = STATE_LABEL[data.state];
+  const [stateLabel, stateTone] = STATE_LABEL[data.state];
   const pct = plan && plan.includedMinutes ? Math.min(100, (usage.minutes / plan.includedMinutes) * 100) : 0;
   const canSubscribe = plan && ['trialing', 'unpaid', 'cancelled', 'past_due'].includes(data.state);
   const field = (k: string, label: string, placeholder = '') => (
-    <label style={{ display: 'grid', gap: 4, fontSize: 13, color: 'var(--text-muted)' }}>
-      {label}
-      <input style={input} value={details[k] ?? ''} placeholder={placeholder}
+    <div className="field">
+      <label htmlFor={`bill-${k}`}>{label}</label>
+      <input id={`bill-${k}`} className="input" value={details[k] ?? ''} placeholder={placeholder}
         onChange={e => setDetails(d => ({ ...d, [k]: e.target.value }))} />
-    </label>
+    </div>
   );
+  const checkoutBlocked = !data.razorpayConfigured ? 'Online payment isn\'t switched on for this service yet (Razorpay keys).' : plan && !plan.checkoutReady ? 'This plan hasn\'t been set up in Razorpay yet.' : '';
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      {msg && <div style={{ ...card, color: msg.ok ? 'var(--success)' : 'var(--danger)', padding: 12 }}>{msg.text}</div>}
+    <>
+      <Status msg={msg} />
 
-      {/* Plan & status */}
-      <div style={card}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h2 style={{ margin: 0, fontSize: 16, color: 'var(--text-strong)' }}>{plan ? `${plan.name} plan` : 'No plan'}</h2>
-          <span style={{ color: stateColor, fontSize: 13 }}>● {stateLabel}</span>
-          {data.state === 'trialing' && account?.trialEndsAt && (
-            <span style={muted}>until {new Date(account.trialEndsAt * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-          )}
-          {canSubscribe && (
-            <button style={{ ...btn, marginLeft: 'auto', opacity: busy || !plan!.checkoutReady || !data.razorpayConfigured ? 0.5 : 1 }}
-              disabled={busy || !plan!.checkoutReady || !data.razorpayConfigured}
-              title={!data.razorpayConfigured ? 'Razorpay keys are not set on the server' : !plan!.checkoutReady ? 'The plan has not been created in Razorpay yet' : ''}
-              onClick={subscribe}>
-              {data.state === 'past_due' ? 'Update payment' : 'Subscribe with Razorpay'}
-            </button>
-          )}
-        </div>
+      <Card
+        title={<>{plan ? `${plan.name} plan` : 'No plan'} <Badge tone={stateTone}>{stateLabel}</Badge></>}
+        description={data.state === 'trialing' && account?.trialEndsAt ? `Free until ${new Date(account.trialEndsAt * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.` : undefined}
+        actions={canSubscribe && (
+          <Button disabled={busy || !!checkoutBlocked} title={checkoutBlocked} onClick={subscribe}>
+            {data.state === 'past_due' ? 'Update payment' : 'Subscribe with Razorpay'}
+          </Button>
+        )}
+      >
         {plan ? (
-          <div style={{ marginTop: 12, display: 'grid', gap: 2 }}>
-            <div style={{ fontSize: 22, color: 'var(--text-strong)', fontWeight: 600 }}>{inr(plan.monthly.totalPaise)}<span style={muted}> / month incl. GST</span></div>
-            <div style={muted}>{inr(plan.monthly.amountPaise)} + {plan.gstRateBps / 100}% GST ({inr(plan.monthly.gstPaise)})</div>
+          <div className="stack-sm">
+            <p><span className="price">{inr(plan.monthly.totalPaise)}</span> <span className="muted">/ month incl. GST</span></p>
+            <p className="muted small">{inr(plan.monthly.amountPaise)} + {plan.gstRateBps / 100}% GST ({inr(plan.monthly.gstPaise)})</p>
             <GstLines g={plan.monthly} rateBps={plan.gstRateBps} />
-            <div style={muted}>{plan.includedMinutes} minutes included, then {inr(plan.overagePaisePerMinute)}/minute + GST. UPI AutoPay or card.</div>
+            <p className="muted small">{plan.includedMinutes} minutes included, then {inr(plan.overagePaisePerMinute)}/minute + GST. UPI AutoPay or card.</p>
+            {canSubscribe && checkoutBlocked && <p className="muted small">{checkoutBlocked}</p>}
           </div>
         ) : (
-          <p style={muted}>Billing is off for this business: calls are not charged.</p>
+          <p className="muted">Billing is off for this business: calls are not charged.</p>
         )}
-      </div>
+      </Card>
 
-      {/* Usage */}
-      <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--text-strong)' }}>This month ({usage.period})</h3>
-        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-          <div><div style={{ fontSize: 24, color: 'var(--text-strong)', fontWeight: 600 }}>{usage.minutes}{plan ? <span style={muted}> / {plan.includedMinutes} min</span> : <span style={muted}> min</span>}</div><div style={muted}>call minutes</div></div>
-          <div><div style={{ fontSize: 24, color: 'var(--text-strong)', fontWeight: 600 }}>{usage.calls}</div><div style={muted}>calls</div></div>
-          <div><div style={{ fontSize: 24, color: 'var(--text-strong)', fontWeight: 600 }}>{usage.whatsappConversations}</div><div style={muted}>WhatsApp conversations</div></div>
+      <Card title={`This month (${usage.period})`}>
+        <div className="figures">
+          <div><span className="figure">{usage.minutes}</span><span className="muted">{plan ? ` / ${plan.includedMinutes} min` : ' min'}</span><p className="muted small">call minutes</p></div>
+          <div><span className="figure">{usage.calls}</span><p className="muted small">calls</p></div>
+          <div><span className="figure">{usage.whatsappConversations}</span><p className="muted small">WhatsApp conversations</p></div>
         </div>
         {plan && (
           <>
-            <div style={{ height: 8, background: 'var(--input-bg)', borderRadius: 4, marginTop: 14, overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', background: usage.alertLevel === 100 ? 'var(--danger)' : usage.alertLevel === 80 ? 'var(--warning)' : 'var(--accent)' }} />
+            <div className={`progress usage-${usage.alertLevel}`} aria-label={`${Math.round(pct)}% of included minutes used`} role="img">
+              <div style={{ width: `${pct}%` }} />
             </div>
-            <p style={{ ...muted, marginBottom: 0 }}>
+            <p className="muted small">
               Calls are never cut off. The owner is emailed at 80% and 100% of the included minutes.
               {usage.overageSoFar && usage.overageSoFar.minutes > 0 &&
                 ` Extra so far: ${usage.overageSoFar.minutes} min = ${inr(usage.overageSoFar.amountPaise)} + GST ${inr(usage.overageSoFar.gstPaise)} = ${inr(usage.overageSoFar.totalPaise)}, billed at month end.`}
             </p>
           </>
         )}
-      </div>
+      </Card>
 
       {/* Operator only: cost and margin */}
       {data.cost && (
-        <div style={{ ...card, borderColor: 'var(--accent-border)' }}>
-          <h3 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--text-strong)' }}>Cost & margin <span style={{ ...muted, fontWeight: 400 }}>(operator only)</span></h3>
-          <p style={{ ...muted, marginTop: 0 }}>Estimated provider cost (phone lines, speech recognition, voice, AI model) at ₹{data.cost.usdToInr}/USD. Revenue excludes GST.</p>
-          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <tbody>
-              <tr><td style={td}>Provider cost this month</td><td style={td}>{inr(data.cost.costPaise)}</td><td style={td}>{data.cost.costPerMinutePaise != null ? `${inr(data.cost.costPerMinutePaise)}/min` : '—'}</td></tr>
-              <tr><td style={td}>Revenue (if the month ended now)</td><td style={td}>{inr(data.cost.revenuePaise)}</td><td style={td}>{data.cost.revenuePerMinutePaise != null ? `${inr(data.cost.revenuePerMinutePaise)}/min` : '—'}</td></tr>
-              <tr><td style={td}>Margin</td><td style={{ ...td, color: (data.cost.marginPaise ?? 0) < 0 ? 'var(--danger)' : 'var(--success)' }}>{data.cost.marginPaise != null ? inr(data.cost.marginPaise) : '— (no plan)'}</td><td style={td} /></tr>
-              {data.cost.testCalls > 0 && <tr><td style={td} colSpan={3}><span style={muted}>Includes {data.cost.testCalls} synthetic test call(s), costed but not billed.</span></td></tr>}
-            </tbody>
-          </table>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
-            <span style={muted}>Plan for this business:</span>
-            <select style={{ ...input, width: 'auto' }} value={plan?.id ?? ''} disabled={busy}
-              onChange={e => setPlan(e.target.value || null)}>
-              <option value="">Billing off</option>
-              {plans.filter(p => p.isActive || p.id === plan?.id).map(p => (
-                <option key={p.id} value={p.id}>{p.name} — {inr(p.monthlyFeePaise)} + GST, {p.includedMinutes} min</option>
-              ))}
-            </select>
-            <span style={{ ...muted, marginLeft: 12 }}>New businesses start on:</span>
-            <select style={{ ...input, width: 'auto' }} value={plans.find(p => p.isDefault)?.id ?? ''} disabled={busy}
-              onChange={e => setDefaultPlan(e.target.value)}>
-              <option value="">Billing off</option>
-              {plans.filter(p => p.isActive).map(p => <option key={p.id} value={p.id}>{p.name}{p.trialDays ? ` (${p.trialDays}-day trial)` : ''}</option>)}
-            </select>
-            {plan && !plan.checkoutReady && (
-              <button style={{ ...ghost, opacity: busy || !data.razorpayConfigured ? 0.5 : 1 }}
-                title={data.razorpayConfigured ? '' : 'Razorpay keys are not set on the server'}
-                disabled={busy || !data.razorpayConfigured} onClick={() => syncPlan(plan.id)}>Create plan in Razorpay</button>
-            )}
+        <Card className="card-accent" title={<>Cost &amp; margin <Badge tone="accent">Operator only</Badge></>}
+          description={`Estimated provider cost (phone lines, speech recognition, voice, AI model) at ₹${data.cost.usdToInr}/USD. Revenue excludes GST.`}>
+          <Table head={['', 'This month', 'Per minute']} cards={false}>
+            <tr><td>Provider cost</td><td>{inr(data.cost.costPaise)}</td><td>{data.cost.costPerMinutePaise != null ? inr(data.cost.costPerMinutePaise) : '—'}</td></tr>
+            <tr><td>Revenue (if the month ended now)</td><td>{inr(data.cost.revenuePaise)}</td><td>{data.cost.revenuePerMinutePaise != null ? inr(data.cost.revenuePerMinutePaise) : '—'}</td></tr>
+            <tr><td>Margin</td><td className={(data.cost.marginPaise ?? 0) < 0 ? 'bad' : 'ok'}>{data.cost.marginPaise != null ? inr(data.cost.marginPaise) : '— (no plan)'}</td><td /></tr>
+          </Table>
+          {data.cost.testCalls > 0 && <p className="muted small">Includes {data.cost.testCalls} synthetic test call(s), costed but not billed.</p>}
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="bill-plan">Plan for this business</label>
+              <select id="bill-plan" className="input" value={plan?.id ?? ''} disabled={busy} onChange={e => setPlan(e.target.value || null)}>
+                <option value="">Billing off</option>
+                {plans.filter(p => p.isActive || p.id === plan?.id).map(p => (
+                  <option key={p.id} value={p.id}>{p.name} — {inr(p.monthlyFeePaise)} + GST, {p.includedMinutes} min</option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="bill-default">New businesses start on</label>
+              <select id="bill-default" className="input" value={plans.find(p => p.isDefault)?.id ?? ''} disabled={busy} onChange={e => setDefaultPlan(e.target.value)}>
+                <option value="">Billing off</option>
+                {plans.filter(p => p.isActive).map(p => <option key={p.id} value={p.id}>{p.name}{p.trialDays ? ` (${p.trialDays}-day trial)` : ''}</option>)}
+              </select>
+            </div>
           </div>
-        </div>
+          {plan && !plan.checkoutReady && (
+            <div className="form-actions">
+              <Button variant="secondary" title={data.razorpayConfigured ? '' : 'Razorpay keys are not set on the server'}
+                disabled={busy || !data.razorpayConfigured} onClick={() => syncPlan(plan.id)}>Create plan in Razorpay</Button>
+            </div>
+          )}
+        </Card>
       )}
 
-      {/* GST details */}
-      <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--text-strong)' }}>Billing details (GST)</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+      <Card title="Billing details (GST)" description="Shown on your invoices.">
+        <div className="form-grid">
           {field('legalName', 'Legal name')}
           {field('gstin', 'GSTIN (optional)', '27AAPFU0939F1ZV')}
           {field('billingEmail', 'Billing email', 'Defaults to the notification email')}
@@ -295,35 +277,27 @@ export default function Billing({ sector, base, auth }: Props) {
           {field('state', 'State')}
           {field('postalCode', 'PIN code')}
         </div>
-        <button style={{ ...btn, marginTop: 14 }} disabled={busy} onClick={saveDetails}>Save details</button>
-      </div>
+        <div className="form-actions"><Button busy={busy} onClick={saveDetails}>Save details</Button></div>
+      </Card>
 
-      {/* Invoices */}
-      <div style={card}>
-        <h3 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--text-strong)' }}>Extra-minute invoices</h3>
-        {data.supplierGstin && <p style={{ ...muted, marginTop: 0 }}>Supplier GSTIN {data.supplierGstin}{account?.gstin ? ` · Your GSTIN ${account.gstin}` : ''}</p>}
-        {data.invoices.length === 0 ? <p style={muted}>No closed months yet. The monthly plan fee is invoiced by Razorpay.</p> : (
-          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <thead><tr>
-              <th style={th}>Month</th><th style={th}>Minutes</th><th style={th}>Extra</th><th style={th}>Amount</th>
-              <th style={th}>GST</th><th style={th}>Total</th><th style={th}>Status</th>
-            </tr></thead>
-            <tbody>
-              {data.invoices.map(i => (
-                <tr key={i.period}>
-                  <td style={td}>{i.period}</td>
-                  <td style={td}>{i.minutesUsed} / {i.includedMinutes}</td>
-                  <td style={td}>{i.overageMinutes} min</td>
-                  <td style={td}>{inr(i.amountPaise)}</td>
-                  <td style={td}>{i.cgst > 0 ? `CGST ${inr(i.cgst)} + SGST ${inr(i.sgst)}` : `IGST ${inr(i.igst)}`}</td>
-                  <td style={td}>{inr(i.totalPaise)}</td>
-                  <td style={td}>{INVOICE_STATUS[i.status] ?? i.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <Card title="Extra-minute invoices"
+        description={data.supplierGstin ? `Supplier GSTIN ${data.supplierGstin}${account?.gstin ? ` · Your GSTIN ${account.gstin}` : ''}` : undefined}>
+        {data.invoices.length === 0 ? <p className="muted">No closed months yet. The monthly plan fee is invoiced by Razorpay.</p> : (
+          <Table head={['Month', 'Minutes', 'Extra', 'Amount', 'GST', 'Total', 'Status']}>
+            {data.invoices.map(i => (
+              <tr key={i.period}>
+                <td data-label="Month">{i.period}</td>
+                <td data-label="Minutes">{i.minutesUsed} / {i.includedMinutes}</td>
+                <td data-label="Extra">{i.overageMinutes} min</td>
+                <td data-label="Amount">{inr(i.amountPaise)}</td>
+                <td data-label="GST">{i.cgst > 0 ? `CGST ${inr(i.cgst)} + SGST ${inr(i.sgst)}` : `IGST ${inr(i.igst)}`}</td>
+                <td data-label="Total">{inr(i.totalPaise)}</td>
+                <td data-label="Status">{INVOICE_STATUS[i.status] ?? i.status}</td>
+              </tr>
+            ))}
+          </Table>
         )}
-      </div>
-    </div>
+      </Card>
+    </>
   );
 }

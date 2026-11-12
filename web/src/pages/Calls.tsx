@@ -1,466 +1,92 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatPhone, type SectorLocale } from '../locale';
+import { Badge, Button, Card, EmptyState, Notice, ViewToggle } from '../components/ui';
+import { Feed, TranscriptDialog } from '../components/Activity';
+import { buildActivity, formatWhen, loadBusinessData, type Activity, type BusinessData, type MessageRow } from '../lib/activity';
+
+interface SectorOption extends SectorLocale { key: string; name: string }
 
 interface Props {
   base: string;
   auth: Record<string, string>;
-  /** Businesses this viewer may see: all of them for the operator, their own for an owner. */
+  /** The business being viewed (one entry). */
   sectors: SectorOption[];
-  /** 'calls': messages and conversations; 'appointments': bookings. */
-  view?: 'calls' | 'appointments';
+  /** Operator: show per-turn latency in transcripts. */
+  operator?: boolean;
 }
 
-interface TranscriptRow {
-  id: string;
-  callSid: string | null;
-  customerIdHashed: string;
-  businessType: string;
-  turns: Array<{ role: string; content: string }>;
-  metrics?: TurnMetric[] | null;
-  createdAt: number | string;
-  updatedAt?: number | string;
-}
+type Filter = 'all' | 'call' | 'whatsapp';
 
-// Per-turn timing saved by CallRelay (worker/src/durable-objects/call-relay.ts).
-interface TurnMetric {
-  n: number;
-  at: number;
-  text: string;
-  queued: number;
-  laps: [string, number][];
-  firstAudio?: number;
-  fillers: number;
-  outcome: 'done' | 'interrupted' | 'dropped';
-}
-
-interface BookingRow {
-  id: string;
-  businessType: string;
-  productName: string;
-  status: string;
-  scheduledAt: string | null;
-  customerName: string | null;
-  vehicle: string | null;
-  resourceName?: string | null;          // the doctor, for clinics
-  details?: Record<string, string> | null; // patient age, new/returning, reason…
-  callbackPhone: string | null;
-  notes: string | null;
-  createdAt: number | string;
-}
-
-interface MessageRow {
-  id: string;
-  businessType: string;
-  callerName: string | null;
-  callbackPhone: string | null;
-  message: string;
-  status: string;
-  createdAt: number | string;
-}
-
-function bookingDetails(b: BookingRow): string {
-  const parts = [
-    b.resourceName ? `with ${b.resourceName}` : '',
-    b.vehicle ?? '',
-    ...Object.entries(b.details ?? {}).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`),
-  ].filter(Boolean);
-  return parts.length ? parts.join(' · ') : '—';
-}
-
-// Booking times are the business's wall clock; non-US businesses are shown in
-// their own locale (en-IN: "Mon, 2 Nov 10:30 am").
-function formatSlot(iso: string | null, locale?: string): string {
-  if (!iso) return '—';
-  const [d, t] = iso.split('T');
-  const date = new Date(`${d}T12:00:00`);
-  const [h, m] = t.split(':').map(Number);
-  if (locale && locale !== 'en-US') {
-    try {
-      const at = new Date(Date.UTC(2000, 0, 1, h, m));
-      return `${date.toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' })} ${at.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`;
-    } catch { /* unknown locale: fall through */ }
-  }
-  const clock = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
-  return `${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} ${clock}`;
-}
-
-// Time to first audio per turn, split into model / tools / speech, so a slow
-// turn shows where the time went.
-function LatencyChart({ metrics }: { metrics: TurnMetric[] }) {
-  const max = Math.max(1, ...metrics.map(m => m.firstAudio ?? 0));
-  const lap = (m: TurnMetric, pre: string) => m.laps.filter(l => l[0].startsWith(pre));
-  return (
-    <div style={{ display: 'grid', gap: 6 }}>
-      {metrics.map(m => {
-        const total = m.firstAudio ?? 0;
-        const firstToken = lap(m, 'anthropic#0 first-token')[0]?.[1] ?? lap(m, 'anthropic#0 (')[0]?.[1] ?? 0;
-        const toolEnd = lap(m, 'tools#').slice(-1)[0]?.[1];
-        const toolStart = lap(m, 'anthropic#0 (')[0]?.[1] ?? 0;
-        const tools = toolEnd ? Math.max(0, toolEnd - toolStart) : 0;
-        const model = Math.min(total, firstToken + (toolEnd ? (lap(m, 'anthropic#1 first-token')[0]?.[1] ?? toolEnd) - toolEnd : 0));
-        const speech = Math.max(0, total - model - tools);
-        const w = (ms: number) => `${(ms / max) * 100}%`;
-        return (
-          <div key={m.n} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 56px', gap: 8, alignItems: 'center' }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {m.n}. “{m.text}”{m.fillers ? ` · ${m.fillers} filler` : ''}{m.outcome !== 'done' ? ` · ${m.outcome}` : ''}
-              </div>
-              <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: 'var(--input-bg)' }}>
-                <div title={`model ${model}ms`} style={{ width: w(model), background: 'var(--accent)' }} />
-                <div title={`tools ${tools}ms`} style={{ width: w(tools), background: 'var(--warning)' }} />
-                <div title={`speech ${speech}ms`} style={{ width: w(speech), background: 'var(--success)' }} />
-              </div>
-            </div>
-            <div style={{ fontSize: 13, color: total > 1500 ? 'var(--danger)' : 'var(--text)', textAlign: 'right' }}>
-              {m.firstAudio != null ? `${(total / 1000).toFixed(2)}s` : '—'}
-            </div>
-          </div>
-        );
-      })}
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}>
-        <span><span style={{ color: 'var(--accent)' }}>■</span> model</span>
-        <span><span style={{ color: 'var(--warning)' }}>■</span> tools</span>
-        <span><span style={{ color: 'var(--success)' }}>■</span> speech start</span>
-        <span>Time from the caller's words to our first audio. Excludes end-of-speech detection.</span>
-      </div>
-    </div>
-  );
-}
-
-interface SectorOption extends SectorLocale { key: string; name: string }
-
-function toMs(ts: number | string): number {
-  return typeof ts === 'number' ? ts * 1000 : new Date(ts).getTime();
-}
-
-function formatDateTime(ts: number | string): string {
-  return new Date(toMs(ts)).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-}
-
-function formatDuration(start: number | string, end?: number | string): string | null {
-  if (!end) return null;
-  const secs = Math.round((toMs(end) - toMs(start)) / 1000);
-  if (secs < 1) return null;
-  if (secs < 60) return `${secs}s`;
-  return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-}
-
-function channelOf(callSid: string | null): 'call' | 'whatsapp' | 'web' {
-  if (!callSid) return 'web';
-  if (callSid.startsWith('wa:')) return 'whatsapp';
-  if (callSid.startsWith('web-')) return 'web';
-  return 'call';
-}
-
-const CHANNEL_LABEL: Record<string, string> = {
-  call: '📞 Call',
-  whatsapp: '💬 WhatsApp',
-  web: '🌐 Web',
-};
-
-const card: React.CSSProperties = {
-  background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 'clamp(14px, 4vw, 28px)',
-  minWidth: 0, boxSizing: 'border-box',
-};
-const h2: React.CSSProperties = {
-  fontSize: 16, fontWeight: 600, color: 'var(--text-strong)', marginBottom: 8, marginTop: 0,
-};
-const th: React.CSSProperties = {
-  textAlign: 'left', padding: '10px 12px', fontSize: 13, color: 'var(--text-muted)',
-  borderBottom: '1px solid var(--border)', fontWeight: 600, whiteSpace: 'nowrap',
-};
-const td: React.CSSProperties = {
-  padding: '10px 12px', fontSize: 13, color: 'var(--text)', borderBottom: '1px solid var(--border)',
-  verticalAlign: 'top',
-};
-
-export default function Calls({ base, auth, sectors, view = 'calls' }: Props) {
-  const [transcripts, setTranscripts] = useState<TranscriptRow[]>([]);
-  const [loading, setLoading]         = useState(false);
-  const [error, setError]             = useState('');
-  const [openId, setOpenId]           = useState<string | null>(null);
-  const [businessFilter, setBusinessFilter] = useState<string>('all');
-  const [bookings, setBookings]       = useState<BookingRow[]>([]);
-  const [messages, setMessages]       = useState<MessageRow[]>([]);
+// Messages waiting for a call back, then every recent call and WhatsApp chat.
+export default function Calls({ base, auth, sectors, operator = false }: Props) {
+  const biz = sectors[0];
+  const [data, setData] = useState<BusinessData | null>(null);
+  const [error, setError] = useState('');
+  const [open, setOpen] = useState<Activity | null>(null);
+  const [filter, setFilter] = useState<Filter>('all');
+  const [showDone, setShowDone] = useState(false);
 
   useEffect(() => {
-    if (!Object.keys(auth).length || !sectors.length) {
-      setTranscripts([]);
-      return;
-    }
-    setLoading(true);
-    setError('');
-    Promise.resolve(sectors)
-      .then(async (allSectors) => {
+    if (!biz || !Object.keys(auth).length) return;
+    let live = true;
+    setData(null); setError('');
+    loadBusinessData(base, auth, biz.key).then(d => live && setData(d)).catch((e: Error) => live && setError(e.message || 'Could not load calls'));
+    return () => { live = false; };
+  }, [base, auth, biz?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-        const getAll = async <T,>(path: string): Promise<T[]> => (await Promise.all(allSectors.map(s =>
-          fetch(`${base}/admin/${path}/${s.key}`, { headers: auth })
-            .then(r => r.json()).then((j: any) => (j.success ? j.data : []) as T[]).catch(() => [] as T[])
-        ))).flat();
-        getAll<BookingRow>('bookings').then(rows => setBookings(rows.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt))));
-        getAll<MessageRow>('messages').then(rows => setMessages(rows.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt))));
-
-        const results = await Promise.all(
-          allSectors.map(s =>
-            fetch(`${base}/admin/transcripts/${s.key}`, { headers: auth })
-              .then(async r => {
-                const json = await r.json();
-                if (!r.ok || !json.success) throw new Error(json.error ?? 'Failed to load transcripts');
-                return json.data as TranscriptRow[];
-              })
-          )
-        );
-        const merged = results.flat().sort((a, b) => {
-          const at = typeof a.createdAt === 'number' ? a.createdAt * 1000 : new Date(a.createdAt).getTime();
-          const bt = typeof b.createdAt === 'number' ? b.createdAt * 1000 : new Date(b.createdAt).getTime();
-          return bt - at;
-        });
-        setTranscripts(merged);
-      })
-      .catch((err: Error) => setError(err.message || 'Network error loading calls'))
-      .finally(() => setLoading(false));
-  }, [base, auth, sectors]);
-
-  const sectorName = (key: string) => sectors.find(s => s.key === key)?.name ?? key;
-  const localeFor = (key: string) => sectors.find(s => s.key === key)?.locale;
-  const visible = businessFilter === 'all' ? transcripts : transcripts.filter(t => t.businessType === businessFilter);
-  const open = visible.find(t => t.id === openId) ?? null;
-  const inBusiness = <T extends { businessType: string }>(rows: T[]) =>
-    businessFilter === 'all' ? rows : rows.filter(r => r.businessType === businessFilter);
-  const visibleBookings = inBusiness(bookings).filter(b => b.status !== 'CANCELLED').slice(0, 30);
-  const visibleMessages = inBusiness(messages).slice(0, 30);
-  // Clinics book a doctor and record patient details instead of a vehicle.
-  const hasDetails = visibleBookings.some(b => b.resourceName || (b.details && Object.keys(b.details).length));
+  const activity = useMemo(() => (data ? buildActivity(data.transcripts, data.bookings, data.messages, biz?.locale) : []), [data, biz?.locale]);
+  const shown = filter === 'all' ? activity : activity.filter(a => a.channel === filter);
+  const waiting = data?.messages.filter(m => m.status !== 'DONE') ?? [];
+  const messages = showDone ? data?.messages ?? [] : waiting;
 
   const markDone = (m: MessageRow) => {
+    const status = m.status === 'DONE' ? 'NEW' : 'DONE';
     fetch(`${base}/admin/messages/${m.businessType}/${m.id}`, {
-      method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: m.status === 'DONE' ? 'NEW' : 'DONE' }),
-    }).then(() => setMessages(ms => ms.map(x => x.id === m.id ? { ...x, status: m.status === 'DONE' ? 'NEW' : 'DONE' } : x)));
+      method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
+    }).then(() => setData(d => d && { ...d, messages: d.messages.map(x => (x.id === m.id ? { ...x, status } : x)) }));
   };
 
+  if (error) return <Notice tone="error">{error}</Notice>;
+  if (!data) return <p className="muted" role="status">Loading…</p>;
+
   return (
-    <div style={{ display: 'grid', gap: 24, minWidth: 0 }}>
-      {view === 'calls' && !loading && !error && (
-        <div style={card}>
-          <h2 style={h2}>Messages to call back</h2>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 16 }}>Callers who asked to be called back. Mark each one done once you've called.</p>
-          {visibleMessages.length === 0 ? <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>No messages waiting.</p> : (
-            <div style={{ display: 'grid', gap: 10 }}>
-              {visibleMessages.map(m => (
-                <div key={m.id} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 12, opacity: m.status === 'DONE' ? 0.5 : 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', fontSize: 13, color: 'var(--text-muted)' }}>
-                    <span>{m.callerName ?? 'Caller'} · {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`} style={{ color: 'var(--accent-text)' }}>{formatPhone(m.callbackPhone)}</a> : 'no number'} · {formatDateTime(m.createdAt)}</span>
-                    <button onClick={() => markDone(m)} className="btn btn-secondary btn-sm">
-                      {m.status === 'DONE' ? 'Reopen' : 'Mark done'}
-                    </button>
-                  </div>
-                  <div style={{ fontSize: 14, color: 'var(--text)', marginTop: 6 }}>{m.message}</div>
+    <>
+      <Card
+        title={<>Messages to call back {waiting.length > 0 && <Badge tone="warning">{waiting.length} waiting</Badge>}</>}
+        description="Callers who asked to be called back. Mark each one done once you've called."
+        actions={data.messages.length > waiting.length && <Button variant="ghost" size="sm" onClick={() => setShowDone(s => !s)}>{showDone ? 'Hide done' : 'Show done'}</Button>}
+      >
+        {messages.length === 0 ? <EmptyState title="No messages waiting">You're all caught up.</EmptyState> : (
+          <ul className="feed">
+            {messages.map(m => (
+              <li key={m.id} className={`msg${m.status === 'DONE' ? ' done' : ''}`}>
+                <div className="feed-main">
+                  <span className="feed-top">
+                    <span className="feed-who">{m.callerName ?? 'Caller'}</span>
+                    {m.callbackPhone ? <a href={`tel:${m.callbackPhone}`}>{formatPhone(m.callbackPhone)}</a> : <span className="muted small">no number</span>}
+                    <span className="feed-when">{formatWhen(m.createdAt)}</span>
+                  </span>
+                  <span>{m.message}</span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {view === 'calls' && (
-      <div style={card}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 12 }}>
-          <h2 style={h2}>Recent calls and chats</h2>
-          {sectors.length > 1 && <select
-            aria-label="Business"
-            value={businessFilter}
-            onChange={e => setBusinessFilter(e.target.value)}
-            style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text-strong)', padding: '6px 12px', borderRadius: 8, outline: 'none', fontSize: 13 }}
-          >
-            <option value="all">All businesses</option>
-            {sectors.map(s => (
-              <option key={s.key} value={s.key}>{s.name}</option>
+                <Button variant="secondary" size="sm" onClick={() => markDone(m)}>{m.status === 'DONE' ? 'Reopen' : 'Mark done'}</Button>
+              </li>
             ))}
-          </select>}
-        </div>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 20 }}>
-          Calls aren't recorded. Only the text of each conversation is kept. Tap a row to read it.
-        </p>
-
-        {loading && <p role="status" style={{ color: 'var(--text-muted)', fontSize: 14 }}>Loading…</p>}
-        {error   && <p style={{ color: 'var(--danger)', fontSize: 14 }}>{error}</p>}
-
-        {!loading && !error && visible.length === 0 && (
-          <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>No calls yet. Use “Try your assistant” to make a test call.</p>
+          </ul>
         )}
+      </Card>
 
-        {!loading && !error && visible.length > 0 && (
-          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', maxWidth: '100%' }}>
-            <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={th}>When</th>
-                  {sectors.length > 1 && <th style={th}>Business</th>}
-                  <th style={th}>Channel</th>
-                  <th style={th}>Caller</th>
-                  <th style={th}>Exchanges</th>
-                  <th style={th}>Last message</th>
-                  <th style={th}><span className="sr-only">Open</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map(t => {
-                  const anonId   = t.customerIdHashed.slice(-8);
-                  const channel  = channelOf(t.callSid);
-                  const lastTurn = [...t.turns].reverse().find(x => x.role === 'assistant');
-                  const preview  = lastTurn ? lastTurn.content.slice(0, 60) + (lastTurn.content.length > 60 ? '…' : '') : '—';
+      <Card
+        className="card-flush"
+        title="Recent calls and chats"
+        description="Newest first. Calls aren't recorded; only the text of each conversation is kept."
+        actions={<ViewToggle label="Show" value={filter} onChange={setFilter} options={[{ key: 'all', label: 'All' }, { key: 'call', label: 'Calls' }, { key: 'whatsapp', label: 'WhatsApp' }]} />}
+      >
+        {shown.length === 0
+          ? <EmptyState title="No conversations yet">Use “Try your assistant” to make a test call.</EmptyState>
+          : <Feed items={shown} onOpen={setOpen} />}
+      </Card>
 
-                  return (
-                    <tr key={t.id} style={{ cursor: 'pointer' }} tabIndex={0} onClick={() => setOpenId(t.id)} onKeyDown={e => { if (e.key === 'Enter') setOpenId(t.id); }}>
-                      <td style={td}>{formatDateTime(t.createdAt)}</td>
-                      {sectors.length > 1 && <td style={td}>{sectorName(t.businessType)}</td>}
-                      <td style={td}>{CHANNEL_LABEL[channel]}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', color: 'var(--accent)' }}>…{anonId}</td>
-                      <td style={td}>{t.turns.length}</td>
-                      <td style={{ ...td, maxWidth: 320 }}>{preview}</td>
-                      <td style={{ ...td, color: 'var(--accent-text)' }}>View →</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      )}
-
-      {view === 'appointments' && (loading || error) && <div style={card}><p role="status" style={{ margin: 0, color: error ? 'var(--danger)' : 'var(--text-muted)' }}>{error || 'Loading…'}</p></div>}
-      {view === 'appointments' && !loading && !error && (
-        <div style={card}>
-          <h2 style={h2}>Appointments booked by the assistant</h2>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 16 }}>Who's coming in, for what, and how to reach them.</p>
-          {visibleBookings.length === 0 ? <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>No appointments yet. When a caller books, it shows up here.</p> : (
-            <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
-              <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
-                <thead><tr>
-                  <th style={th}>When</th><th style={th}>Service</th><th style={th}>Customer</th>
-                  <th style={th}>{hasDetails ? 'Details' : 'Vehicle'}</th><th style={th}>Callback</th><th style={th}>Status</th>
-                </tr></thead>
-                <tbody>
-                  {visibleBookings.map(b => (
-                    <tr key={b.id}>
-                      <td style={td}>{formatSlot(b.scheduledAt, localeFor(b.businessType))}</td>
-                      <td style={td}>{b.productName}{b.notes ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{b.notes}</div> : null}</td>
-                      <td style={td}>{b.customerName ?? '—'}</td>
-                      <td style={td}>{hasDetails ? bookingDetails(b) : b.vehicle ?? '—'}</td>
-                      <td style={td}>{b.callbackPhone ? <a href={`tel:${b.callbackPhone}`} style={{ color: 'var(--accent-text)' }}>{formatPhone(b.callbackPhone)}</a> : '—'}</td>
-                      <td style={td}>{b.status.toLowerCase()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {open && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(17,24,39,.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
-            padding: 'clamp(8px, 4vw, 24px)',
-          }}
-          onClick={() => setOpenId(null)}
-        >
-          <div
-            style={{
-              background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 18,
-              maxWidth: 620, width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column',
-              boxShadow: '0 20px 60px rgba(17,24,39,.25)', overflow: 'hidden',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 12, padding: 'clamp(12px, 4vw, 18px) clamp(14px, 4vw, 22px)',
-              borderBottom: '1px solid var(--border)', background: 'var(--surface-2)',
-            }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--accent-text))',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0,
-              }}>
-                {CHANNEL_LABEL[channelOf(open.callSid)].slice(0, 2)}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-strong)' }}>{sectorName(open.businessType)}</div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <span>{formatDateTime(open.createdAt)}</span>
-                  {formatDuration(open.createdAt, open.updatedAt) && (
-                    <>
-                      <span>·</span>
-                      <span>{formatDuration(open.createdAt, open.updatedAt)}</span>
-                    </>
-                  )}
-                  <span>·</span>
-                  <span>{open.turns.length} turns</span>
-                </div>
-              </div>
-              <button
-                onClick={() => setOpenId(null)}
-                style={{
-                  background: 'var(--border)', border: 'none', color: 'var(--text-muted)', fontSize: 16, cursor: 'pointer',
-                  width: 28, height: 28, borderRadius: '50%', flexShrink: 0, lineHeight: 1,
-                }}
-              >
-                ×
-              </button>
-            </div>
-
-            {/* Call SID */}
-            {open.callSid && (
-              <div style={{
-                fontSize: 12, color: 'var(--text-subtle)', fontFamily: 'monospace', padding: 'clamp(6px, 3vw, 8px) clamp(14px, 4vw, 22px) 0',
-              }}>
-                {open.callSid}
-              </div>
-            )}
-
-            {open.metrics && open.metrics.length > 0 && (
-              <div style={{ padding: 'clamp(10px, 3vw, 14px) clamp(14px, 4vw, 22px)', borderBottom: '1px solid var(--border)', maxHeight: '35vh', overflowY: 'auto', flexShrink: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 8 }}>Latency per turn</div>
-                <LatencyChart metrics={open.metrics} />
-              </div>
-            )}
-
-            {/* Chat bubbles */}
-            <div style={{ padding: 'clamp(12px, 4vw, 18px) clamp(14px, 4vw, 22px)', overflowY: 'auto', display: 'grid', gap: 10 }}>
-              {open.turns.map((turn, i) => {
-                const isUser = turn.role === 'user';
-                return (
-                  <div key={i} style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
-                    <div style={{ maxWidth: '78%', display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
-                      <span style={{ fontSize: 10, color: 'var(--text-subtle)', marginBottom: 3, padding: '0 4px' }}>
-                        {isUser ? 'Caller' : 'Assistant'}
-                      </span>
-                      <div style={{
-                        padding: '10px 14px',
-                        borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                        background: isUser ? 'linear-gradient(135deg, var(--accent), var(--accent-hover))' : 'var(--border)',
-                        color: isUser ? 'var(--text-strong)' : 'var(--text)',
-                        fontSize: 13.5, lineHeight: 1.5,
-                        boxShadow: '0 2px 8px #00000033',
-                      }}>
-                        {turn.content}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      {open && <TranscriptDialog a={open} showLatency={operator} onClose={() => setOpen(null)} />}
+    </>
   );
 }

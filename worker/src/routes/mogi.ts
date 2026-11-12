@@ -7,7 +7,7 @@ import { getOrders } from '../services/order.service';
 import { getSectorGreeting } from '../services/recommendations.service';
 import { executeTool, getToolDefinitions } from '../services/tool-router.service';
 import { emailTranscript } from '../services/email.service';
-import { saveTranscript, getTranscripts } from '../services/transcript.service';
+import { saveTranscript, getTranscripts, webSessionCallSid } from '../services/transcript.service';
 import { getProducts } from '../services/catalog.service';
 import { agentTools, buildSystemPrompt } from '../services/turn.service';
 import { createAnthropic, HTTP_TIMEOUT_MS, MAX_TOOL_ROUNDS, voiceModel } from '../config';
@@ -201,7 +201,8 @@ mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), a
     { role: 'assistant' as const, content: spokenResponse },
   ];
 
-  c.executionCtx.waitUntil(saveTranscript(c.env, { customerIdHashed: sub, businessType, turns: updatedHistory })
+  // One row per test session (updated each turn), not one per turn.
+  c.executionCtx.waitUntil(saveTranscript(c.env, { callSid: webSessionCallSid(session), customerIdHashed: sub, businessType, turns: updatedHistory })
     .catch(err => console.error('transcript save error', err.message)));
 
   return c.json({ success: true, data: { spoken_response: spokenResponse, history: updatedHistory, tool_calls: toolCallLog } });
@@ -231,7 +232,7 @@ mogiRouter.post('/email-transcript', withSession, sessionRateLimit('email', 5, 3
     const session = c.get('session');
     const emailSectorMeta = await getSector(c.env, session.businessType);
     await emailTranscript(email, history, session.businessType, c.env.RESEND_API_KEY, c.env.EMAIL_FROM, emailSectorMeta?.name);
-    c.executionCtx.waitUntil(saveTranscript(c.env, { customerIdHashed: session.sub, businessType: session.businessType, turns: history, emailSentTo: email })
+    c.executionCtx.waitUntil(saveTranscript(c.env, { callSid: webSessionCallSid(session), customerIdHashed: session.sub, businessType: session.businessType, turns: history, emailSentTo: email })
       .catch(err => console.error('transcript save error', err.message)));
     return c.json({ success: true, data: { message: `Transcript sent to ${email}` } });
   } catch (err: any) {

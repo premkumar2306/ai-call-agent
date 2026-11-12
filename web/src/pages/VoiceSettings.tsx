@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { card as sharedCard } from '../ui';
+import { Button, Card, Notice, Status } from '../components/ui';
 
 interface Props {
   base: string;
@@ -15,10 +15,6 @@ interface Voice {
   voiceId?: string;
   sarvamConfigured?: boolean;
 }
-
-const card: React.CSSProperties = sharedCard;
-const select: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, minWidth: 200 };
-const label: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14, fontWeight: 500, color: 'var(--text)' };
 
 const LANGUAGES = [
   { value: 'en', label: 'English' },
@@ -81,57 +77,50 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
       : 'Voice ID of a Hindi-speaking voice (needed for Hindi with the standard voice).';
 
   return (
-    <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 17, color: 'var(--text-strong)' }}>Language and voice</h2>
-      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
-        The language the assistant answers calls in. In Hindi or Hinglish it follows the caller's language.
-        The Indian-language options understand and sound more natural in Hindi; the standard options cost less.
-      </p>
-      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        {sectors.length > 1 && <label style={label}>Business
-          <select value={business} onChange={e => setBusiness(e.target.value)} style={select}>
-            {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
-          </select>
-        </label>}
-        <label style={label}>Language
-          <select value={voice?.language ?? 'en'} disabled={!voice} onChange={e => set({ language: e.target.value as Voice['language'] })} style={select}>
+    <Card
+      title="Language and voice"
+      description="The language the assistant answers calls in. In Hindi or Hinglish it follows the caller's language. The Indian-language options understand and sound more natural in Hindi; the standard options cost less."
+    >
+      <div className="form-grid">
+        {sectors.length > 1 && (
+          <div className="field">
+            <label htmlFor="vs-biz">Business</label>
+            <select id="vs-biz" className="input" value={business} onChange={e => setBusiness(e.target.value)}>
+              {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="field">
+          <label htmlFor="vs-lang">Language</label>
+          <select id="vs-lang" className="input" value={voice?.language ?? 'en'} disabled={!voice} onChange={e => set({ language: e.target.value as Voice['language'] })}>
             {LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
           </select>
-        </label>
-        <label style={label}>Speech recognition (hearing callers)
-          <select value={voice?.sttProvider ?? 'deepgram'} disabled={!voice} onChange={e => set({ sttProvider: e.target.value as Voice['sttProvider'] })} style={select}>
+        </div>
+        <div className="field">
+          <label htmlFor="vs-stt">Speech recognition (hearing callers)</label>
+          <select id="vs-stt" className="input" value={voice?.sttProvider ?? 'deepgram'} disabled={!voice} onChange={e => set({ sttProvider: e.target.value as Voice['sttProvider'] })}>
             <option value="deepgram">Standard (Deepgram)</option>
             <option value="sarvam">Indian languages (Sarvam)</option>
           </select>
-        </label>
-        <label style={label}>Voice (speaking to callers)
-          <select value={voice?.ttsProvider ?? 'cartesia'} disabled={!voice} onChange={e => set({ ttsProvider: e.target.value as Voice['ttsProvider'] })} style={select}>
+        </div>
+        <div className="field">
+          <label htmlFor="vs-tts">Voice (speaking to callers)</label>
+          <select id="vs-tts" className="input" value={voice?.ttsProvider ?? 'cartesia'} disabled={!voice} onChange={e => set({ ttsProvider: e.target.value as Voice['ttsProvider'] })}>
             <option value="cartesia">Standard (Cartesia)</option>
             <option value="sarvam">Indian voice (Sarvam)</option>
           </select>
-        </label>
-        <label style={{ ...label, flex: 1, minWidth: 220 }}>Voice ID (optional)
-          <input
-            value={voice?.voiceId ?? ''}
-            disabled={!voice}
-            onChange={e => set({ voiceId: e.target.value })}
-            placeholder="default"
-            style={{ ...select, minWidth: 0 }}
-          />
-        </label>
-        <button
-          onClick={save}
-          disabled={!voice || saving}
-          style={{ background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: !voice || saving ? 0.5 : 1 }}
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
+        </div>
       </div>
-      {voice && <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--text-subtle)' }}>{voiceHint}</p>}
+      <div className="field">
+        <label htmlFor="vs-voice">Voice ID (optional)</label>
+        <input id="vs-voice" className="input input-narrow" value={voice?.voiceId ?? ''} disabled={!voice} onChange={e => set({ voiceId: e.target.value })} placeholder="default" />
+        {voice && <span className="help">{voiceHint}</span>}
+      </div>
       {voice && !voice.sarvamConfigured && (voice.sttProvider === 'sarvam' || voice.ttsProvider === 'sarvam') && (
-        <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--warning)' }}>The Indian-language option isn't switched on for this service yet (SARVAM_API_KEY), so it can't be saved.</p>
+        <Notice tone="warning">The Indian-language option isn't switched on for this service yet (SARVAM_API_KEY), so it can't be saved.</Notice>
       )}
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
-    </div>
+      <div className="form-actions"><Button onClick={save} disabled={!voice} busy={saving}>Save</Button></div>
+      <Status msg={msg} />
+    </Card>
   );
 }
