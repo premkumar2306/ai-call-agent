@@ -9,6 +9,8 @@ build/
 coverage/
 *.tsbuildinfo
 .cache/
+__pycache__/
+*.pyc
 
 # Wrangler
 .wrangler/
