@@ -1,0 +1,375 @@
+#!/usr/bin/env node
+
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const campaignDirectory = resolve(scriptDirectory, '..');
+const campaignSubjectPrefix = '[Avery dental pilot]';
+const allowedCities = new Set(['bengaluru', 'hyderabad', 'chennai']);
+const blockedMailboxPrefixes = new Set([
+  'abuse',
+  'billing',
+  'careers',
+  'compliance',
+  'hr',
+  'jobs',
+  'legal',
+  'no-reply',
+  'noreply',
+  'postmaster',
+  'privacy',
+  'security',
+  'webmaster'
+]);
+
+export function selectCandidates(targets, sentRecipients = new Set()) {
+  const selected = [];
+  const seenEmails = new Set();
+
+  for (const target of targets) {
+    if (!['A', 'B'].includes(target.qualityTier)) continue;
+    if (target.status !== 'research_ready') continue;
+    if (target.consentStatus !== 'not_contacted') continue;
+
+    const validationByEmail = new Map(
+      (target.emailDomainValidations ?? []).map((validation) => [validation.email.toLowerCase(), validation.status])
+    );
+
+    for (const rawEmail of target.publicEmails ?? []) {
+      const email = rawEmail.toLowerCase();
+      const prefix = email.split('@')[0];
+      if (!['mx_valid', 'implicit_mx'].includes(validationByEmail.get(email))) continue;
+      if (blockedMailboxPrefixes.has(prefix)) continue;
+      if (sentRecipients.has(email) || seenEmails.has(email)) continue;
+      seenEmails.add(email);
+      selected.push({ target, email });
+      break;
+    }
+  }
+
+  return selected;
+}
+
+export function classifyReply(message) {
+  const value = `${message.subject ?? ''} ${message.bodyPreview ?? ''}`.toLowerCase();
+  if (/unsubscribe|remove me|stop emailing|do not contact|opt out/.test(value)) return 'opt_out';
+  if (/not interested|no thanks|no thank you|don't need|do not need/.test(value)) return 'negative';
+  if (/interested|yes|demo|call me|schedule|let's talk|lets talk|more details|pilot/.test(value)) return 'positive';
+  return 'neutral';
+}
+
+export function isBounce(message) {
+  const value = `${message.subject ?? ''} ${message.bodyPreview ?? ''}`.toLowerCase();
+  return /undeliverable|delivery has failed|delivery failure|couldn't be delivered|non-delivery report|mailbox full/.test(value);
+}
+
+export function dateKey(value, timeZone = 'Asia/Kolkata') {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date(value));
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+export function maskEmail(email) {
+  const [account, domain] = email.split('@');
+  return `${account.slice(0, 2)}***@${domain}`;
+}
+
+export function buildMessage(target, city) {
+  const languages = {
+    bengaluru: 'English, Hindi, or Kannada',
+    hyderabad: 'English, Hindi, or Telugu',
+    chennai: 'English or Tamil'
+  };
+  const greeting = target.clinicName ? `Hi ${target.clinicName} team,` : 'Hi there,';
+  return {
+    subject: `${campaignSubjectPrefix} quick question for ${target.clinicName}`,
+    body: [
+      greeting,
+      '',
+      `If a patient calls after hours, Avery can answer in ${languages[city]}, capture the appointment request, and send a WhatsApp confirmation.`,
+      '',
+      'We can set up a free 14-day pilot using call forwarding, without replacing your existing number or receptionist.',
+      '',
+      'Would a short example for your clinic be useful?',
+      '',
+      'Regards,',
+      'Prem',
+      'Deskzen',
+      'premkumar@deskzen.in',
+      '',
+      'To opt out, reply no.'
+    ].join('\n')
+  };
+}
+
+async function main() {
+  const action = process.env.CAMPAIGN_ACTION ?? 'preview';
+  const city = process.env.CAMPAIGN_CITY ?? 'bengaluru';
+  const maxEmails = Math.min(10, Math.max(1, Number.parseInt(process.env.MAX_EMAILS ?? '10', 10)));
+  const outputDirectory = process.env.CAMPAIGN_OUTPUT_DIR ?? join(campaignDirectory, 'runtime');
+  const sender = process.env.OUTLOOK_SENDER ?? 'premkumar@deskzen.in';
+
+  if (!['preview', 'monitor', 'send'].includes(action)) throw new Error(`Unsupported CAMPAIGN_ACTION: ${action}`);
+  if (!allowedCities.has(city)) throw new Error(`Unsupported CAMPAIGN_CITY: ${city}`);
+  if (action === 'send' && process.env.CONFIRM_SEND !== 'true' && process.env.AUTOMATION_ENABLED !== 'true') {
+    throw new Error('Sending is blocked: confirm_send must be true or DENTAL_CAMPAIGN_ENABLED must be true');
+  }
+
+  const payload = JSON.parse(await readFile(join(campaignDirectory, city, 'targets-1000.json'), 'utf8'));
+  let graphToken = null;
+  let sentMessages = [];
+  let inboxMessages = [];
+
+  if (action !== 'preview') {
+    graphToken = await getGraphToken();
+    [sentMessages, inboxMessages] = await Promise.all([
+      listFolderMessages(graphToken, sender, 'sentitems'),
+      listFolderMessages(graphToken, sender, 'inbox')
+    ]);
+  }
+
+  const campaignSent = sentMessages.filter((message) => message.subject?.startsWith(campaignSubjectPrefix));
+  const sentRecipients = new Set(
+    campaignSent.flatMap((message) => message.toRecipients ?? [])
+      .map((recipient) => recipient.emailAddress?.address?.toLowerCase())
+      .filter(Boolean)
+  );
+  const candidates = selectCandidates(payload.targets, sentRecipients);
+  const replyReport = buildReplyReport(inboxMessages, sentRecipients);
+  const today = dateKey(new Date());
+  const sentToday = campaignSent.filter((message) => dateKey(message.sentDateTime ?? message.receivedDateTime) === today).length;
+  const remainingToday = Math.max(0, maxEmails - sentToday);
+  const result = {
+    action,
+    city,
+    sender,
+    generatedAt: new Date().toISOString(),
+    maxEmailsPerDay: maxEmails,
+    alreadySentToday: sentToday,
+    remainingToday,
+    candidateCount: candidates.length,
+    sentCount: 0,
+    skippedValidationCount: 0,
+    replyCount: replyReport.replies.length,
+    bounceCount: replyReport.bounces.length,
+    replies: replyReport.replies,
+    bounces: replyReport.bounces,
+    preview: candidates.slice(0, maxEmails).map(({ target, email }) => ({
+      clinicId: target.id,
+      clinicName: target.clinicName,
+      email: maskEmail(email),
+      qualityTier: target.qualityTier,
+      qualityScore: target.qualityScore
+    })),
+    sent: [],
+    rejectedByMailboxValidation: []
+  };
+
+  if (action === 'send') {
+    const apiKey = process.env.ZEROBOUNCE_API_KEY;
+    if (!apiKey) throw new Error('Sending is blocked: ZEROBOUNCE_API_KEY is not configured');
+
+    for (const candidate of candidates) {
+      if (result.sentCount >= remainingToday) break;
+      const validation = await validateMailbox(candidate.email, apiKey);
+      if (validation.status !== 'valid' || validation.catchallDomain === true) {
+        result.skippedValidationCount += 1;
+        result.rejectedByMailboxValidation.push({
+          clinicId: candidate.target.id,
+          email: maskEmail(candidate.email),
+          status: validation.status,
+          subStatus: validation.subStatus,
+          catchallDomain: validation.catchallDomain
+        });
+        continue;
+      }
+
+      const message = buildMessage(candidate.target, city);
+      await sendMail(graphToken, sender, candidate.email, message);
+      result.sentCount += 1;
+      result.sent.push({
+        clinicId: candidate.target.id,
+        clinicName: candidate.target.clinicName,
+        email: maskEmail(candidate.email),
+        subject: message.subject
+      });
+      await delay(1500);
+    }
+  }
+
+  await mkdir(outputDirectory, { recursive: true });
+  const jsonPath = join(outputDirectory, 'campaign-report.json');
+  const markdownPath = join(outputDirectory, 'campaign-report.md');
+  await writeFile(jsonPath, `${JSON.stringify(result, null, 2)}\n`);
+  await writeFile(markdownPath, renderMarkdown(result));
+  writeGitHubOutput('sent_count', result.sentCount);
+  writeGitHubOutput('reply_count', result.replyCount);
+  writeGitHubOutput('bounce_count', result.bounceCount);
+  writeGitHubOutput('report_path', markdownPath);
+  console.log(renderMarkdown(result));
+}
+
+async function getGraphToken() {
+  const tenantId = process.env.MICROSOFT_TENANT_ID;
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  if (!tenantId || !clientId) throw new Error('MICROSOFT_TENANT_ID and MICROSOFT_CLIENT_ID are required');
+
+  const form = new URLSearchParams({
+    client_id: clientId,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials'
+  });
+  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+  if (clientSecret) {
+    form.set('client_secret', clientSecret);
+  } else {
+    const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+    const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+    if (!requestUrl || !requestToken) throw new Error('GitHub OIDC is unavailable and MICROSOFT_CLIENT_SECRET is not configured');
+    const separator = requestUrl.includes('?') ? '&' : '?';
+    const oidcResponse = await fetch(`${requestUrl}${separator}audience=${encodeURIComponent('api://AzureADTokenExchange')}`, {
+      headers: { Authorization: `Bearer ${requestToken}` }
+    });
+    if (!oidcResponse.ok) throw new Error(`GitHub OIDC token request failed: ${oidcResponse.status}`);
+    const oidcToken = (await oidcResponse.json()).value;
+    form.set('client_assertion', oidcToken);
+    form.set('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
+  }
+
+  const response = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(`Microsoft token exchange failed: ${body.error_description ?? response.status}`);
+  return body.access_token;
+}
+
+async function listFolderMessages(token, sender, folder) {
+  const select = 'subject,toRecipients,from,receivedDateTime,sentDateTime,bodyPreview,internetMessageId';
+  let url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/mailFolders/${folder}/messages?$select=${select}&$top=200`;
+  const messages = [];
+
+  for (let page = 0; page < 5 && url; page += 1) {
+    const response = await graphRequest(url, token);
+    messages.push(...(response.value ?? []));
+    url = response['@odata.nextLink'] ?? null;
+  }
+  return messages;
+}
+
+function buildReplyReport(inboxMessages, sentRecipients) {
+  const replies = [];
+  const bounces = [];
+  for (const message of inboxMessages) {
+    if (isBounce(message)) {
+      const content = `${message.subject ?? ''} ${message.bodyPreview ?? ''}`.toLowerCase();
+      const campaignRelated = message.subject?.includes(campaignSubjectPrefix)
+        || [...sentRecipients].some((recipient) => content.includes(recipient));
+      if (campaignRelated) bounces.push({ receivedAt: message.receivedDateTime, subject: message.subject ?? 'Delivery failure' });
+      continue;
+    }
+    const sender = message.from?.emailAddress?.address?.toLowerCase();
+    if (!sender || !sentRecipients.has(sender)) continue;
+    replies.push({
+      receivedAt: message.receivedDateTime,
+      sender: maskEmail(sender),
+      subject: message.subject ?? '',
+      classification: classifyReply(message)
+    });
+  }
+  return { replies, bounces };
+}
+
+async function validateMailbox(email, apiKey) {
+  const body = new URLSearchParams({ api_key: apiKey, email, ip_address: '', timeout: '30' });
+  const response = await fetch('https://api.zerobounce.net/v2/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  const result = await response.json();
+  if (!response.ok || result.error) throw new Error(`Mailbox validation failed for ${maskEmail(email)}: ${result.error ?? response.status}`);
+  return {
+    status: result.status,
+    subStatus: result.sub_status,
+    catchallDomain: result.catchall_domain
+  };
+}
+
+async function sendMail(token, sender, recipient, message) {
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/sendMail`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      message: {
+        subject: message.subject,
+        body: { contentType: 'Text', content: message.body },
+        toRecipients: [{ emailAddress: { address: recipient } }]
+      },
+      saveToSentItems: true
+    })
+  });
+  if (!response.ok) throw new Error(`Microsoft Graph sendMail failed for ${maskEmail(recipient)}: ${response.status} ${await response.text()}`);
+}
+
+async function graphRequest(url, token) {
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`Microsoft Graph request failed: ${response.status} ${await response.text()}`);
+  return response.json();
+}
+
+function renderMarkdown(result) {
+  const lines = [
+    '# Dental email campaign report',
+    '',
+    `- Action: ${result.action}`,
+    `- City: ${result.city}`,
+    `- Generated: ${result.generatedAt}`,
+    `- Candidates after safety gates: ${result.candidateCount}`,
+    `- Sent today before this run: ${result.alreadySentToday}`,
+    `- Sent by this run: ${result.sentCount}`,
+    `- Rejected by mailbox validation: ${result.skippedValidationCount}`,
+    `- Replies detected: ${result.replyCount}`,
+    `- Bounces detected: ${result.bounceCount}`,
+    '',
+    '## Candidate preview',
+    ''
+  ];
+  for (const candidate of result.preview) lines.push(`- ${candidate.clinicName} (${candidate.email}) — tier ${candidate.qualityTier}, score ${candidate.qualityScore}`);
+  if (result.replies.length) {
+    lines.push('', '## Replies', '');
+    for (const reply of result.replies) lines.push(`- ${reply.receivedAt}: ${reply.sender} — ${reply.classification} — ${reply.subject}`);
+  }
+  if (result.bounces.length) {
+    lines.push('', '## Delivery failures', '');
+    for (const bounce of result.bounces) lines.push(`- ${bounce.receivedAt}: ${bounce.subject}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function writeGitHubOutput(name, value) {
+  if (!process.env.GITHUB_OUTPUT) return;
+  appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await main();
+}
