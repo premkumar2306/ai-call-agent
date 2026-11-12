@@ -213,6 +213,33 @@ cd web && npm run build      # tsc + vite build
 CI (`.github/workflows/ci.yml`) runs these on every PR plus a `wrangler deploy --dry-run`
 bundle. Pushes to `main` run CI, then deploy (`.github/workflows/deploy.yml`).
 
+### End-to-end call simulator (no accounts needed)
+
+```bash
+cd worker
+npm run e2e              # every scenario (~2 min)
+npm run e2e -- exotel    # one carrier: twilio | exotel | plivo | razorpay
+```
+
+`worker/e2e/run.mjs` starts the real Worker (`wrangler dev`, fresh local D1/KV, the real
+`CallRelay` Durable Object) and points every outside service at local stand-ins
+(`worker/e2e/mock-providers.mjs`) that speak each provider's real protocol: Anthropic (streamed,
+with tool calls), Deepgram and Sarvam speech recognition, Cartesia and Sarvam voices, Razorpay,
+Resend, Twilio SMS. Simulated callers then phone three test businesses the way each carrier does:
+signed webhook → stream token → media frames in the carrier's format → playback acknowledgements.
+
+| Scenario | Checks |
+|---|---|
+| US business over **Twilio**, English | signed webhook, greeting, **no** AI notice, µ-law frames, Deepgram µ-law 8 kHz, Cartesia µ-law 8 kHz, spoken booking saved, transfer → `<Dial>` staff, call metered |
+| Indian business over **Exotel**, English | as above, plus the AI/recording notice **before** the greeting, Exotel PCM16 framing (multiples of 320 bytes, ≤100 000), Passthru → Connect applet dials staff, consent audit row |
+| Indian business over **Plivo**, Hindi on **Sarvam** | Hindi notice and greeting, Sarvam STT gets 16 kHz PCM `hi-IN`, Sarvam TTS asked for µ-law 8 kHz `hi-IN`, booking in Hindi, transfer → `<Dial><Number>` |
+| **Razorpay** | plan synced, subscription created, badly signed webhook refused, signed webhook → account `active` |
+
+The redirect is `PROVIDER_MOCK_URL` (`src/utils/provider-mock.ts`); it is ignored whenever
+`NODE_ENV` is `production`. CI runs the simulator on every PR and before every deploy.
+It proves the Worker's side of each protocol; the first calls on real accounts still need a
+person on a phone — see `docs/live-test-checklist.md`.
+
 ---
 
 ## Testing Voice Turns Locally

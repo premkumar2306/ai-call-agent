@@ -60,7 +60,7 @@ export default function Home({ sector, name, base, auth, isOwner, go }: Props) {
           { key: 'details', title: 'Add your address and opening hours', detail: 'So the assistant can tell callers where and when.', done: !!biz?.address && Object.keys(biz?.hours ?? {}).length > 0, route: 'settings/business' },
           { key: 'services', title: 'Add your services and prices', detail: 'What callers can book, and what it costs.', done: !!products?.some(p => p.isActive), route: 'services' },
           ...(words ? [{ key: 'team', title: `Add your ${words.many.toLowerCase()}`, detail: `So callers can book a ${words.one.toLowerCase()} by name.`, done: !!people?.some(p => p.isActive), route: 'team' }] : []),
-          { key: 'try', title: 'Try your assistant', detail: 'Make a test call in the app and hear how it answers.', done: false, route: 'try' },
+          { key: 'try', title: 'Try your assistant (optional)', detail: 'Make a test call in the app and hear how it answers.', done: false, route: 'try' },
           { key: 'number', title: 'Request a phone number', detail: 'The Avery team connects a number for callers to dial.', done: !!numbers?.length, route: 'settings/phone' },
           { key: 'privacy', title: 'Add your privacy notice link', detail: 'Sent to callers in booking texts and WhatsApp replies.', done: !!privacy?.privacyNoticeUrl, route: 'settings/privacy' },
           // Billing "off" means no plan is offered yet, so there is nothing to choose.
