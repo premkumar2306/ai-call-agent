@@ -10,7 +10,7 @@
   --surface-3: #e9ecf1;
   --input-bg: #ffffff;
   --border: #e3e6eb;
-  --border-strong: #c3c9d2;
+  --border-strong: #858e9b;
   --text-strong: #101828;
   --text: #1d2939;
   --text-muted: #475467;
@@ -50,9 +50,9 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1218; --surface: #171b23; --surface-2: #1e232d; --surface-3: #272d39; --input-bg: #12161d;
-    --border: #2b313d; --border-strong: #434b5a;
+    --border: #2b313d; --border-strong: #6b7486;
     --text-strong: #f5f7fa; --text: #dfe3ea; --text-muted: #aab2bf; --text-subtle: #959eac;
-    --accent: #7c63f2; --accent-hover: #8f79f5; --accent-text: #b4a5ff; --accent-soft: #252040; --accent-border: #4a3f86; --on-accent: #ffffff;
+    --accent: #6a52e6; --accent-hover: #7a64ee; --accent-text: #b4a5ff; --accent-soft: #252040; --accent-border: #4a3f86; --on-accent: #ffffff;
     --danger: #fc8f85; --danger-soft: #3a1d1b; --danger-border: #6e2f2a;
     --success: #6ce0a3; --success-soft: #11291f; --success-border: #22553d;
     --warning: #f7c56b; --warning-soft: #2f2410; --warning-border: #5f4a1e;
@@ -65,9 +65,9 @@
 }
 :root[data-theme="dark"] {
   --bg: #0f1218; --surface: #171b23; --surface-2: #1e232d; --surface-3: #272d39; --input-bg: #12161d;
-  --border: #2b313d; --border-strong: #434b5a;
+  --border: #2b313d; --border-strong: #6b7486;
   --text-strong: #f5f7fa; --text: #dfe3ea; --text-muted: #aab2bf; --text-subtle: #959eac;
-  --accent: #7c63f2; --accent-hover: #8f79f5; --accent-text: #b4a5ff; --accent-soft: #252040; --accent-border: #4a3f86; --on-accent: #ffffff;
+  --accent: #6a52e6; --accent-hover: #7a64ee; --accent-text: #b4a5ff; --accent-soft: #252040; --accent-border: #4a3f86; --on-accent: #ffffff;
   --danger: #fc8f85; --danger-soft: #3a1d1b; --danger-border: #6e2f2a;
   --success: #6ce0a3; --success-soft: #11291f; --success-border: #22553d;
   --warning: #f7c56b; --warning-soft: #2f2410; --warning-border: #5f4a1e;
@@ -164,7 +164,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s4); box-shadow: var(--shadow); min-width: 0; display: grid; gap: var(--s3); align-content: start; }
 .card-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
-.card-head > div:first-child { min-width: 0; flex: 1; }
+.card-head > div:first-child { min-width: 0; flex: 1 1 260px; }
 .card-hint { color: var(--text-muted); font-size: 14px; margin-top: var(--s1); }
 .card-flush { padding: 0; overflow: hidden; }
 .card-accent { border-color: var(--accent-border); }
@@ -421,3 +421,7 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .progress.usage-0 > div { background: var(--accent); }
 .progress.usage-80 > div { background: var(--warning); }
 .progress.usage-100 > div { background: var(--danger); }
+/* Keep the sidebar column coloured below the fold on long pages. */
+@media (min-width: 861px) { .app { background: linear-gradient(to right, var(--surface) calc(var(--sidebar-w) - 1px), var(--border) 0 var(--sidebar-w), var(--bg) 0); } }
+.card.card-flush { padding: 0; }
+@media (max-width: 640px) { .chat-box { height: 320px; } .feed-when { margin-left: 0; width: 100%; } }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { COUNTRIES, countryDefaults } from '../locale';
-import { card as sharedCard } from '../ui';
+import { Button, Card, Status } from '../components/ui';
 
 interface Props {
   base: string;
@@ -10,7 +10,6 @@ interface Props {
 
 interface State { selected: string | null; effective: string | null; envDefault: string | null }
 
-const card: React.CSSProperties = sharedCard;
 
 // The operator's default phone line: which business answers unrouted numbers.
 export default function DefaultLine({ base, adminKey, sectors }: Props) {
@@ -58,46 +57,20 @@ export default function DefaultLine({ base, adminKey, sectors }: Props) {
   };
 
   return (
-    <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 17, color: 'var(--text-strong)' }}>Default phone line</h2>
-      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
-        Which business answers calls to numbers that aren't routed to a business below, and WhatsApp messages to unrouted numbers. Takes effect on the next call.
-      </p>
+    <Card title="Default phone line" description="Which business answers calls to numbers that aren't routed to a business above, and WhatsApp messages to unrouted numbers. Takes effect on the next call.">
       {state && (
-        <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-muted)' }}>
-          Currently answering as <b style={{ color: 'var(--text-strong)' }}>{nameOf(state.effective)}</b>
-          {state.selected ? '' : ' (deployed default)'}
-        </p>
+        <p className="muted">Currently answering as <span className="strong">{nameOf(state.effective)}</span>{state.selected ? '' : ' (deployed default)'}</p>
       )}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select
-          value={choice}
-          onChange={e => setChoice(e.target.value)}
-          disabled={!state}
-          style={{ background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, minWidth: 220 }}
-        >
+      <div className="form-row">
+        <select className="input input-narrow" aria-label="Business that answers" value={choice} onChange={e => setChoice(e.target.value)} disabled={!state}>
           {!choice && <option value="">Select a business…</option>}
           {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
         </select>
-        <button
-          onClick={() => save(choice)}
-          disabled={!state || !choice || saving || choice === state.effective}
-          style={{ background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: !state || !choice || saving || choice === state.effective ? 0.5 : 1 }}
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-        {state?.selected && (
-          <button
-            onClick={() => save(null)}
-            disabled={saving}
-            style={{ background: 'transparent', color: 'var(--accent-text)', border: '1px solid var(--accent-border)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' }}
-          >
-            Revert to default ({nameOf(state.envDefault)})
-          </button>
-        )}
+        <Button onClick={() => save(choice)} disabled={!state || !choice || choice === state.effective} busy={saving}>Save</Button>
+        {state?.selected && <Button variant="secondary" onClick={() => save(null)} disabled={saving}>Revert to default ({nameOf(state.envDefault)})</Button>}
       </div>
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
-    </div>
+      <Status msg={msg} />
+    </Card>
   );
 }
 
@@ -109,8 +82,6 @@ interface SectorRecord {
   address?: string; phone?: string; website?: string; about?: string; notifyEmail?: string; capacity?: number;
 }
 
-const input: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, width: '100%', boxSizing: 'border-box' };
-const label: React.CSSProperties = { display: 'grid', gap: 6, fontSize: 14, fontWeight: 500, color: 'var(--text)' };
 
 function preview(f: { currency: string; locale: string; timezone: string }): string {
   try {
@@ -172,47 +143,44 @@ export function LocaleSettings({ base, auth, sectors }: { base: string; auth: Re
   const dirty = !!record && (record.currency !== form.currency || (record.locale || 'en-US') !== form.locale
     || (record.countryCode || 'US') !== form.countryCode || record.timezone !== form.timezone);
 
+  const f = (k: 'currency' | 'locale' | 'timezone', label: string, placeholder: string, help?: string) => (
+    <div className="field">
+      <label htmlFor={`loc-${k}`}>{label}</label>
+      <input id={`loc-${k}`} className="input" value={form[k]} onChange={set(k)} placeholder={placeholder} disabled={!record} />
+      {help && <span className="help">{help}</span>}
+    </div>
+  );
+
   return (
-    <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 17, color: 'var(--text-strong)' }}>Prices, dates and phone numbers</h2>
-      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 14 }}>
-        How prices, dates and phone numbers are said and written on calls, WhatsApp, texts, emails and calendar events.
-      </p>
-      {!Object.keys(auth).length ? <p style={{ fontSize: 13, color: 'var(--danger)', margin: 0 }}>Sign in to manage this.</p> : (
+    <Card title="Prices, dates and phone numbers" description="How prices, dates and phone numbers are said and written on calls, WhatsApp, texts, emails and calendar events. Picking a country fills these in.">
+      {!Object.keys(auth).length ? <p className="bad">Sign in to manage this.</p> : (
         <>
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', marginBottom: 12 }}>
-            {sectors.length > 1 && <label style={label}>Business
-              <select value={key} onChange={e => setKey(e.target.value)} style={input}>
-                {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
-              </select>
-            </label>}
-            <label style={label}>Country
-              {/* Picking a country fills in its currency, locale and timezone; each can still be changed below. */}
-              <select value={form.countryCode} disabled={!record} style={input}
-                onChange={e => setForm(f => countryDefaults(e.target.value, f.timezone))}>
+          <div className="form-grid">
+            {sectors.length > 1 && (
+              <div className="field">
+                <label htmlFor="loc-biz">Business</label>
+                <select id="loc-biz" className="input" value={key} onChange={e => setKey(e.target.value)}>
+                  {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
+                </select>
+              </div>
+            )}
+            <div className="field">
+              <label htmlFor="loc-country">Country</label>
+              <select id="loc-country" className="input" value={form.countryCode} disabled={!record} onChange={e => setForm(f => countryDefaults(e.target.value, f.timezone))}>
                 {!COUNTRIES[form.countryCode] && <option value={form.countryCode}>{form.countryCode}</option>}
                 {Object.entries(COUNTRIES).map(([code, c]) => <option key={code} value={code}>{c.flag} {c.name} ({c.dialCode})</option>)}
               </select>
-            </label>
+              {record && COUNTRIES[form.countryCode] && <span className="help">Callers' local numbers are read with {COUNTRIES[form.countryCode].dialCode}.</span>}
+            </div>
+            {f('currency', 'Currency code', 'INR')}
+            {f('locale', 'Number and date format', 'en-IN', 'e.g. en-IN, hi-IN')}
+            {f('timezone', 'Time zone', 'Asia/Kolkata')}
           </div>
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
-            <label style={label}>Currency code<input style={input} value={form.currency} onChange={set('currency')} placeholder="INR" disabled={!record} /></label>
-            <label style={label}>Number and date format<input style={input} value={form.locale} onChange={set('locale')} placeholder="en-IN" disabled={!record} /></label>
-            <label style={label}>Time zone<input style={input} value={form.timezone} onChange={set('timezone')} placeholder="Asia/Kolkata" disabled={!record} /></label>
-          </div>
-          {record && COUNTRIES[form.countryCode] && (
-            <p style={{ margin: '12px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
-              Callers' local numbers are read with country code {COUNTRIES[form.countryCode].dialCode}.
-            </p>
-          )}
-          {record && <p style={{ margin: '12px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>Preview: {preview(form)}</p>}
-          <button onClick={save} disabled={!dirty || saving}
-            style={{ marginTop: 14, background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: !dirty || saving ? 0.5 : 1 }}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
+          {record && <p className="muted small">Preview: {preview(form)}</p>}
+          <div className="form-actions"><Button onClick={save} disabled={!dirty} busy={saving}>Save</Button></div>
         </>
       )}
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
-    </div>
+      <Status msg={msg} />
+    </Card>
   );
 }

@@ -306,10 +306,7 @@ export default function App() {
             <div key={`${sector}-${settingsKey}`} className="stack">
               {settingsKey === 'business' && <>
                 <Business sector={sector} base={BASE} auth={headers} canEdit={canEdit} onRenamed={loadMe} />
-                <details className="more card">
-                  <summary>How prices, dates and phone numbers are written</summary>
-                  <LocaleSettings base={BASE} auth={headers} sectors={one} />
-                </details>
+                <LocaleSettings base={BASE} auth={headers} sectors={one} />
               </>}
               {settingsKey === 'assistant' && <>
                 <Dashboard sector={sector} base={BASE} auth={headers} canEdit={canEdit} operator={isOperator} />
