@@ -7,7 +7,10 @@ import { Badge, Button, Card, EmptyState, Notice, Status, Table } from '../compo
 // business answers each number (/admin/whatsapp-numbers).
 
 interface Props { base: string; adminKey: string; sectors: { key: string; name: string }[] }
-interface WaStatus { appSecret: boolean; verifyToken: boolean; accessToken: boolean; phoneNumberMap: boolean; webhookPath: string }
+interface WaStatus {
+  appSecret: boolean; verifyToken: boolean; accessToken: boolean; phoneNumberMap: boolean; webhookPath: string;
+  confirmationTemplate?: boolean; templateLanguage?: boolean; graphApiVersion?: boolean;
+}
 interface WaRow { phoneNumberId: string; businessType: string; label: string | null }
 
 const README = 'https://github.com/premkumar2306/ai-call-agent#whatsapp-setup';
@@ -69,6 +72,24 @@ export default function WhatsAppSetup({ base, adminKey, sectors }: Props) {
               </li>
             ))}
           </ul>
+        )}
+        {status && (
+          <details className="more">
+            <summary>Optional settings</summary>
+            <ul className="checklist">
+              {[
+                { on: status.confirmationTemplate, name: 'WA_CONFIRMATION_TEMPLATE', what: 'an approved message template for booking confirmations, so they can be sent outside the 24-hour reply window' },
+                { on: status.templateLanguage, name: 'WA_TEMPLATE_LANGUAGE', what: "that template's language code (e.g. en, hi)" },
+                { on: status.graphApiVersion, name: 'WA_GRAPH_API_VERSION', what: 'pin the Meta Graph API version; the default is used otherwise' },
+              ].map(o => (
+                <li key={o.name}>
+                  <span className={`check${o.on ? ' done' : ''}`} aria-hidden="true">✓</span>
+                  <div className="what"><code>{o.name}</code><span>{o.what}</span></div>
+                  {o.on ? <Badge tone="success">Set</Badge> : <Badge>Not set</Badge>}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </Card>
 

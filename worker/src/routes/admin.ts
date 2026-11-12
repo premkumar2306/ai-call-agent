@@ -402,6 +402,11 @@ adminRouter.get('/whatsapp-status', withAdminKey, (c) => {
       verifyToken: !!env.WA_VERIFY_TOKEN,
       accessToken: !!env.WA_ACCESS_TOKEN,
       phoneNumberMap: !!env.WA_PHONE_NUMBER_MAP,
+      // Optional (booking confirmations sent as an approved template).
+      // Read by name so this route doesn't depend on when they join Env.
+      confirmationTemplate: !!(env as unknown as Record<string, unknown>).WA_CONFIRMATION_TEMPLATE,
+      templateLanguage: !!(env as unknown as Record<string, unknown>).WA_TEMPLATE_LANGUAGE,
+      graphApiVersion: !!(env as unknown as Record<string, unknown>).WA_GRAPH_API_VERSION,
       webhookPath: '/whatsapp/webhook',
     },
   });

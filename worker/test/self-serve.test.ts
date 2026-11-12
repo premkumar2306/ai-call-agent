@@ -335,13 +335,17 @@ describe('browser test sessions', () => {
 
 describe('WhatsApp status', () => {
   it('reports which settings are present as booleans, to the operator only', async () => {
-    env = makeEnv({ WA_APP_SECRET: 'shh-secret', WA_VERIFY_TOKEN: 'verify-me' } as any);
+    env = makeEnv({ WA_APP_SECRET: 'shh-secret', WA_VERIFY_TOKEN: 'verify-me', WA_CONFIRMATION_TEMPLATE: 'booking_confirmed' } as any);
     const res = await req('/admin/whatsapp-status', { admin: ADMIN });
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).not.toContain('shh-secret');
     expect(text).not.toContain('verify-me');
-    expect(JSON.parse(text).data).toEqual({ appSecret: true, verifyToken: true, accessToken: false, phoneNumberMap: false, webhookPath: '/whatsapp/webhook' });
+    expect(text).not.toContain('booking_confirmed');
+    expect(JSON.parse(text).data).toEqual({
+      appSecret: true, verifyToken: true, accessToken: false, phoneNumberMap: false,
+      confirmationTemplate: true, templateLanguage: false, graphApiVersion: false, webhookPath: '/whatsapp/webhook',
+    });
     const token = await signIn('wastatus@example.com');
     expect((await req('/admin/whatsapp-status', { token })).status).toBe(401);
     expect((await req('/admin/whatsapp-status', {})).status).toBe(401);
