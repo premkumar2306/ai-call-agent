@@ -8,7 +8,7 @@ import { isPeriod, isValidGstin, normalizeGstin, billingPeriod } from '../servic
 import { checkWebhook, RazorpayNotConfigured } from '../services/billing/razorpay';
 import {
   applyWebhook, assignPlan, billingSummary, closePeriod, confirmCheckout, getAccount, listPlans,
-  startSubscription, syncPlanToRazorpay, updateBillingDetails, upsertPlan, usageRecordsFor, validatePlanInput,
+  callCosts, startSubscription, syncPlanToRazorpay, updateBillingDetails, upsertPlan, usageRecordsFor, validatePlanInput,
   type BillingDetails, type RazorpayWebhook, type Viewer,
 } from '../services/billing/service';
 
@@ -161,6 +161,13 @@ billingAdminRouter.get('/usage/:businessType', async (c) => {
   const period = c.req.query('period') || billingPeriod(new Date());
   if (!isPeriod(period)) return c.json({ success: false, error: 'period must be YYYY-MM' }, 400);
   return c.json({ success: true, data: await usageRecordsFor(c.env, c.req.param('businessType'), period) });
+});
+
+// GET /admin/billing/calls/:businessType?period=YYYY-MM — cost, revenue and margin per call
+billingAdminRouter.get('/calls/:businessType', async (c) => {
+  const period = c.req.query('period') || billingPeriod(new Date());
+  if (!isPeriod(period)) return c.json({ success: false, error: 'period must be YYYY-MM' }, 400);
+  return c.json({ success: true, data: { period, ...(await callCosts(c.env, c.req.param('businessType'), period)) } });
 });
 
 // POST /admin/billing/close-period { period?: 'YYYY-MM' } — the cron job, by hand

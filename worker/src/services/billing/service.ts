@@ -5,7 +5,7 @@ import type { Env } from '../../types';
 import { getSector } from '../sector.service';
 import { sendEmail } from '../notify.service';
 import {
-  billableMinutes, billingPeriod, computeOverage, costRates, estimateCostUsdMicros, formatInr,
+  billableMinutes, billingPeriod, computeOverage, costParts, costRates, estimateCostUsdMicros, formatInr,
   gstinStateCode, previousPeriod, splitGst, usageAlertLevel, usdMicrosToPaise, withGst, gstOn,
   type LlmUsage,
 } from './pricing';
@@ -554,6 +554,70 @@ export async function closePeriod(env: Env, period = previousPeriod(billingPerio
     results.push({ businessType: account.businessType, status, ...(error ? { error } : {}) });
   }
   return results;
+}
+
+// ── In-app test calls ───────────────────────────────────────────────────────
+// "Try your assistant" (/mogi/voice-turn) uses the same AI model as a phone
+// call but no phone line. Its cost is recorded, never billed.
+
+export async function recordTestTurn(env: Env, businessType: string, sourceId: string, startedAt: number, model: string, llm: LlmUsage): Promise<void> {
+  try {
+    await recordUsage(env, { businessType, channel: 'voice', provider: 'web', sourceId, startedAt, billable: false });
+    await addLlmUsage(env, 'voice', sourceId, model, llm);
+  } catch (e: any) {
+    console.error('[billing] recordTestTurn failed', e?.message || e);
+  }
+}
+
+// ── Cost per call (operator) ────────────────────────────────────────────────
+// Each call's estimated provider cost (phone line, speech, AI model), the share
+// of revenue it brought in, and the margin. Revenue: billable minutes are taken
+// in time order; the plan's included minutes earn the monthly fee spread evenly
+// over them, minutes beyond earn the overage rate. Any unused part of the fee
+// isn't tied to a call, so the month's margin can be higher than the rows' sum.
+
+export interface CallCost {
+  id: string; sourceId: string; channel: string; provider: string | null; billable: boolean;
+  startedAt: number; durationSeconds: number; billableMinutes: number; llmModel: string | null;
+  costPaise: number; phonePaise: number; speechPaise: number; aiPaise: number;
+  revenuePaise: number; marginPaise: number;
+}
+
+export async function callCosts(env: Env, businessType: string, period: string): Promise<{ rows: CallCost[]; unallocatedFeePaise: number }> {
+  const rates = costRates(env.BILLING_COST_RATES);
+  const records = await usageRecordsFor(env, businessType, period, 1000);
+  const account = await getAccount(env, businessType);
+  const plan = account?.planId ? await getPlan(env, account.planId) : null;
+  const feePerMinute = plan && plan.includedMinutes > 0 ? plan.monthlyFeePaise / plan.includedMinutes : 0;
+  let minutesSoFar = 0;
+  const revenue = new Map<string, number>();
+  for (const r of [...records].sort((a, b) => a.startedAt - b.startedAt)) {
+    if (!plan || !r.billable || r.channel !== 'voice') continue;
+    let paise = 0;
+    for (let m = 0; m < r.billableMinutes; m++, minutesSoFar++) {
+      paise += minutesSoFar < plan.includedMinutes ? feePerMinute : plan.overagePaisePerMinute;
+    }
+    revenue.set(r.id, Math.round(paise));
+  }
+  const rows = records.map(r => {
+    const parts = costParts({
+      channel: r.channel as 'voice' | 'whatsapp', provider: r.provider, durationSeconds: r.durationSeconds,
+      sttSeconds: r.sttSeconds, ttsChars: r.ttsChars, llmModel: r.llmModel,
+      llm: { input: r.llmInputTokens, output: r.llmOutputTokens, cacheRead: r.llmCacheReadTokens, cacheWrite: r.llmCacheWriteTokens },
+    }, rates);
+    const costPaise = usdMicrosToPaise(r.costUsdMicros, rates);
+    const phonePaise = usdMicrosToPaise(parts.telephony, rates);
+    const aiPaise = usdMicrosToPaise(parts.llm, rates);
+    const revenuePaise = revenue.get(r.id) ?? 0;
+    return {
+      id: r.id, sourceId: r.sourceId, channel: r.channel, provider: r.provider, billable: r.billable,
+      startedAt: r.startedAt, durationSeconds: r.durationSeconds, billableMinutes: r.billableMinutes, llmModel: r.llmModel,
+      costPaise, phonePaise, aiPaise, speechPaise: Math.max(0, costPaise - phonePaise - aiPaise),
+      revenuePaise, marginPaise: revenuePaise - costPaise,
+    };
+  });
+  const includedRevenue = plan ? Math.min(minutesSoFar, plan.includedMinutes) * feePerMinute : 0;
+  return { rows, unallocatedFeePaise: plan ? Math.max(0, Math.round(plan.monthlyFeePaise - includedRevenue)) : 0 };
 }
 
 // ── WhatsApp ────────────────────────────────────────────────────────────────

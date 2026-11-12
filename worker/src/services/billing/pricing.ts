@@ -136,7 +136,7 @@ export interface CostRates {
 
 export const DEFAULT_COST_RATES: CostRates = {
   usdToInr: 88,
-  telephonyPerMinute: { twilio: 0.0085, exotel: 0.006, plivo: 0.006, default: 0.0085 },
+  telephonyPerMinute: { twilio: 0.0085, exotel: 0.006, plivo: 0.006, web: 0, default: 0.0085 }, // web: in-app test calls, no phone line
   sttPerSecond: 0.0077 / 60,     // Deepgram nova-3 streaming
   ttsPerChar: 0.00003,           // Cartesia sonic
   // Sarvam (Hindi lines): ~₹30/hour STT, ~₹15 per 10K characters TTS, at ₹88/USD.
@@ -196,6 +196,17 @@ export function estimateCostUsdMicros(u: UsageForCost, rates: CostRates = DEFAUL
     usd += rates.whatsappPerConversation;
   }
   return Math.round(usd * 1e6);
+}
+
+/** The phone-line and AI-model parts of a cost (speech is the rest). */
+export function costParts(u: UsageForCost, rates: CostRates = DEFAULT_COST_RATES): { telephony: number; llm: number } {
+  const llmRate = (u.llmModel && rates.llm[u.llmModel]) || rates.llm.default;
+  const llm = (u.llm.input * llmRate.inputPerMTok + u.llm.output * llmRate.outputPerMTok
+    + u.llm.cacheRead * llmRate.cacheReadPerMTok + u.llm.cacheWrite * llmRate.cacheWritePerMTok) / 1e6;
+  const telephony = u.channel === 'voice'
+    ? billableMinutes(u.durationSeconds) * (rates.telephonyPerMinute[u.provider ?? 'default'] ?? rates.telephonyPerMinute.default ?? 0)
+    : rates.whatsappPerConversation;
+  return { telephony: Math.round(telephony * 1e6), llm: Math.round(llm * 1e6) };
 }
 
 /** micro-USD → paise at the configured exchange rate. */

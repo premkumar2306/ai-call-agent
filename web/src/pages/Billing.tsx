@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Badge, Button, Card, Notice, Status, Table } from '../components/ui';
+import CallCosts from '../components/CallCosts';
 
 // Billing tab: plan, minutes this month, GST-inclusive amounts, invoices and
 // the Razorpay Checkout button. Cost and margin come back from the API only
@@ -265,6 +266,8 @@ export default function Billing({ sector, base, auth }: Props) {
           )}
         </Card>
       )}
+
+      {data.cost && <CallCosts base={base} auth={auth} sector={sector} />}
 
       <Card title="Billing details (GST)" description="Shown on your invoices.">
         <div className="form-grid">
