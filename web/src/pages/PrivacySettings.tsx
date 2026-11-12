@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { card as sharedCard } from '../ui';
 
 // Settings → Privacy & data (India DPDP): call-start notice, privacy notice
 // link, retention, and caller data export / erasure. Backed by
@@ -27,12 +28,12 @@ interface PrivacyState {
 
 interface NoticeRow { id: string; channel: string; call_sid: string | null; played_at: number; heard_fully: number | null; erased: number }
 
-const card: React.CSSProperties = { background: '#12121a', border: '1px solid #222', borderRadius: 12, padding: 20, marginTop: 16 };
-const input: React.CSSProperties = { background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '8px 12px', borderRadius: 8, boxSizing: 'border-box' };
-const label: React.CSSProperties = { display: 'block', fontSize: 13, color: '#ccc', margin: '14px 0 6px' };
-const hint: React.CSSProperties = { fontSize: 12, color: '#777', margin: '4px 0 0' };
+const card: React.CSSProperties = sharedCard;
+const input: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, boxSizing: 'border-box' };
+const label: React.CSSProperties = { display: 'block', fontSize: 14, fontWeight: 500, color: 'var(--text)', margin: '14px 0 6px' };
+const hint: React.CSSProperties = { fontSize: 13, color: 'var(--text-muted)', margin: '4px 0 0' };
 const btn = (disabled: boolean, danger = false): React.CSSProperties => ({
-  background: danger ? '#b91c1c' : '#6c47ff', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8,
+  background: danger ? 'var(--danger)' : 'var(--accent)', color: 'var(--text-strong)', border: 'none', padding: '8px 18px', borderRadius: 8,
   cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1,
 });
 
@@ -151,14 +152,14 @@ export default function PrivacySettings({ base, auth, sectors }: Props) {
   return (
     <>
       <div style={card}>
-        <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Privacy &amp; data</h2>
-        <p style={{ margin: '0 0 12px', color: '#888', fontSize: 13 }}>
-          Call-start notice, privacy notice link and how long call data is kept. Built for India's DPDP Act;
-          these settings help, but don't by themselves make a business compliant — see docs/compliance-india.md.
+        <h2 style={{ margin: '0 0 4px', fontSize: 17, color: 'var(--text-strong)' }}>Privacy notice and data</h2>
+        <p style={{ margin: '0 0 12px', color: 'var(--text-muted)', fontSize: 13 }}>
+          What callers are told at the start of a call, your privacy notice link, and how long call records are kept.
+          These help with India's data protection law (DPDP Act) but don't on their own make a business compliant.
         </p>
-        <select value={business} onChange={e => setBusiness(e.target.value)} style={{ ...input, minWidth: 220 }}>
+        {sectors.length > 1 && <select aria-label="Business" value={business} onChange={e => setBusiness(e.target.value)} style={{ ...input, minWidth: 220, width: 'auto' }}>
           {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
-        </select>
+        </select>}
 
         {state && (
           <>
@@ -168,7 +169,7 @@ export default function PrivacySettings({ base, auth, sectors }: Props) {
               <option value="on">Always on</option>
               <option value="off">Off</option>
             </select>
-            <p style={hint}>Currently <b style={{ color: state.disclosureEffective ? '#4ade80' : '#aaa' }}>{state.disclosureEffective ? 'on' : 'off'}</b>. Each time it plays is logged below.</p>
+            <p style={hint}>Currently <b style={{ color: state.disclosureEffective ? 'var(--success)' : 'var(--text-muted)' }}>{state.disclosureEffective ? 'on' : 'off'}</b>. Each time it plays is logged below.</p>
 
             <label style={label}>Notice wording (optional)</label>
             <textarea
@@ -191,7 +192,7 @@ export default function PrivacySettings({ base, auth, sectors }: Props) {
               Deleted daily once older than this. Empty = keep. Bookings are kept; notice records are kept at least {state.consentLogMinDays} days.
             </p>
             {shortRetention && (
-              <p style={{ ...hint, color: '#fbbf24' }}>
+              <p style={{ ...hint, color: 'var(--warning)' }}>
                 The DPDP Rules 2025 (rule 8(3)) ask for certain personal data and logs to be kept at least one year. Check with your adviser before choosing a shorter period.
               </p>
             )}
@@ -201,13 +202,13 @@ export default function PrivacySettings({ base, auth, sectors }: Props) {
             </div>
           </>
         )}
-        {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
+        {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
       </div>
 
       {state && (
         <div style={card}>
-          <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Caller data requests</h2>
-          <p style={{ margin: '0 0 12px', color: '#888', fontSize: 13 }}>
+          <h2 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--text-strong)' }}>Caller data requests</h2>
+          <p style={{ margin: '0 0 12px', color: 'var(--text-muted)', fontSize: 13 }}>
             When a caller asks what you hold about them, or asks you to delete it. Enter their number with country code.
             Verify the request comes from the person (e.g. call them back on that number) before acting.
           </p>
@@ -216,19 +217,19 @@ export default function PrivacySettings({ base, auth, sectors }: Props) {
             <button onClick={exportData} disabled={busy || !phone.trim()} style={btn(busy || !phone.trim())}>Export (JSON)</button>
             <button onClick={erase} disabled={busy || !phone.trim()} style={btn(busy || !phone.trim(), true)}>Erase…</button>
           </div>
-          {reqMsg && <p style={{ margin: '12px 0 0', fontSize: 13, color: reqMsg.ok ? '#4ade80' : '#f87171' }}>{reqMsg.text}</p>}
+          {reqMsg && <p style={{ margin: '12px 0 0', fontSize: 13, color: reqMsg.ok ? 'var(--success)' : 'var(--danger)' }}>{reqMsg.text}</p>}
 
-          <h3 style={{ margin: '20px 0 8px', fontSize: 14, color: '#ddd' }}>Recent notice records</h3>
+          <h3 style={{ margin: '20px 0 8px', fontSize: 14, color: 'var(--text)' }}>Recent notice records</h3>
           {notices.length === 0 ? (
             <p style={hint}>None yet.</p>
           ) : (
-            <table style={{ width: '100%', fontSize: 12, color: '#bbb', borderCollapse: 'collapse' }}>
+            <table style={{ width: '100%', fontSize: 13, color: 'var(--text)', borderCollapse: 'collapse' }}>
               <thead>
-                <tr style={{ textAlign: 'left', color: '#888' }}><th>When</th><th>Channel</th><th>Call</th><th>Heard fully</th></tr>
+                <tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}><th>When</th><th>Channel</th><th>Call</th><th>Heard fully</th></tr>
               </thead>
               <tbody>
                 {notices.map(n => (
-                  <tr key={n.id} style={{ borderTop: '1px solid #222' }}>
+                  <tr key={n.id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td style={{ padding: '4px 0' }}>{new Date(n.played_at * 1000).toLocaleString()}</td>
                     <td>{n.channel}</td>
                     <td>{n.call_sid ? `…${n.call_sid.slice(-8)}` : '—'}{n.erased ? ' (caller erased)' : ''}</td>

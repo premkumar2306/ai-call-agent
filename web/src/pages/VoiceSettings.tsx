@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { card as sharedCard } from '../ui';
 
 interface Props {
   base: string;
@@ -15,9 +16,9 @@ interface Voice {
   sarvamConfigured?: boolean;
 }
 
-const card: React.CSSProperties = { background: '#12121a', border: '1px solid #222', borderRadius: 12, padding: 20 };
-const select: React.CSSProperties = { background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '8px 12px', borderRadius: 8, minWidth: 200 };
-const label: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#888' };
+const card: React.CSSProperties = sharedCard;
+const select: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, minWidth: 200 };
+const label: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14, fontWeight: 500, color: 'var(--text)' };
 
 const LANGUAGES = [
   { value: 'en', label: 'English' },
@@ -74,43 +75,42 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
   };
 
   const voiceHint = voice?.ttsProvider === 'sarvam'
-    ? 'Sarvam Bulbul speaker, lowercase (e.g. priya, ritu, shubh). Empty = Sarvam default.'
+    ? 'Voice ID: a speaker name in lowercase (e.g. priya, ritu, shubh). Leave empty for the default speaker.'
     : voice?.language === 'en'
-      ? 'Cartesia voice id. Empty = the deployment default voice.'
-      : 'Cartesia voice id of a Hindi-native voice (required for Hindi on Cartesia).';
+      ? 'Voice ID: leave empty for the standard voice.'
+      : 'Voice ID of a Hindi-speaking voice (needed for Hindi with the standard voice).';
 
   return (
     <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Voice &amp; language</h2>
-      <p style={{ margin: '0 0 16px', color: '#888', fontSize: 13 }}>
-        The language a business answers calls in, and which speech providers it uses. Hindi and Hinglish
-        replies follow the caller's language. Sarvam is built for Indian languages; Deepgram + Cartesia
-        is the cheaper option.
+      <h2 style={{ margin: '0 0 4px', fontSize: 17, color: 'var(--text-strong)' }}>Language and voice</h2>
+      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
+        The language the assistant answers calls in. In Hindi or Hinglish it follows the caller's language.
+        The Indian-language options understand and sound more natural in Hindi; the standard options cost less.
       </p>
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <label style={label}>Business
+        {sectors.length > 1 && <label style={label}>Business
           <select value={business} onChange={e => setBusiness(e.target.value)} style={select}>
             {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
           </select>
-        </label>
+        </label>}
         <label style={label}>Language
           <select value={voice?.language ?? 'en'} disabled={!voice} onChange={e => set({ language: e.target.value as Voice['language'] })} style={select}>
             {LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
           </select>
         </label>
-        <label style={label}>Speech recognition
+        <label style={label}>Speech recognition (hearing callers)
           <select value={voice?.sttProvider ?? 'deepgram'} disabled={!voice} onChange={e => set({ sttProvider: e.target.value as Voice['sttProvider'] })} style={select}>
-            <option value="deepgram">Deepgram</option>
-            <option value="sarvam">Sarvam (Saaras)</option>
+            <option value="deepgram">Standard (Deepgram)</option>
+            <option value="sarvam">Indian languages (Sarvam)</option>
           </select>
         </label>
-        <label style={label}>Voice
+        <label style={label}>Voice (speaking to callers)
           <select value={voice?.ttsProvider ?? 'cartesia'} disabled={!voice} onChange={e => set({ ttsProvider: e.target.value as Voice['ttsProvider'] })} style={select}>
-            <option value="cartesia">Cartesia</option>
-            <option value="sarvam">Sarvam (Bulbul)</option>
+            <option value="cartesia">Standard (Cartesia)</option>
+            <option value="sarvam">Indian voice (Sarvam)</option>
           </select>
         </label>
-        <label style={{ ...label, flex: 1, minWidth: 220 }}>Voice id
+        <label style={{ ...label, flex: 1, minWidth: 220 }}>Voice ID (optional)
           <input
             value={voice?.voiceId ?? ''}
             disabled={!voice}
@@ -122,16 +122,16 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
         <button
           onClick={save}
           disabled={!voice || saving}
-          style={{ background: '#6c47ff', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: !voice || saving ? 0.5 : 1 }}
+          style={{ background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: !voice || saving ? 0.5 : 1 }}
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
-      {voice && <p style={{ margin: '10px 0 0', fontSize: 12, color: '#666' }}>{voiceHint}</p>}
+      {voice && <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--text-subtle)' }}>{voiceHint}</p>}
       {voice && !voice.sarvamConfigured && (voice.sttProvider === 'sarvam' || voice.ttsProvider === 'sarvam') && (
-        <p style={{ margin: '6px 0 0', fontSize: 12, color: '#fbbf24' }}>SARVAM_API_KEY isn't set on the Worker, so Sarvam can't be saved yet.</p>
+        <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--warning)' }}>The Indian-language option isn't switched on for this service yet (SARVAM_API_KEY), so it can't be saved.</p>
       )}
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
+      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
     </div>
   );
 }

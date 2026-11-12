@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { card as sharedCard } from '../ui';
 
 // Billing tab: plan, minutes this month, GST-inclusive amounts, invoices and
 // the Razorpay Checkout button. Cost and margin come back from the API only
@@ -39,24 +40,24 @@ declare global {
   interface Window { Razorpay?: new (options: Record<string, unknown>) => { open: () => void; on: (e: string, cb: (r: any) => void) => void } }
 }
 
-const card: React.CSSProperties = { background: '#12121a', border: '1px solid #222', borderRadius: 12, padding: 20 };
-const btn: React.CSSProperties = { background: '#6c47ff', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer' };
-const ghost: React.CSSProperties = { background: 'transparent', color: '#a78bff', border: '1px solid #6c47ff66', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
-const input: React.CSSProperties = { background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '8px 12px', borderRadius: 8, width: '100%', boxSizing: 'border-box' };
-const muted: React.CSSProperties = { color: '#888', fontSize: 13 };
-const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', color: '#888', fontWeight: 500, fontSize: 12 };
-const td: React.CSSProperties = { padding: '6px 8px', fontSize: 13, borderTop: '1px solid #1e1e2e' };
+const card: React.CSSProperties = sharedCard;
+const btn: React.CSSProperties = { background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer' };
+const ghost: React.CSSProperties = { background: 'transparent', color: 'var(--accent-text)', border: '1px solid var(--accent-border)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer' };
+const input: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8, width: '100%', boxSizing: 'border-box' };
+const muted: React.CSSProperties = { color: 'var(--text-muted)', fontSize: 13 };
+const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 500, fontSize: 13 };
+const td: React.CSSProperties = { padding: '6px 8px', fontSize: 13, borderTop: '1px solid var(--border)' };
 
 export const inr = (paise: number) =>
   '₹' + (paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const STATE_LABEL: Record<Summary['state'], [string, string]> = {
-  off: ['Billing off', '#888'],
-  trialing: ['Free trial', '#4ade80'],
-  active: ['Subscribed', '#4ade80'],
-  past_due: ['Payment failed', '#f87171'],
-  cancelled: ['Cancelled', '#f87171'],
-  unpaid: ['Trial ended — subscribe to continue billing', '#fbbf24'],
+  off: ['Billing off', 'var(--text-muted)'],
+  trialing: ['Free trial', 'var(--success)'],
+  active: ['Subscribed', 'var(--success)'],
+  past_due: ['Payment failed', 'var(--danger)'],
+  cancelled: ['Cancelled', 'var(--danger)'],
+  unpaid: ['Trial ended — subscribe to continue billing', 'var(--warning)'],
 };
 
 const INVOICE_STATUS: Record<string, string> = {
@@ -142,7 +143,7 @@ export default function Billing({ sector, base, auth }: Props) {
         description: data?.plan ? `${data.plan.name} plan — ${inr(data.plan.monthly.totalPaise)}/month incl. GST` : undefined,
         prefill: { email: data?.account?.billingEmail ?? undefined },
         notes: { business_type: sector },
-        theme: { color: '#6c47ff' },
+        theme: { color: 'var(--accent)' },
         handler: (r: Record<string, string>) => {
           call(`/billing/${encodeURIComponent(sector)}/confirm`, { method: 'POST', body: JSON.stringify(r) })
             .then(() => resolve(), reject);
@@ -175,14 +176,14 @@ export default function Billing({ sector, base, auth }: Props) {
   const syncPlan = (id: string) => run(() => call(`/admin/billing/plans/${encodeURIComponent(id)}/razorpay`, { method: 'POST' }),
     'Plan created in Razorpay.');
 
-  if (!data) return <div style={card}>{msg ? <span style={{ color: '#f87171' }}>{msg.text}</span> : <span style={muted}>Loading…</span>}</div>;
+  if (!data) return <div style={card}>{msg ? <span style={{ color: 'var(--danger)' }}>{msg.text}</span> : <span style={muted}>Loading…</span>}</div>;
 
   const { plan, usage, account } = data;
   const [stateLabel, stateColor] = STATE_LABEL[data.state];
   const pct = plan && plan.includedMinutes ? Math.min(100, (usage.minutes / plan.includedMinutes) * 100) : 0;
   const canSubscribe = plan && ['trialing', 'unpaid', 'cancelled', 'past_due'].includes(data.state);
   const field = (k: string, label: string, placeholder = '') => (
-    <label style={{ display: 'grid', gap: 4, fontSize: 13, color: '#aaa' }}>
+    <label style={{ display: 'grid', gap: 4, fontSize: 13, color: 'var(--text-muted)' }}>
       {label}
       <input style={input} value={details[k] ?? ''} placeholder={placeholder}
         onChange={e => setDetails(d => ({ ...d, [k]: e.target.value }))} />
@@ -191,12 +192,12 @@ export default function Billing({ sector, base, auth }: Props) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {msg && <div style={{ ...card, color: msg.ok ? '#4ade80' : '#f87171', padding: 12 }}>{msg.text}</div>}
+      {msg && <div style={{ ...card, color: msg.ok ? 'var(--success)' : 'var(--danger)', padding: 12 }}>{msg.text}</div>}
 
       {/* Plan & status */}
       <div style={card}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h2 style={{ margin: 0, fontSize: 16, color: '#fff' }}>{plan ? `${plan.name} plan` : 'No plan'}</h2>
+          <h2 style={{ margin: 0, fontSize: 16, color: 'var(--text-strong)' }}>{plan ? `${plan.name} plan` : 'No plan'}</h2>
           <span style={{ color: stateColor, fontSize: 13 }}>● {stateLabel}</span>
           {data.state === 'trialing' && account?.trialEndsAt && (
             <span style={muted}>until {new Date(account.trialEndsAt * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
@@ -212,7 +213,7 @@ export default function Billing({ sector, base, auth }: Props) {
         </div>
         {plan ? (
           <div style={{ marginTop: 12, display: 'grid', gap: 2 }}>
-            <div style={{ fontSize: 22, color: '#fff', fontWeight: 600 }}>{inr(plan.monthly.totalPaise)}<span style={muted}> / month incl. GST</span></div>
+            <div style={{ fontSize: 22, color: 'var(--text-strong)', fontWeight: 600 }}>{inr(plan.monthly.totalPaise)}<span style={muted}> / month incl. GST</span></div>
             <div style={muted}>{inr(plan.monthly.amountPaise)} + {plan.gstRateBps / 100}% GST ({inr(plan.monthly.gstPaise)})</div>
             <GstLines g={plan.monthly} rateBps={plan.gstRateBps} />
             <div style={muted}>{plan.includedMinutes} minutes included, then {inr(plan.overagePaisePerMinute)}/minute + GST. UPI AutoPay or card.</div>
@@ -224,16 +225,16 @@ export default function Billing({ sector, base, auth }: Props) {
 
       {/* Usage */}
       <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#fff' }}>This month ({usage.period})</h3>
+        <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--text-strong)' }}>This month ({usage.period})</h3>
         <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-          <div><div style={{ fontSize: 24, color: '#fff', fontWeight: 600 }}>{usage.minutes}{plan ? <span style={muted}> / {plan.includedMinutes} min</span> : <span style={muted}> min</span>}</div><div style={muted}>call minutes</div></div>
-          <div><div style={{ fontSize: 24, color: '#fff', fontWeight: 600 }}>{usage.calls}</div><div style={muted}>calls</div></div>
-          <div><div style={{ fontSize: 24, color: '#fff', fontWeight: 600 }}>{usage.whatsappConversations}</div><div style={muted}>WhatsApp conversations</div></div>
+          <div><div style={{ fontSize: 24, color: 'var(--text-strong)', fontWeight: 600 }}>{usage.minutes}{plan ? <span style={muted}> / {plan.includedMinutes} min</span> : <span style={muted}> min</span>}</div><div style={muted}>call minutes</div></div>
+          <div><div style={{ fontSize: 24, color: 'var(--text-strong)', fontWeight: 600 }}>{usage.calls}</div><div style={muted}>calls</div></div>
+          <div><div style={{ fontSize: 24, color: 'var(--text-strong)', fontWeight: 600 }}>{usage.whatsappConversations}</div><div style={muted}>WhatsApp conversations</div></div>
         </div>
         {plan && (
           <>
-            <div style={{ height: 8, background: '#1e1e2e', borderRadius: 4, marginTop: 14, overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', background: usage.alertLevel === 100 ? '#f87171' : usage.alertLevel === 80 ? '#fbbf24' : '#6c47ff' }} />
+            <div style={{ height: 8, background: 'var(--input-bg)', borderRadius: 4, marginTop: 14, overflow: 'hidden' }}>
+              <div style={{ width: `${pct}%`, height: '100%', background: usage.alertLevel === 100 ? 'var(--danger)' : usage.alertLevel === 80 ? 'var(--warning)' : 'var(--accent)' }} />
             </div>
             <p style={{ ...muted, marginBottom: 0 }}>
               Calls are never cut off. The owner is emailed at 80% and 100% of the included minutes.
@@ -246,14 +247,14 @@ export default function Billing({ sector, base, auth }: Props) {
 
       {/* Operator only: cost and margin */}
       {data.cost && (
-        <div style={{ ...card, borderColor: '#6c47ff44' }}>
-          <h3 style={{ margin: '0 0 4px', fontSize: 14, color: '#fff' }}>Cost & margin <span style={{ ...muted, fontWeight: 400 }}>(operator only)</span></h3>
-          <p style={{ ...muted, marginTop: 0 }}>Estimated provider cost (telephony, STT, TTS, model tokens) at ₹{data.cost.usdToInr}/USD. Revenue excludes GST.</p>
+        <div style={{ ...card, borderColor: 'var(--accent-border)' }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--text-strong)' }}>Cost & margin <span style={{ ...muted, fontWeight: 400 }}>(operator only)</span></h3>
+          <p style={{ ...muted, marginTop: 0 }}>Estimated provider cost (phone lines, speech recognition, voice, AI model) at ₹{data.cost.usdToInr}/USD. Revenue excludes GST.</p>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <tbody>
               <tr><td style={td}>Provider cost this month</td><td style={td}>{inr(data.cost.costPaise)}</td><td style={td}>{data.cost.costPerMinutePaise != null ? `${inr(data.cost.costPerMinutePaise)}/min` : '—'}</td></tr>
               <tr><td style={td}>Revenue (if the month ended now)</td><td style={td}>{inr(data.cost.revenuePaise)}</td><td style={td}>{data.cost.revenuePerMinutePaise != null ? `${inr(data.cost.revenuePerMinutePaise)}/min` : '—'}</td></tr>
-              <tr><td style={td}>Margin</td><td style={{ ...td, color: (data.cost.marginPaise ?? 0) < 0 ? '#f87171' : '#4ade80' }}>{data.cost.marginPaise != null ? inr(data.cost.marginPaise) : '— (no plan)'}</td><td style={td} /></tr>
+              <tr><td style={td}>Margin</td><td style={{ ...td, color: (data.cost.marginPaise ?? 0) < 0 ? 'var(--danger)' : 'var(--success)' }}>{data.cost.marginPaise != null ? inr(data.cost.marginPaise) : '— (no plan)'}</td><td style={td} /></tr>
               {data.cost.testCalls > 0 && <tr><td style={td} colSpan={3}><span style={muted}>Includes {data.cost.testCalls} synthetic test call(s), costed but not billed.</span></td></tr>}
             </tbody>
           </table>
@@ -283,7 +284,7 @@ export default function Billing({ sector, base, auth }: Props) {
 
       {/* GST details */}
       <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#fff' }}>Billing details (GST)</h3>
+        <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--text-strong)' }}>Billing details (GST)</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
           {field('legalName', 'Legal name')}
           {field('gstin', 'GSTIN (optional)', '27AAPFU0939F1ZV')}
@@ -299,7 +300,7 @@ export default function Billing({ sector, base, auth }: Props) {
 
       {/* Invoices */}
       <div style={card}>
-        <h3 style={{ margin: '0 0 8px', fontSize: 14, color: '#fff' }}>Extra-minute invoices</h3>
+        <h3 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--text-strong)' }}>Extra-minute invoices</h3>
         {data.supplierGstin && <p style={{ ...muted, marginTop: 0 }}>Supplier GSTIN {data.supplierGstin}{account?.gstin ? ` · Your GSTIN ${account.gstin}` : ''}</p>}
         {data.invoices.length === 0 ? <p style={muted}>No closed months yet. The monthly plan fee is invoiced by Razorpay.</p> : (
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>

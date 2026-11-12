@@ -5,7 +5,7 @@ interface Turn { role: 'user' | 'assistant'; content: string }
 interface ToolCall { name: string; input: unknown; result: unknown }
 interface DebugEntry { turn: number; utterance: string; tool_calls: ToolCall[]; error?: string; ts: string }
 
-interface Props { sector: string; base: string }
+interface Props { sector: string; base: string; /** Operator: pick any business, set the caller id, see tool debug. */ operator?: boolean }
 
 // ── Speech helpers — Deepgram STT + Cartesia TTS ─────────────────────────────
 // Both are proxied through the Worker (/mogi/transcribe, /mogi/tts) so no
@@ -30,15 +30,15 @@ async function speak(base: string, token: string, text: string, onEnd?: () => vo
 type SectorOption = { key: string; name: string } & SectorLocale;
 
 const s = {
-  card:  { background: '#12121a', border: '1px solid #1e1e2e', borderRadius: 14, padding: 20 } as React.CSSProperties,
-  input: { background: '#0a0a0f', border: '1px solid #2a2a3a', borderRadius: 8, color: '#fff', padding: '9px 13px', fontSize: 13, outline: 'none', width: '100%', boxSizing: 'border-box' } as React.CSSProperties,
-  label: { fontSize: 11, color: '#666', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5, display: 'block' } as React.CSSProperties,
-  btn:   (active: boolean) => ({ background: active ? '#6c47ff' : '#1e1e2e', color: active ? '#fff' : '#888', border: `1px solid ${active ? '#6c47ff' : '#2a2a3a'}`, borderRadius: 8, padding: '9px 18px', fontWeight: 600, fontSize: 13, cursor: active ? 'pointer' : 'default', opacity: active ? 1 : 0.5, whiteSpace: 'nowrap' } as React.CSSProperties),
-  tag:   { background: '#1a1a2e', color: '#a78bff', padding: '2px 8px', borderRadius: 99, fontSize: 11, border: '1px solid #6c47ff33' } as React.CSSProperties,
+  card:  { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20 } as React.CSSProperties,
+  input: { background: 'var(--input-bg)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-strong)', padding: '9px 13px', fontSize: 13, outline: 'none', width: '100%', boxSizing: 'border-box' } as React.CSSProperties,
+  label: { fontSize: 12, color: 'var(--text-subtle)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5, display: 'block' } as React.CSSProperties,
+  btn:   (active: boolean) => ({ background: active ? 'var(--accent)' : 'var(--input-bg)', color: active ? '#fff' : 'var(--text-muted)', border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, padding: '9px 18px', fontWeight: 600, fontSize: 13, cursor: active ? 'pointer' : 'default', opacity: active ? 1 : 0.5, whiteSpace: 'nowrap' } as React.CSSProperties),
+  tag:   { background: 'var(--surface-2)', color: 'var(--accent-text)', padding: '2px 8px', borderRadius: 99, fontSize: 12, border: '1px solid var(--accent-soft)' } as React.CSSProperties,
 };
 
 
-export default function VoiceTest({ sector: defaultSector, base }: Props) {
+export default function VoiceTest({ sector: defaultSector, base, operator = false }: Props) {
   const [sector, setSector] = useState(defaultSector);
   const [customerId, setCustomerId] = useState('customer-001');
   const [token, setToken] = useState<string | null>(null);
@@ -66,8 +66,9 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
 
   useEffect(() => {
     if (!defaultSector) return;
-    setSector(prev => prev || defaultSector);
-  }, [defaultSector]);
+    // Owners always test their own business; the operator can switch.
+    setSector(prev => (operator ? prev || defaultSector : defaultSector));
+  }, [defaultSector, operator]);
 
   useEffect(() => {
     if (!sectors.length) return;
@@ -235,12 +236,12 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
   const hasSession = !!token;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 20, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: operator ? 'repeat(auto-fit, minmax(min(100%, 380px), 1fr))' : 'minmax(0, 1fr)', gap: 20, alignItems: 'start' }}>
       {/* ── Left: Chat panel ── */}
       <div style={s.card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <span style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>Voice Test</span>
-          {session && (
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-strong)' }}>Test call</span>
+          {operator && session && (
             <div style={{ display: 'flex', gap: 6 }}>
               <span style={s.tag}>{session.tier}</span>
               <span style={s.tag}>{formatMoney(session.credit, sectors.find(x => x.key === sector))} credit</span>
@@ -249,8 +250,8 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
         </div>
 
         {/* Session setup */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, marginBottom: 14 }}>
-          <div>
+        <div style={{ display: 'grid', gridTemplateColumns: operator ? '1fr 1fr auto' : '1fr', gap: 10, marginBottom: 14 }}>
+          {operator && <><div>
             <label style={s.label}>Customer ID</label>
             <input style={s.input} value={customerId} onChange={e => setCustomerId(e.target.value)} placeholder="customer-001" />
           </div>
@@ -259,56 +260,57 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
             <select style={{ ...s.input, cursor: 'pointer' }} value={sector} onChange={e => setSector(e.target.value)}>
               {sectors.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
             </select>
-          </div>
+          </div></>}
           <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-            <button onClick={startSession} style={{ ...s.btn(true), background: '#6c47ff', border: 'none' }}>
-              {hasSession ? 'Restart' : 'Start Session'}
+            <button onClick={startSession} style={{ ...s.btn(true), background: 'var(--accent)', border: 'none' }}>
+              {hasSession ? 'Start over' : 'Start a test call'}
             </button>
           </div>
         </div>
 
         {/* Chat history */}
         <div ref={chatRef} style={{
-          height: 360, overflowY: 'auto', background: '#0a0a0f', borderRadius: 10,
+          height: 360, overflowY: 'auto', background: 'var(--input-bg)', borderRadius: 10,
           padding: 14, display: 'flex', flexDirection: 'column', gap: 10,
-          border: '1px solid #1a1a2a',
+          border: '1px solid var(--border)',
         }}>
           {history.length === 0 && (
-            <div style={{ color: '#444', fontSize: 13, margin: 'auto', textAlign: 'center' }}>
-              Start a session to begin
+            <div style={{ color: 'var(--text-subtle)', fontSize: 13, margin: 'auto', textAlign: 'center' }}>
+              Press “Start a test call”, then speak or type as if you were a caller.
             </div>
           )}
           {history.map((msg, i) => (
             <div key={i} style={{
               maxWidth: '80%', padding: '9px 13px', borderRadius: 12, fontSize: 14, lineHeight: 1.5,
               alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              background: msg.role === 'user' ? '#6c47ff' : '#1e1e2e',
-              color: msg.role === 'user' ? '#fff' : '#e0e0e0',
+              background: msg.role === 'user' ? 'var(--accent)' : 'var(--surface-2)',
+              color: msg.role === 'user' ? '#fff' : 'var(--text)',
               borderBottomRightRadius: msg.role === 'user' ? 3 : 12,
               borderBottomLeftRadius: msg.role === 'user' ? 12 : 3,
             }}>
-              {msg.role === 'assistant' && <div style={{ fontSize: 10, color: '#666', marginBottom: 3 }}>MOGI</div>}
+              {msg.role === 'assistant' && <div style={{ fontSize: 12, color: 'var(--text-subtle)', marginBottom: 3 }}>Assistant</div>}
               {msg.content}
             </div>
           ))}
           {loading && (
-            <div style={{ alignSelf: 'flex-start', color: '#555', fontSize: 13, fontStyle: 'italic' }}>
-              Mogi is thinking…
+            <div style={{ alignSelf: 'flex-start', color: 'var(--text-subtle)', fontSize: 13, fontStyle: 'italic' }}>
+              Thinking…
             </div>
           )}
         </div>
 
         {/* Voice mode toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, padding: '10px 14px', background: '#0a0a0f', borderRadius: 10, border: `1px solid ${voiceMode ? '#6c47ff55' : '#1a1a2a'}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, padding: '10px 14px', background: 'var(--input-bg)', borderRadius: 10, border: `1px solid ${voiceMode ? 'var(--accent-border)' : 'var(--surface-2)'}` }}>
           <button
             onClick={toggleVoice}
             disabled={!hasSession}
-            title={voiceMode ? 'Disable voice mode' : 'Enable voice mode'}
+            title={voiceMode ? 'Turn off talking' : 'Talk instead of typing'}
+            aria-label={voiceMode ? 'Turn off talking' : 'Talk instead of typing'}
             style={{
               width: 44, height: 44, borderRadius: '50%', border: 'none', cursor: hasSession ? 'pointer' : 'default',
               display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0,
-              background: listening ? '#ef4444' : voiceMode ? '#6c47ff' : '#1e1e2e',
-              boxShadow: listening ? '0 0 0 6px #ef444433' : voiceMode ? '0 0 0 4px #6c47ff33' : 'none',
+              background: listening ? 'var(--danger)' : voiceMode ? 'var(--accent)' : 'var(--input-bg)',
+              boxShadow: listening ? '0 0 0 6px var(--danger-soft)' : voiceMode ? '0 0 0 4px var(--accent-soft)' : 'none',
               transition: 'all 0.2s',
               opacity: hasSession ? 1 : 0.4,
             }}
@@ -316,18 +318,18 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
             {listening ? '🔴' : speaking ? '🔊' : '🎙️'}
           </button>
           <div style={{ flex: 1, fontSize: 13 }}>
-            {!hasSession && <span style={{ color: '#444' }}>Start a session to use voice</span>}
-            {hasSession && !voiceMode && <span style={{ color: '#666' }}>Click mic to enable voice mode</span>}
-            {hasSession && voiceMode && listening && <span style={{ color: '#ef4444', fontWeight: 600 }}>Listening… speak now</span>}
-            {hasSession && voiceMode && speaking && <span style={{ color: '#a78bff', fontWeight: 600 }}>Mogi is speaking…</span>}
-            {hasSession && voiceMode && !listening && !speaking && !loading && <span style={{ color: '#4ade80' }}>Voice mode active — tap mic to speak</span>}
-            {hasSession && voiceMode && loading && <span style={{ color: '#facc15' }}>Processing…</span>}
+            {!hasSession && <span style={{ color: 'var(--text-subtle)' }}>Start a test call to talk out loud</span>}
+            {hasSession && !voiceMode && <span style={{ color: 'var(--text-subtle)' }}>Click mic to enable voice mode</span>}
+            {hasSession && voiceMode && listening && <span style={{ color: 'var(--danger)', fontWeight: 600 }}>Listening… speak now</span>}
+            {hasSession && voiceMode && speaking && <span style={{ color: 'var(--accent-text)', fontWeight: 600 }}>Speaking…</span>}
+            {hasSession && voiceMode && !listening && !speaking && !loading && <span style={{ color: 'var(--success)' }}>Voice mode active — tap mic to speak</span>}
+            {hasSession && voiceMode && loading && <span style={{ color: 'var(--warning)' }}>Processing…</span>}
           </div>
           {voiceMode && (
             <button
               onClick={listening ? stopListening : startListening}
               disabled={loading || speaking}
-              style={{ ...s.btn(!loading && !speaking), padding: '7px 14px', fontSize: 12 }}
+              style={{ ...s.btn(!loading && !speaking), padding: '7px 14px', fontSize: 13 }}
             >
               {listening ? 'Stop' : 'Speak'}
             </button>
@@ -339,7 +341,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
           <input
             ref={inputRef}
             style={{ ...s.input, flex: 1 }}
-            placeholder={hasSession ? 'Or type an utterance…' : 'Start a session first'}
+            placeholder={hasSession ? 'Or type what a caller would say…' : 'Start a test call first'}
             value={utterance}
             disabled={!hasSession || loading}
             onChange={e => setUtterance(e.target.value)}
@@ -360,22 +362,22 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
             onChange={e => setEmailTo(e.target.value)}
           />
           <button onClick={sendEmail} disabled={!hasSession} style={s.btn(hasSession)}>
-            Send Transcript
+            Email transcript
           </button>
         </div>
       </div>
 
-      {/* ── Right: Debug panel ── */}
-      <div style={s.card}>
+      {/* ── Right: Debug panel (operator only) ── */}
+      {operator && <div style={s.card}>
         {/* Tab bar */}
-        <div style={{ display: 'flex', gap: 2, marginBottom: 14, background: '#0a0a0f', padding: 4, borderRadius: 8 }}>
+        <div style={{ display: 'flex', gap: 2, marginBottom: 14, background: 'var(--input-bg)', padding: 4, borderRadius: 8 }}>
           {(['tools', 'transcripts', 'session'] as const).map(tab => (
             <button key={tab} onClick={() => { setDebugTab(tab); if (tab === 'transcripts') loadTranscripts(); }}
               style={{
-                flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 13, fontWeight: 600,
                 border: 'none', cursor: 'pointer', textTransform: 'capitalize',
-                background: debugTab === tab ? '#6c47ff' : 'transparent',
-                color: debugTab === tab ? '#fff' : '#666',
+                background: debugTab === tab ? 'var(--accent)' : 'transparent',
+                color: debugTab === tab ? '#fff' : 'var(--text-muted)',
               }}>
               {tab === 'tools' ? `Tools${debugLog.length ? ` (${debugLog.length})` : ''}` : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
@@ -386,38 +388,38 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
         {debugTab === 'tools' && (
           <div style={{ maxHeight: 540, overflowY: 'auto' }}>
             {debugLog.length === 0 && (
-              <div style={{ color: '#444', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
+              <div style={{ color: 'var(--text-subtle)', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
                 Tool calls will appear here
               </div>
             )}
             {debugLog.map((entry, i) => (
-              <div key={i} style={{ marginBottom: 12, borderBottom: '1px solid #1e1e2e', paddingBottom: 12 }}>
+              <div key={i} style={{ marginBottom: 12, borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: '#888' }}>Turn {entry.turn}</span>
-                  <span style={{ fontSize: 11, color: '#555' }}>{entry.ts}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Turn {entry.turn}</span>
+                  <span style={{ fontSize: 12, color: 'var(--text-subtle)' }}>{entry.ts}</span>
                 </div>
-                <div style={{ fontSize: 13, color: '#a78bff', marginBottom: 6 }}>"{entry.utterance}"</div>
+                <div style={{ fontSize: 13, color: 'var(--accent-text)', marginBottom: 6 }}>"{entry.utterance}"</div>
                 {entry.error && (
-                  <div style={{ fontSize: 12, color: '#f87171', background: '#1a0a0a', padding: '6px 10px', borderRadius: 6, marginBottom: 6 }}>
+                  <div style={{ fontSize: 13, color: 'var(--danger)', background: 'var(--danger-soft)', padding: '6px 10px', borderRadius: 6, marginBottom: 6 }}>
                     Error: {entry.error}
                   </div>
                 )}
                 {entry.tool_calls.length === 0 && !entry.error && (
-                  <div style={{ fontSize: 12, color: '#444' }}>No tool calls</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-subtle)' }}>No tool calls</div>
                 )}
                 {entry.tool_calls.map((tc, j) => (
                   <details key={j} style={{ marginBottom: 6 }}>
-                    <summary style={{ fontSize: 12, cursor: 'pointer', color: '#4ade80', fontFamily: 'monospace' }}>
+                    <summary style={{ fontSize: 13, cursor: 'pointer', color: 'var(--success)', fontFamily: 'monospace' }}>
                       {tc.name}
                     </summary>
                     <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
-                      <div style={{ fontSize: 11, color: '#666', fontFamily: 'monospace', background: '#0a0a0f', padding: '6px 8px', borderRadius: 4 }}>
-                        <div style={{ color: '#888', marginBottom: 2 }}>INPUT</div>
-                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: '#ccc' }}>{JSON.stringify(tc.input, null, 2)}</pre>
+                      <div style={{ fontSize: 12, color: 'var(--text-subtle)', fontFamily: 'monospace', background: 'var(--input-bg)', padding: '6px 8px', borderRadius: 4 }}>
+                        <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>INPUT</div>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: 'var(--text)' }}>{JSON.stringify(tc.input, null, 2)}</pre>
                       </div>
-                      <div style={{ fontSize: 11, color: '#666', fontFamily: 'monospace', background: '#0a0a0f', padding: '6px 8px', borderRadius: 4 }}>
-                        <div style={{ color: '#888', marginBottom: 2 }}>OUTPUT</div>
-                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: '#ccc' }}>{JSON.stringify(tc.result, null, 2)}</pre>
+                      <div style={{ fontSize: 12, color: 'var(--text-subtle)', fontFamily: 'monospace', background: 'var(--input-bg)', padding: '6px 8px', borderRadius: 4 }}>
+                        <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>OUTPUT</div>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: 'var(--text)' }}>{JSON.stringify(tc.result, null, 2)}</pre>
                       </div>
                     </div>
                   </details>
@@ -431,24 +433,24 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
         {debugTab === 'transcripts' && (
           <div style={{ maxHeight: 540, overflowY: 'auto' }}>
             {transcripts.length === 0 && (
-              <div style={{ color: '#444', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
+              <div style={{ color: 'var(--text-subtle)', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
                 No saved transcripts
               </div>
             )}
             {transcripts.map((t, i) => (
-              <details key={i} style={{ marginBottom: 10, borderBottom: '1px solid #1e1e2e', paddingBottom: 10 }}>
-                <summary style={{ fontSize: 13, color: '#ccc', cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}>
+              <details key={i} style={{ marginBottom: 10, borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
+                <summary style={{ fontSize: 13, color: 'var(--text)', cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}>
                   <span>{new Date(t.createdAt).toLocaleString()}</span>
-                  <span style={{ color: '#666', fontSize: 11 }}>
+                  <span style={{ color: 'var(--text-subtle)', fontSize: 12 }}>
                     {Array.isArray(t.turns) ? t.turns.length : '?'} turns
                     {t.callSid && ` · ${t.callSid.slice(-8)}`}
                   </span>
                 </summary>
                 <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {(Array.isArray(t.turns) ? t.turns : JSON.parse(t.turns ?? '[]')).map((turn: Turn, j: number) => (
-                    <div key={j} style={{ fontSize: 12, display: 'flex', gap: 6 }}>
-                      <span style={{ color: turn.role === 'user' ? '#a78bff' : '#4ade80', minWidth: 70, fontWeight: 600 }}>{turn.role}:</span>
-                      <span style={{ color: '#ccc' }}>{turn.content}</span>
+                    <div key={j} style={{ fontSize: 13, display: 'flex', gap: 6 }}>
+                      <span style={{ color: turn.role === 'user' ? 'var(--accent-text)' : 'var(--success)', minWidth: 70, fontWeight: 600 }}>{turn.role}:</span>
+                      <span style={{ color: 'var(--text)' }}>{turn.content}</span>
                     </div>
                   ))}
                 </div>
@@ -461,7 +463,7 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
         {debugTab === 'session' && (
           <div style={{ fontSize: 13 }}>
             {!hasSession ? (
-              <div style={{ color: '#444', textAlign: 'center', padding: '40px 0' }}>No active session</div>
+              <div style={{ color: 'var(--text-subtle)', textAlign: 'center', padding: '40px 0' }}>No active session</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {[
@@ -472,22 +474,22 @@ export default function VoiceTest({ sector: defaultSector, base }: Props) {
                   ['Worker', base],
                   ['Turns', String(history.filter(m => m.role === 'user').length)],
                 ].map(([k, v]) => (
-                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #1a1a2a' }}>
-                    <span style={{ color: '#666' }}>{k}</span>
-                    <span style={{ color: '#ccc', fontFamily: k === 'Worker' ? 'monospace' : undefined, fontSize: k === 'Worker' ? 11 : 13 }}>{v}</span>
+                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ color: 'var(--text-subtle)' }}>{k}</span>
+                    <span style={{ color: 'var(--text)', fontFamily: k === 'Worker' ? 'monospace' : undefined, fontSize: k === 'Worker' ? 11 : 13 }}>{v}</span>
                   </div>
                 ))}
               </div>
             )}
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Toast */}
       {toast && (
         <div style={{
           position: 'fixed', bottom: 24, right: 24,
-          background: toast.ok ? '#22c55e' : '#ef4444',
+          background: toast.ok ? 'var(--success)' : 'var(--danger)',
           color: '#fff', padding: '10px 18px', borderRadius: 8,
           fontSize: 13, fontWeight: 600, zIndex: 999,
         }}>

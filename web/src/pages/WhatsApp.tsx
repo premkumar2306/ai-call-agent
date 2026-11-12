@@ -40,25 +40,25 @@ function relativeTime(ts: number | string): string {
 }
 
 const card: React.CSSProperties = {
-  background: '#12121a', border: '1px solid #1e1e2e', borderRadius: 14, padding: 28,
+  background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 28,
 };
 const h2: React.CSSProperties = {
-  fontSize: 16, fontWeight: 600, color: '#fff', marginBottom: 20, marginTop: 0,
+  fontSize: 16, fontWeight: 600, color: 'var(--text-strong)', marginBottom: 20, marginTop: 0,
 };
 const label: React.CSSProperties = {
-  fontSize: 12, color: '#888', marginBottom: 4, display: 'block',
+  fontSize: 13, color: 'var(--text-muted)', marginBottom: 4, display: 'block',
 };
 const codeBox: React.CSSProperties = {
-  background: '#1a1a2e', border: '1px solid #2a2a3a', borderRadius: 8,
-  padding: '10px 14px', color: '#a78bff', fontFamily: 'monospace', fontSize: 13,
+  background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 8,
+  padding: '10px 14px', color: 'var(--accent-text)', fontFamily: 'monospace', fontSize: 13,
   wordBreak: 'break-all',
 };
 const copyBtn: React.CSSProperties = {
-  marginLeft: 10, padding: '4px 12px', borderRadius: 6, border: '1px solid #6c47ff',
-  background: 'transparent', color: '#a78bff', cursor: 'pointer', fontSize: 12,
+  marginLeft: 10, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--accent)',
+  background: 'transparent', color: 'var(--accent-text)', cursor: 'pointer', fontSize: 13,
 };
 const stepItem: React.CSSProperties = {
-  fontSize: 14, color: '#ccc', lineHeight: 1.8,
+  fontSize: 14, color: 'var(--text)', lineHeight: 1.8,
 };
 
 export default function WhatsApp({ sector, base, auth }: Props) {
@@ -120,8 +120,8 @@ export default function WhatsApp({ sector, base, auth }: Props) {
           <div>
             <span style={label}>Verify Token</span>
             <div style={codeBox}>
-              <span style={{ color: '#888' }}>{'<value of WA_VERIFY_TOKEN secret>'}</span>
-              <span style={{ fontSize: 12, color: '#666', marginLeft: 12 }}>
+              <span style={{ color: 'var(--text-muted)' }}>{'<value of WA_VERIFY_TOKEN secret>'}</span>
+              <span style={{ fontSize: 13, color: 'var(--text-subtle)', marginLeft: 12 }}>
                 Set via: <code>wrangler secret put WA_VERIFY_TOKEN</code>
               </span>
             </div>
@@ -171,11 +171,11 @@ export default function WhatsApp({ sector, base, auth }: Props) {
       <div style={card}>
         <h2 style={h2}>WhatsApp Transcripts — {sector}</h2>
 
-        {loading && <p style={{ color: '#888', fontSize: 14 }}>Loading…</p>}
-        {error   && <p style={{ color: '#f87171', fontSize: 14 }}>{error}</p>}
+        {loading && <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Loading…</p>}
+        {error   && <p style={{ color: 'var(--danger)', fontSize: 14 }}>{error}</p>}
 
         {!loading && !error && transcripts.length === 0 && (
-          <p style={{ color: '#888', fontSize: 14 }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>
             No WhatsApp conversations yet for this business.
           </p>
         )}
@@ -188,36 +188,36 @@ export default function WhatsApp({ sector, base, auth }: Props) {
             const isOpen   = expanded[t.id];
 
             return (
-              <div key={t.id} style={{ background: '#1a1a2e', borderRadius: 10, border: '1px solid #2a2a3a', overflow: 'hidden' }}>
+              <div key={t.id} style={{ background: 'var(--surface-2)', borderRadius: 10, border: '1px solid var(--border)', overflow: 'hidden' }}>
                 <div
                   style={{ padding: '14px 18px', cursor: 'pointer', display: 'flex', gap: 16, alignItems: 'center' }}
                   onClick={() => toggleExpand(t.id)}
                 >
-                  <span style={{ fontSize: 12, color: '#888', minWidth: 80 }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)', minWidth: 80 }}>
                     {relativeTime(t.createdAt)}
                   </span>
-                  <span style={{ fontSize: 12, color: '#6c47ff', fontFamily: 'monospace' }}>
+                  <span style={{ fontSize: 13, color: 'var(--accent)', fontFamily: 'monospace' }}>
                     …{anonId}
                   </span>
-                  <span style={{ fontSize: 12, color: '#888' }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                     {t.turns.length} turns
                   </span>
-                  <span style={{ fontSize: 13, color: '#ccc', flex: 1 }}>{preview}</span>
-                  <span style={{ color: '#888', fontSize: 12 }}>{isOpen ? '▲' : '▼'}</span>
+                  <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>{preview}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{isOpen ? '▲' : '▼'}</span>
                 </div>
 
                 {isOpen && (
-                  <div style={{ borderTop: '1px solid #2a2a3a', padding: '14px 18px', display: 'grid', gap: 8 }}>
+                  <div style={{ borderTop: '1px solid var(--border)', padding: '14px 18px', display: 'grid', gap: 8 }}>
                     {t.turns.map((turn, i) => (
                       <div key={i} style={{
                         padding: '8px 12px', borderRadius: 8,
-                        background: turn.role === 'user' ? '#12121a' : '#1e1e30',
-                        borderLeft: `3px solid ${turn.role === 'user' ? '#6c47ff' : '#25d366'}`,
+                        background: turn.role === 'user' ? 'var(--surface)' : 'var(--surface-2)',
+                        borderLeft: `3px solid ${turn.role === 'user' ? 'var(--accent)' : '#25d366'}`,
                       }}>
-                        <span style={{ fontSize: 11, color: '#888', marginBottom: 4, display: 'block' }}>
-                          {turn.role === 'user' ? 'Customer' : 'Mogi'}
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>
+                          {turn.role === 'user' ? 'Customer' : 'Assistant'}
                         </span>
-                        <span style={{ fontSize: 13, color: '#ddd' }}>{turn.content}</span>
+                        <span style={{ fontSize: 13, color: 'var(--text)' }}>{turn.content}</span>
                       </div>
                     ))}
                   </div>
@@ -231,7 +231,7 @@ export default function WhatsApp({ sector, base, auth }: Props) {
       {/* ── Section 3: Policy Compliance ── */}
       <div style={card}>
         <h2 style={h2}>WhatsApp AI Messaging Policy — Required Compliance</h2>
-        <p style={{ fontSize: 13, color: '#888', marginTop: -12, marginBottom: 20 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: -12, marginBottom: 20 }}>
           Based on Meta WhatsApp Business Policy (business.whatsapp.com/policy)
         </p>
 
@@ -240,12 +240,12 @@ export default function WhatsApp({ sector, base, auth }: Props) {
             <div key={i} style={{
               display: 'grid', gridTemplateColumns: '28px 1fr auto',
               gap: 12, alignItems: 'start',
-              background: '#1a1a2e', borderRadius: 8, padding: '12px 16px',
-              border: '1px solid #2a2a3a',
+              background: 'var(--surface-2)', borderRadius: 8, padding: '12px 16px',
+              border: '1px solid var(--border)',
             }}>
-              <span style={{ fontWeight: 700, color: '#a78bff', fontSize: 14 }}>{i + 1}</span>
-              <span style={{ fontSize: 13, color: '#ccc', lineHeight: 1.5 }}>{r.rule}</span>
-              <span style={{ fontSize: 12, color: '#888', textAlign: 'right', whiteSpace: 'nowrap' }}>
+              <span style={{ fontWeight: 700, color: 'var(--accent-text)', fontSize: 14 }}>{i + 1}</span>
+              <span style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>{r.rule}</span>
+              <span style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'right', whiteSpace: 'nowrap' }}>
                 {r.status} {r.note}
               </span>
             </div>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { card as sharedCard } from '../ui';
 
 // Called number → business (admin API /admin/phone-numbers). A mapped number
 // answers as its business on Twilio, Exotel or Plivo; unmapped numbers fall
@@ -19,10 +20,10 @@ const PROVIDERS = [
   { key: 'plivo', name: 'Plivo (India)' },
 ];
 
-const card: React.CSSProperties = { background: '#12121a', border: '1px solid #222', borderRadius: 12, padding: 20 };
-const input: React.CSSProperties = { background: '#1e1e2e', border: '1px solid #2a2a3a', color: '#fff', padding: '8px 12px', borderRadius: 8 };
-const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', color: '#888', fontWeight: 500, borderBottom: '1px solid #222' };
-const td: React.CSSProperties = { padding: '6px 8px', color: '#ddd', borderBottom: '1px solid #1a1a24' };
+const card: React.CSSProperties = sharedCard;
+const input: React.CSSProperties = { background: 'var(--input-bg)', border: '1px solid var(--border-strong)', color: 'var(--text-strong)', padding: '8px 12px', borderRadius: 8 };
+const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', color: 'var(--text-muted)', fontWeight: 500, borderBottom: '1px solid var(--border)' };
+const td: React.CSSProperties = { padding: '6px 8px', color: 'var(--text)', borderBottom: '1px solid var(--border)' };
 
 export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -94,8 +95,8 @@ export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
 
   return (
     <div style={card}>
-      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#fff' }}>Phone numbers</h2>
-      <p style={{ margin: '0 0 16px', color: '#888', fontSize: 13 }}>
+      <h2 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--text-strong)' }}>Phone numbers</h2>
+      <p style={{ margin: '0 0 16px', color: 'var(--text-muted)', fontSize: 13 }}>
         Which business answers each number. A mapped number overrides the phone-line default; Indian numbers
         (Exotel/Plivo) can be entered as 080…, 98… or +91….
       </p>
@@ -112,10 +113,10 @@ export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
                   <td style={{ ...td, fontFamily: 'monospace' }}>{r.number}</td>
                   <td style={td}>{providerName(r.provider)}</td>
                   <td style={td}>{nameOf(r.businessType)}</td>
-                  <td style={{ ...td, color: '#999' }}>{r.label ?? ''}</td>
+                  <td style={{ ...td, color: 'var(--text-muted)' }}>{r.label ?? ''}</td>
                   <td style={{ ...td, textAlign: 'right' }}>
                     <button onClick={() => remove(r)} disabled={busy}
-                      style={{ background: 'transparent', color: '#f87171', border: '1px solid #f8717155', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }}>
+                      style={{ background: 'transparent', color: 'var(--danger)', border: '1px solid var(--danger-border)', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }}>
                       Remove
                     </button>
                   </td>
@@ -125,7 +126,7 @@ export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
           </table>
         </div>
       )}
-      {rows && rows.length === 0 && <p style={{ margin: '0 0 16px', fontSize: 13, color: '#aaa' }}>No numbers mapped yet.</p>}
+      {rows && rows.length === 0 && <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--text-muted)' }}>No numbers mapped yet.</p>}
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <input placeholder="+91 80 4712 3456" value={number} onChange={e => setNumber(e.target.value)} style={{ ...input, width: 170 }} />
@@ -138,11 +139,11 @@ export default function PhoneNumbers({ base, adminKey, sectors }: Props) {
         </select>
         <input placeholder="Label (optional)" value={label} onChange={e => setLabel(e.target.value)} style={{ ...input, width: 150 }} />
         <button onClick={add} disabled={busy || !rows || !number.trim() || !business}
-          style={{ background: '#6c47ff', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: busy || !rows || !number.trim() || !business ? 0.5 : 1 }}>
+          style={{ background: 'var(--accent)', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 8, cursor: 'pointer', opacity: busy || !rows || !number.trim() || !business ? 0.5 : 1 }}>
           {busy ? 'Saving…' : 'Map number'}
         </button>
       </div>
-      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</p>}
+      {msg && <p style={{ margin: '12px 0 0', fontSize: 13, color: msg.ok ? 'var(--success)' : 'var(--danger)' }}>{msg.text}</p>}
     </div>
   );
 }

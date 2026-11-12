@@ -49,7 +49,7 @@ export default function Practitioners({ sector, base, auth, canEdit }: Props) {
     return (
       <div style={card}>
         <h2 style={h2}>Team</h2>
-        <p style={{ ...hint, margin: 0 }}>This business type books by time slot, not with a named person. Change the business type in the Business tab to book doctors, lawyers or team members.</p>
+        <p style={{ ...hint, margin: 0 }}>This business type books by time slot, not with a named person. Change the business type in Settings → Business details to book doctors, lawyers or team members.</p>
       </div>
     );
   }
@@ -110,7 +110,7 @@ export default function Practitioners({ sector, base, auth, canEdit }: Props) {
       <div style={label}>Hours (leave a day empty when they're not in; split sessions like "10am–1pm, 5pm–9pm")
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
           {DAYS.map(([d, name]) => (
-            <label key={d} style={{ ...label, fontSize: 12 }}>{name}
+            <label key={d} style={{ ...label, fontSize: 13 }}>{name}
               <input style={input} value={draft.hours[d] ?? ''} placeholder="closed"
                 onChange={e => setDraft({ ...draft, hours: { ...draft.hours, [d]: e.target.value } })} />
             </label>
@@ -121,7 +121,7 @@ export default function Practitioners({ sector, base, auth, canEdit }: Props) {
         <div style={label}>{biz?.vertical === 'legal' ? 'Practice areas' : 'Services they do'} (none ticked = everything)
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {catOptions.map(c => (
-              <label key={c} style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#ccc', fontSize: 13 }}>
+              <label key={c} style={{ display: 'flex', gap: 6, alignItems: 'center', color: 'var(--text)', fontSize: 13 }}>
                 <input type="checkbox" checked={draft.categories.includes(c)} onChange={() => toggleCat(c)} />{pretty(c)}
               </label>
             ))}
@@ -152,17 +152,17 @@ export default function Practitioners({ sector, base, auth, canEdit }: Props) {
       {!rows && !msg && <p style={hint}>Loading…</p>}
       {rows && !rows.length && editing !== 'new' && <p style={hint}>No {many.toLowerCase()} yet. Without any, Avery books by the business's opening hours.</p>}
       {sorted.map(p => (
-        <div key={p.id} style={{ borderTop: '1px solid #1e1e2e', padding: '10px 0', opacity: p.isActive ? 1 : 0.5 }}>
+        <div key={p.id} style={{ borderTop: '1px solid var(--border)', padding: '10px 0', opacity: p.isActive ? 1 : 0.5 }}>
           {editing === p.id ? editor : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <div style={{ color: '#fff', fontSize: 14 }}>{p.name}{p.role ? <span style={{ color: '#888' }}> — {p.role}</span> : null}{!p.isActive && <span style={{ color: '#888' }}> (inactive)</span>}</div>
-                <div style={{ color: '#888', fontSize: 12 }}>
+                <div style={{ color: 'var(--text-strong)', fontSize: 14 }}>{p.name}{p.role ? <span style={{ color: 'var(--text-muted)' }}> — {p.role}</span> : null}{!p.isActive && <span style={{ color: 'var(--text-muted)' }}> (inactive)</span>}</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
                   {DAYS.filter(([d]) => p.hours[d]).map(([d]) => `${d} ${p.hours[d]}`).join(' · ')}
                   {p.categories?.length ? ` · ${p.categories.map(pretty).join(', ')}` : ''}
                 </div>
               </div>
-              <div style={{ color: '#ccc', fontSize: 13, whiteSpace: 'nowrap' }}>
+              <div style={{ color: 'var(--text)', fontSize: 13, whiteSpace: 'nowrap' }}>
                 {p.feeCents != null && biz ? `${formatMoney(p.feeCents, biz.currency)} · ` : ''}{p.slotMinutes} min
               </div>
               {canEdit && (

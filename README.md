@@ -121,9 +121,15 @@ npm run dev
 
 Sign in with any email address: without `RESEND_API_KEY` the local Worker hands the
 one-time code back to the UI (development only), so no email is needed. A new account
-goes straight to the onboarding wizard. To use the operator view instead, pick
+goes straight to the onboarding wizard, then to **Home** (today's calls, appointments and
+messages, plus a setup checklist). Owners and staff get a left sidebar (a bottom bar and menu on
+phones): Home, Calls & messages, Appointments, Doctors / Dentists / Lawyers, Services & prices,
+Try your assistant and, for owners, Settings. The UI is plain React with one stylesheet
+(`web/src/index.css`) and shared components in `web/src/components/ui.tsx`. To use the operator view instead, pick
 "Operator? Sign in with the admin key" and enter `ADMIN_SECRET` (`dev-admin-key` in
-`.dev.vars.example`); it is kept in `sessionStorage` for the tab only.
+`.dev.vars.example`); it is kept in `sessionStorage` for the tab only. The operator gets an
+**Operator** section (All businesses, Phone numbers, WhatsApp, Plans & billing) plus the same
+pages as an owner for whichever business they are managing.
 
 ---
 
@@ -147,16 +153,16 @@ every `sectors` row by hand.
   the owner's address. The business type picks the **call script** (`sectors.vertical`, see
   *Verticals*): clinic and dental → `clinic` (dental with dentist wording), law firm →
   `legal`, auto shop → `general`, everything else → `appointments` (no vehicle questions).
-  Changing the type in the Business tab changes the script (the UI asks to confirm).
+  Changing the type in Settings → Business details changes the script (the UI asks to confirm).
   The last step explains that the Avery team connects the phone number and has a
   **Request a phone number** button (`POST /account/businesses/:key/number-request`): the
-  request is stored for the operator (Settings → Phone number requests) and emailed to
+  request is stored for the operator (Operator → Phone numbers) and emailed to
   `ADMIN_NOTIFY_EMAIL` when that var and Resend are set.
 - **Owner self-service.** Owners manage their **Doctors / Dentists / Lawyers / Team
-  members** tab (`GET|POST /admin/resources/:key`, `PUT|DELETE /admin/resources/:key/:id`;
-  staff can read; delete deactivates), and a **Settings** tab with Voice & language,
-  Privacy and Business locale on their own login. The assistant's spoken name
-  (`sectors.assistant_name`, default "Avery") is set in Customize → Agent name.
+  members** page (`GET|POST /admin/resources/:key`, `PUT|DELETE /admin/resources/:key/:id`;
+  staff can read; delete deactivates), and **Settings** (Business details, Assistant, Phone number,
+  Privacy, Calendar, Billing) on their own login. The assistant's spoken name
+  (`sectors.assistant_name`, default "Avery") is set in Settings → Assistant.
 - **Default plan.** If the operator marks a billing plan as default (Billing → "New
   businesses start on", or `isDefault: true` on `PUT /admin/billing/plans/:id`), each new
   business is put on it with its free trial; nothing is charged until the owner subscribes.
@@ -164,7 +170,7 @@ every `sectors` row by hand.
 - **Roles.** A user can belong to several businesses as `owner` or `staff`
   (`business_members`). Staff see calls, bookings, transcripts and messages, and can mark
   messages handled; owners can also edit business details, services, the
-  Customize config, the calendar connection, and the team.
+  assistant's name and greeting, the calendar connection, and the team.
 - **Business-scoped routes** (`/admin/sectors/:key`, `/admin/config/:key`,
   `/admin/products/:key[/:id]`, `/admin/transcripts|bookings|messages/:key`,
   `/admin/calendar/:key/*`, `/account/businesses/:key/members`) accept either the
@@ -187,12 +193,12 @@ that already have a vertical, or no kind, such as `advanced_vtech`, are untouche
 `advanced_vtech` keeps the assistant name "Mogi").
 
 **WhatsApp routing.** The operator maps a WhatsApp Business `phone_number_id` to a
-business in Settings → WhatsApp numbers (`GET|PUT /admin/whatsapp-numbers`,
+business in Operator → WhatsApp (`GET|PUT /admin/whatsapp-numbers`,
 `DELETE /admin/whatsapp-numbers/:id`; D1 table `whatsapp_numbers`), so a new business
 needs no redeploy. `WA_PHONE_NUMBER_MAP` still works as a fallback, then the default business.
 
-A new business answers in the **Voice Test** tab straight away. Real phone calls still
-reach it only once a number is routed to it (the operator's Settings → Phone line, or
+A new business answers in **Try your assistant** straight away. Real phone calls still
+reach it only once a number is routed to it (the operator's Operator → Phone numbers → Default phone line, or
 per-number routing).
 
 ---
@@ -290,7 +296,7 @@ ADMIN_KEY=<admin key> node svt/latency-test.mjs --set india --persona 4   # the 
 ```
 
 The same per-turn breakdown is saved for every real call (`transcripts.metrics`) and charted in the
-admin **Calls** tab.
+admin **Calls & messages** page.
 
 ### Full audio pipeline (STT → LLM → TTS)
 
@@ -366,7 +372,7 @@ customers' visits may start at the same time (bays), with `POST /admin/sectors`
 
 ### Business locale (currency, dates, phone numbers)
 
-Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business locale**.
+Each business has a locale, set with `POST /admin/sectors` or the admin UI's **Settings → Business details → How prices, dates and phone numbers are written**.
 There, the **Country** dropdown (United States +1 / India +91) fills in that country's currency, locale and
 timezone, each of which can still be changed. Supported countries are listed once, in `COUNTRIES`
 (`worker/src/utils/locale.ts`); the worker rejects any other `country_code`.
@@ -386,7 +392,7 @@ curl -X POST "$WORKER/admin/sectors" -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Ty
 
 Omitted locale fields keep their saved values; invalid ones are rejected with a 400. With INR the agent
 says prices the Indian way ("fifteen hundred rupees", "one lakh fifty thousand rupees"), reads Indian
-callback numbers back digit by digit, and emails, calendar events and the Calls tab show `+91 98765 43210`.
+callback numbers back digit by digit, and emails, calendar events and the Calls & messages page show `+91 98765 43210`.
 The defaults produce exactly the same prompt and messages as before locales existed (`worker/src/utils/locale.ts`).
 ### Indian phone numbers (Exotel, or Plivo)
 
@@ -405,7 +411,7 @@ Indian numbers come from **Exotel** (or **Plivo**). Both stream call audio to th
 | Webhook auth | `X-Twilio-Signature` | shared `EXOTEL_WEBHOOK_SECRET` (Exotel doesn't sign) | `X-Plivo-Signature-V3` |
 | Transfer to staff | `<Dial>` after the stream | Passthru → Connect applet | `<Dial>` after the stream |
 
-**Which business answers.** Map each number in the admin UI (**Settings → Phone numbers**) or
+**Which business answers.** Map each number in the admin UI (**Operator → Phone numbers**) or
 with `PUT /admin/phone-numbers {number, provider, businessType, label?}` (`GET` lists,
 `DELETE /admin/phone-numbers/:provider/:number` unmaps). Numbers are stored E.164; Indian
 numbers can be entered as `080…`, `98…` or `+91…`. This works for Twilio numbers too: a mapped
@@ -435,7 +441,7 @@ voice and WhatsApp. Withheld numbers get a per-call identity.
      **200** when the caller asked for a person and **302** otherwise.
    - On 200 → **Connect** applet whose *dial whom* is the dynamic URL `https://<worker>/exotel/connect?key=<secret>`
      (returns the business's phone from `sectors.phone` — must be an Indian number). On 302 → **Hangup**.
-4. Assign the flow to the ExoPhone, then map the ExoPhone to a business in **Settings → Phone numbers**.
+4. Assign the flow to the ExoPhone, then map the ExoPhone to a business in **Operator → Phone numbers**.
 
 `?key=` can be replaced by Basic auth (`https://avery:<secret>@<worker>/…`) wherever Exotel accepts
 it, which keeps the secret out of request logs. In production every `/exotel/*` request without the
@@ -445,7 +451,7 @@ secret is rejected (and all of them are rejected if `EXOTEL_WEBHOOK_SECRET` isn'
 
 Create a Plivo application with Answer URL `POST https://<worker>/plivo/answer`, attach your Indian
 number, set `PLIVO_AUTH_TOKEN` and `PLIVO_WEBHOOK_URL` (`https://<worker>`), and map the number in
-**Settings → Phone numbers** (or set `PLIVO_DEFAULT_BUSINESS_TYPE`). `/plivo/answer` returns a
+**Operator → Phone numbers** (or set `PLIVO_DEFAULT_BUSINESS_TYPE`). `/plivo/answer` returns a
 bidirectional `<Stream>` and, after it, a `<Redirect>` to `/plivo/after-stream` (transfer or hang up).
 
 **Not yet tested on a live call:** the Exotel and Plivo protocol details come from the carriers' docs
@@ -454,8 +460,8 @@ gone through them yet. Check the first live call's logs (`npx wrangler tail`).
 ### Hindi and Hinglish calls (optional, per business)
 
 Each business answers in `en` (default), `hi` (Hindi) or `hi-en` (Hinglish — callers mixing
-Hindi and English), and picks its speech providers. Set it in the admin UI (**Settings → Voice &
-language**), with `PUT /admin/sectors/:key/voice`, or with the same fields on `POST /admin/sectors`:
+Hindi and English), and picks its speech providers. Set it in the admin UI (**Settings → Assistant → Language and
+voice**), with `PUT /admin/sectors/:key/voice`, or with the same fields on `POST /admin/sectors`:
 
 ```bash
 curl -X PUT "$WORKER/admin/sectors/sharma_clinic/voice" -H "X-Admin-Key: $ADMIN_KEY" \
@@ -499,7 +505,7 @@ adapters behind one interface (`worker/src/durable-objects/voice-providers.ts`).
 
 ### Calendar integration (optional)
 
-Each business can connect its own calendar from the admin UI's **Calendar** tab.
+Each business can connect its own calendar from the admin UI's **Settings → Calendar**.
 Mogi then skips times that are busy in that calendar and adds every booking to it
 as an event (deleted again on cancel). D1 stays the source of truth: if the calendar
 is unreachable, bookings still go through and the tab shows the error.
@@ -638,7 +644,7 @@ no vertical gets `general`, the original auto-shop wording and fields, byte for 
   is offered whoever does the service and is free first.
 - **Patient details** on the booking: patient name, new or returning (or age), reason for visit
   (`orders.details`), plus the doctor (`orders.resource_id/resource_name`). Shown in emails, calendar
-  events and the admin **Calls** tab.
+  events and the admin **Calls & messages** page.
 - **Consultation pricing** from the doctor's fee (products in `CONSULTATION`,
   `CHILD_CONSULTATION`, `DENTAL_CONSULTATION`); INR amounts are spoken as rupees.
 - **Medical safety rules** in the prompt: never medical advice, a diagnosis or medicine; for an
