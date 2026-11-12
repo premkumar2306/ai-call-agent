@@ -164,7 +164,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s4); box-shadow: var(--shadow); min-width: 0; display: grid; gap: var(--s3); align-content: start; }
 .card-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
-.card-head > div { min-width: 0; flex: 1; }
+.card-head > div:first-child { min-width: 0; flex: 1; }
 .card-hint { color: var(--text-muted); font-size: 14px; margin-top: var(--s1); }
 .card-flush { padding: 0; overflow: hidden; }
 .card-accent { border-color: var(--accent-border); }
@@ -410,3 +410,4 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .brand-center { justify-content: center; padding-bottom: var(--s4); }
 .brand-flat { padding: 0; }
 .picker-label { display: block; padding: 0 var(--s1) var(--s1); }
+.pad { padding: 0 var(--s4) var(--s4); }

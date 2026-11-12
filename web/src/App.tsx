@@ -276,7 +276,7 @@ export default function App() {
         </div>
         <main id="main" className="page">
           {sector && current === 'home' && (
-            <Home key={sector} sector={sector} name={selected?.name ?? ''} base={BASE} auth={headers} isOwner={canEdit} go={go} />
+            <Home key={sector} sector={sector} name={selected?.name ?? ''} locale={bizMeta ?? undefined} base={BASE} auth={headers} isOwner={canEdit} operator={isOperator} go={go} />
           )}
           {sector && current === 'calls' && <>
             <PageHeader title="Calls & messages" description="Everyone who called or messaged on WhatsApp, and who is waiting for a call back." />
