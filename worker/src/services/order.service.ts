@@ -41,9 +41,13 @@ export function validateScheduledAt(scheduledAt: string, now = new Date()): stri
     return 'scheduled_at must be an ISO datetime like 2026-04-15T09:00:00';
   }
   // Compare on the calendar date only: stored times are business-local
-  // wall-clock values without an offset, so sub-day comparisons against UTC
-  // "now" would be wrong. Same-day bookings are still allowed.
-  if (scheduledAt.slice(0, 10) < now.toISOString().slice(0, 10)) return 'scheduled_at is in the past';
+  // wall-clock values without an offset. This is only a sanity floor, so it
+  // uses the earliest date anywhere on Earth (UTC-12): comparing against the
+  // UTC date rejected every same-day evening booking in the Americas once UTC
+  // passed midnight (found by the e2e simulator). The exact past-time check,
+  // in the business's own timezone, is checkWithinHours() in the tool router.
+  const earliestToday = new Date(now.getTime() - 12 * 3_600_000).toISOString().slice(0, 10);
+  if (scheduledAt.slice(0, 10) < earliestToday) return 'scheduled_at is in the past';
   return null;
 }
 
