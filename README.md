@@ -195,7 +195,20 @@ that already have a vertical, or no kind, such as `advanced_vtech`, are untouche
 **WhatsApp routing.** The operator maps a WhatsApp Business `phone_number_id` to a
 business in Operator → WhatsApp (`GET|PUT /admin/whatsapp-numbers`,
 `DELETE /admin/whatsapp-numbers/:id`; D1 table `whatsapp_numbers`), so a new business
-needs no redeploy. `WA_PHONE_NUMBER_MAP` still works as a fallback, then the default business.
+needs no redeploy. `WA_PHONE_NUMBER_MAP` still works as a fallback, then the default business
+(only for the number in `WA_PHONE_NUMBER_ID`: any other unmapped number gets no reply, so one
+business's number never answers as another). Replies go out from the number the customer wrote to.
+
+**WhatsApp setup.** Step by step for an owner: [`docs/whatsapp-setup.md`](docs/whatsapp-setup.md)
+(Meta business verification, app, number, System User token, secrets, `npm run whatsapp-setup`,
+templates, pricing, troubleshooting). Handling: text, button/list replies, voice notes (Deepgram,
+in the business language), locations and contacts; photos, stickers and the like get a polite
+"please type it" reply; reactions and delivery/read receipts are ignored. Messages are marked read
+with a typing indicator, retried webhooks are answered once, long replies are split at 4,096
+characters, the DPDP notice goes once per customer, and replies follow the business's Hindi/Hinglish
+setting. The Graph API version is pinned in `src/services/whatsapp-api.ts`. Outside the 24-hour
+window, phone-call booking confirmations use the approved template `WA_CONFIRMATION_TEMPLATE`, and
+nothing is sent if it isn't set.
 
 A new business answers in **Try your assistant** straight away. Real phone calls still
 reach it only once a number is routed to it (the operator's Operator → Phone numbers → Default phone line, or
@@ -218,14 +231,14 @@ bundle. Pushes to `main` run CI, then deploy (`.github/workflows/deploy.yml`).
 ```bash
 cd worker
 npm run e2e              # every scenario (~2 min)
-npm run e2e -- exotel    # one carrier: twilio | exotel | plivo | razorpay
+npm run e2e -- exotel    # one carrier: twilio | exotel | plivo | razorpay | whatsapp
 ```
 
 `worker/e2e/run.mjs` starts the real Worker (`wrangler dev`, fresh local D1/KV, the real
 `CallRelay` Durable Object) and points every outside service at local stand-ins
 (`worker/e2e/mock-providers.mjs`) that speak each provider's real protocol: Anthropic (streamed,
 with tool calls), Deepgram and Sarvam speech recognition, Cartesia and Sarvam voices, Razorpay,
-Resend, Twilio SMS. Simulated callers then phone three test businesses the way each carrier does:
+Resend, Twilio SMS, the WhatsApp Graph API. Simulated callers then phone three test businesses the way each carrier does:
 signed webhook → stream token → media frames in the carrier's format → playback acknowledgements.
 
 | Scenario | Checks |
@@ -234,6 +247,7 @@ signed webhook → stream token → media frames in the carrier's format → pla
 | Indian business over **Exotel**, English | as above, plus the AI/recording notice **before** the greeting, Exotel PCM16 framing (multiples of 320 bytes, ≤100 000), Passthru → Connect applet dials staff, consent audit row |
 | Indian business over **Plivo**, Hindi on **Sarvam** | Hindi notice and greeting, Sarvam STT gets 16 kHz PCM `hi-IN`, Sarvam TTS asked for µ-law 8 kHz `hi-IN`, booking in Hindi, transfer → `<Dial><Number>` |
 | **Razorpay** | plan synced, subscription created, badly signed webhook refused, signed webhook → account `active` |
+| **WhatsApp** (Meta Cloud API) | verification handshake (right token → challenge, wrong → 403), badly signed POST refused, Indian business on a mapped `phone_number_id`: question → reply from that number to the customer, DPDP notice first and only once, mark-as-read, chat booking saved with the WhatsApp number as callback, voice note → Deepgram → answer, retried webhook answered once, status-only webhook → no reply, unmapped number → no reply, Hindi business → Hindi notice and reply, one billed conversation with tokens, one consent row |
 
 The redirect is `PROVIDER_MOCK_URL` (`src/utils/provider-mock.ts`); it is ignored whenever
 `NODE_ENV` is `production`. CI runs the simulator on every PR and before every deploy.
@@ -350,7 +364,8 @@ wrangler secret put TWILIO_WEBHOOK_URL    # public base URL Twilio calls
 wrangler secret put DEEPGRAM_API_KEY
 wrangler secret put CARTESIA_API_KEY
 wrangler secret put SARVAM_API_KEY        # only if a business uses Sarvam (Hindi / Hinglish) — see below
-# WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN
+# WhatsApp: WA_APP_SECRET, WA_VERIFY_TOKEN, WA_PHONE_NUMBER_ID, WA_ACCESS_TOKEN (see docs/whatsapp-setup.md)
+#   optional: WA_CONFIRMATION_TEMPLATE (approved utility template, one body variable), WA_TEMPLATE_LANGUAGE
 # Optional notifications:
 wrangler secret put RESEND_API_KEY        # sign-in codes (required for business accounts) + booking/message emails
 # EMAIL_FROM (plain var or secret): a sender on a domain verified in Resend, e.g. "Avery <hello@yourdomain.com>"
@@ -711,6 +726,8 @@ curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Typ
 | `worker/src/routes/account.ts`, `worker/src/services/accounts.ts` | Business-owner sign-in codes, owner tokens, memberships, onboarding |
 | `worker/src/routes/mogi.ts` | Browser voice-test API (`/mogi/*`) |
 | `worker/src/routes/whatsapp.ts` | WhatsApp Cloud API webhook |
+| `worker/src/services/whatsapp-api.ts` | Graph API client (pinned version, send/split/template/mark-read, media), message-type parsing, 24-hour window |
+| `worker/scripts/whatsapp-setup.mjs` | Owner's WhatsApp setup check (run locally with your own Meta keys) |
 | `worker/src/services/billing/` | Usage metering, plans, GST and overage maths (`pricing.ts`), Razorpay client and signatures (`razorpay.ts`) |
 | `worker/src/routes/billing.ts` | `/billing/*` (business), `/admin/billing/*` (operator), `/razorpay/webhook` |
 | `worker/src/db/schema.ts` | Drizzle ORM schema (D1/SQLite) |
