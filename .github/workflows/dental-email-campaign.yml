@@ -86,5 +86,6 @@ jobs:
         with:
           name: dental-email-campaign-report
           path: .campaign-report/
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
