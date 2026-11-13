@@ -43,7 +43,7 @@ new_sqlite_classes = ["CallRelay"]
 # until a business sets sectors.retention_days) and month-end overage billing
 # (idempotent, so a day's failure retries the next day).
 [triggers]
-crons = ["47 20 * * *"]
+crons = ["47 20 * * *", "17 * * * *"]   # daily: retention, billing, dunning. hourly: WhatsApp reminders + number health (src/index.ts)
 
 [vars]
 NODE_ENV = "production"

@@ -138,9 +138,14 @@ const CANNED: Record<string, Record<ReplyLanguage, string>> = {
     'hi-en': 'Aapne kam time mein bahut saare messages bheje hain. Please ek minute ruk kar phir likhein.',
   },
   optedOut: {
-    en: "You've been unsubscribed. Text us any time to start again.",
-    hi: 'आपको सब्सक्रिप्शन से हटा दिया गया है। दोबारा शुरू करने के लिए कभी भी मैसेज करें।',
-    'hi-en': 'Aapko unsubscribe kar diya gaya hai. Dobara shuru karne ke liye kabhi bhi message karein.',
+    en: "You've been unsubscribed: no more reminders or updates from us here. You can still message us any time, and reply START to get them again.",
+    hi: 'आपको सब्सक्रिप्शन से हटा दिया गया है: अब हमारी ओर से रिमाइंडर या अपडेट नहीं आएँगे। आप कभी भी मैसेज कर सकते हैं; दोबारा पाने के लिए START लिखें।',
+    'hi-en': 'Aapko unsubscribe kar diya gaya hai: ab humari taraf se reminders ya updates nahi aayenge. Aap kabhi bhi message kar sakte hain; dobara paane ke liye START likhein.',
+  },
+  optedIn: {
+    en: "You're subscribed again: we'll send booking reminders and updates here. Reply STOP any time to stop.",
+    hi: 'आप फिर से जुड़ गए हैं: बुकिंग के रिमाइंडर और अपडेट यहाँ आएँगे। कभी भी रोकने के लिए STOP लिखें।',
+    'hi-en': 'Aap phir se subscribe ho gaye hain: booking reminders aur updates yahan aayenge. Kabhi bhi rokne ke liye STOP likhein.',
   },
   error: {
     en: "I'm having technical difficulties. Please try again shortly.",
@@ -332,13 +337,23 @@ export async function lastInbound(env: Env, phoneHash: string): Promise<{ at: nu
   } catch { return null; }
 }
 
-export async function setOptedOut(env: Env, phoneHash: string, out: boolean): Promise<void> {
-  if (out) await env.CACHE.put(optOutKey(phoneHash), '1');
-  else await env.CACHE.delete(optOutKey(phoneHash));
+/**
+ * The fast opt-out flag (KV). Per business when one is given; the legacy
+ * global flag (set before opt-outs were per business) is still read. The
+ * durable record is messaging_consent (whatsapp-outbound.ts).
+ */
+export async function setOptedOut(env: Env, phoneHash: string, out: boolean, businessType?: string): Promise<void> {
+  const key = businessType ? `wa:optout:${businessType}:${phoneHash}` : optOutKey(phoneHash);
+  if (out) await env.CACHE.put(key, '1');
+  else {
+    await env.CACHE.delete(key);
+    if (businessType) await env.CACHE.delete(optOutKey(phoneHash));
+  }
 }
 
-export async function isOptedOut(env: Env, phoneHash: string): Promise<boolean> {
-  return (await env.CACHE.get(optOutKey(phoneHash))) !== null;
+export async function isOptedOut(env: Env, phoneHash: string, businessType?: string): Promise<boolean> {
+  if ((await env.CACHE.get(optOutKey(phoneHash))) !== null) return true;
+  return !!businessType && (await env.CACHE.get(`wa:optout:${businessType}:${phoneHash}`)) !== null;
 }
 
 /** Template language code for a business's language, unless WA_TEMPLATE_LANGUAGE pins one. */
@@ -355,9 +370,9 @@ export function templateLanguage(env: Pick<Env, 'WA_TEMPLATE_LANGUAGE'>, lang: R
  * customers who opted out.
  */
 export async function sendBusinessMessage(
-  env: Env, opts: { phoneNumberId: string; to: string; phoneHash: string; text: string; lang: ReplyLanguage },
+  env: Env, opts: { phoneNumberId: string; to: string; phoneHash: string; text: string; lang: ReplyLanguage; businessType?: string },
 ): Promise<'text' | 'template' | 'skipped'> {
-  if (await isOptedOut(env, opts.phoneHash)) return 'skipped';
+  if (await isOptedOut(env, opts.phoneHash, opts.businessType)) return 'skipped';
   const last = await lastInbound(env, opts.phoneHash);
   if (withinServiceWindow(last?.at)) return (await sendText(env, opts.phoneNumberId, opts.to, opts.text)) ? 'text' : 'skipped';
   const template = env.WA_CONFIRMATION_TEMPLATE?.trim();
@@ -393,6 +408,6 @@ export async function confirmBookingOnWhatsApp(
   const phoneNumberId = await whatsappNumberOf(env, opts.businessType);
   if (!phoneNumberId) return 'skipped';
   const to = opts.phone.replace(/\D/g, '');
-  const r = await sendBusinessMessage(env, { phoneNumberId, to, phoneHash: opts.phoneHash, text: opts.text, lang: opts.lang });
+  const r = await sendBusinessMessage(env, { phoneNumberId, to, phoneHash: opts.phoneHash, text: opts.text, lang: opts.lang, businessType: opts.businessType });
   return r === 'template' ? 'template' : 'skipped';
 }

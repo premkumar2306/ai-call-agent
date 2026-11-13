@@ -407,6 +407,7 @@ adminRouter.get('/whatsapp-status', withAdminKey, (c) => {
       confirmationTemplate: !!(env as unknown as Record<string, unknown>).WA_CONFIRMATION_TEMPLATE,
       templateLanguage: !!(env as unknown as Record<string, unknown>).WA_TEMPLATE_LANGUAGE,
       graphApiVersion: !!(env as unknown as Record<string, unknown>).WA_GRAPH_API_VERSION,
+      businessAccountId: !!env.WA_BUSINESS_ACCOUNT_ID,
       webhookPath: '/whatsapp/webhook',
     },
   });

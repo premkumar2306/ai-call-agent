@@ -74,8 +74,27 @@ Follow [`docs/whatsapp-setup.md`](whatsapp-setup.md) first. `npm run whatsapp-se
    - [ ] A voice note ("Can I book for tomorrow?") gets a sensible answer.
    - [ ] A photo with no caption gets a polite "please type it" reply; a location pin is understood.
    - [ ] In a Hindi business (Settings → Voice → Hindi) the replies are in Devanagari.
-   - [ ] "STOP" gets the unsubscribe confirmation; writing again starts a fresh chat.
+   - [ ] "STOP" (and, in a second test, "बंद करो") gets the unsubscribe confirmation. Writing again
+     still gets answers, but no reminders arrive until you send "START".
 2. Admin → Billing → usage shows one WhatsApp conversation for the day.
 3. Optional, after a `booking_confirmation` template is approved and `WA_CONFIRMATION_TEMPLATE` is set:
    - [ ] Book by **phone call** from a number that hasn't messaged on WhatsApp for 24 hours. The
      WhatsApp confirmation arrives as the template.
+4. Templates, reminders and follow-ups (after setup-guide §9; use a test business):
+   - [ ] Operator → WhatsApp → Message templates: **Create Avery's template** for Reminder and
+     Missed call. Each shows English, Hindi and Hinglish as *pending*, then *approved* (seconds
+     after Meta approves, if `message_template_status_update` is subscribed; else **Sync from Meta**).
+   - [ ] Choose them in the dropdowns; the event shows **Sending on WhatsApp**.
+   - [ ] Settings → WhatsApp (as the owner): the number shows, the previews read correctly in the
+     business's language, and both switches start off. Turn both on.
+   - [ ] Book by phone for **tomorrow**, at least 12 hours ahead, from a phone that hasn't messaged
+     on WhatsApp for 24 hours. About 24 hours before the slot (or **Send due reminders now**
+     once it is inside 24 hours), the reminder template arrives. Running it again sends nothing.
+   - [ ] Unset the reminder template (choose *None*), book another slot, and run reminders: an
+     SMS arrives instead (if Twilio SMS is set up).
+   - [ ] Call the business and hang up during the greeting: the "we missed your call" template
+     arrives within a minute. A second call the same week doesn't send another.
+   - [ ] Reply "STOP" to the template, then run reminders for another booking: nothing arrives,
+     on WhatsApp or SMS. "START" resumes.
+   - [ ] Operator → WhatsApp → Number health: quality, daily limit, display name and "last
+     message: just now" are shown for the number.

@@ -8,6 +8,7 @@ import { getOrders } from '../services/order.service';
 import { getBookedDatetimes } from '../services/tool-router.service';
 import { getCalendarBusy } from '../services/calendar';
 import { saveTranscript } from '../services/transcript.service';
+import { missedCallFollowUp } from '../services/whatsapp-outbound';
 import { callStartNotice, recordConsent } from '../services/disclosure';
 import { assistantNameOf, getVertical } from '../services/verticals';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
@@ -565,6 +566,32 @@ export class CallRelay extends DurableObject<Env> {
     });
   }
 
+  // Missed-call follow-up on WhatsApp (per business, off by default): the
+  // caller hung up before speaking, the call was cut short, or a message was
+  // taken. whatsapp-outbound.ts decides and sends; once per call.
+  private followUpDone = false;
+  private async flushFollowUp(): Promise<void> {
+    if (this.followUpDone || !this.session || !this.streamStartedAt) return;
+    this.followUpDone = true;
+    const h = this.cache.history;
+    try {
+      await missedCallFollowUp(this.env, {
+        businessType: this.session.businessType,
+        callSid: this.callSid,
+        callerPhone: this.session.callerPhone,
+        phoneHash: this.session.sub,
+        startedAtSec: Math.floor(this.streamStartedAt / 1000),
+        userTurns: h.filter(t => t.role === 'user').length,
+        lastRole: (h.at(-1)?.role as 'user' | 'assistant' | undefined) ?? null,
+        durationSec: (Date.now() - this.streamStartedAt) / 1000,
+        messageTaken: !!this.cache.messageId,
+        transferred: !!this.cache.transferTo,
+      });
+    } catch (e: any) {
+      console.error('[follow-up]', e?.message || e);
+    }
+  }
+
   // One usage record per call: AI-handled minutes (stream start → end; a
   // transfer to staff stops the meter) plus estimated provider usage.
   private async flushUsage(): Promise<void> {
@@ -610,6 +637,7 @@ export class CallRelay extends DurableObject<Env> {
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
       this.ctx.waitUntil(this.flushUsage());
+      this.ctx.waitUntil(this.flushFollowUp());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'transfer');
       return;
     }
@@ -621,6 +649,7 @@ export class CallRelay extends DurableObject<Env> {
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
       this.ctx.waitUntil(this.flushUsage());
+      this.ctx.waitUntil(this.flushFollowUp());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'caller silent');
       return;
     }
@@ -789,6 +818,7 @@ export class CallRelay extends DurableObject<Env> {
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
       this.ctx.waitUntil(this.flushUsage());
+      this.ctx.waitUntil(this.flushFollowUp());
     }
   }
 
@@ -853,6 +883,7 @@ export class CallRelay extends DurableObject<Env> {
     this.stt.close();
     this.ctx.waitUntil(this.flushTranscript());
     this.ctx.waitUntil(this.flushUsage());
+    this.ctx.waitUntil(this.flushFollowUp());
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {

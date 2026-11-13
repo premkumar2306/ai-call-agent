@@ -161,28 +161,122 @@ You receive Meta's **hello_world** template. Reply "Hi, I'd like to book an appo
 
 Why a template? See the next step.
 
-## 9. Templates for booking confirmations
+## 9. Templates, reminders and missed-call follow-ups
 
 WhatsApp allows **free-form messages only within 24 hours of the customer's last message**
-(the "customer service window"). Avery's chat replies are always inside it. A message sent
-later, such as a confirmation for a booking made on a **phone call**, has to be an **approved
-template**.
+(the "customer service window"). Avery's chat replies are always inside it. Anything Avery
+starts itself (a reminder the day before, a "we missed your call" message, a confirmation for a
+booking made on a **phone call**) has to be an **approved template**. Avery manages these for
+you from the admin UI.
 
-1. WhatsApp Manager → **Message templates → Create template**, category **Utility**, name
-   `booking_confirmation`, language **English** (add **Hindi** as a second language if your
-   business uses Hindi).
-2. Body, with one variable:
-   `Appointment update from us: {{1}}`
-   Sample for {{1}}: `You're booked for Consultation on Mon 17 Nov, 10:30 am. Questions: +91 80 4710 0000.`
-3. Submit. Utility templates are usually approved within minutes to a few hours.
-4. Tell the Worker its name: `npx wrangler secret put WA_CONFIRMATION_TEMPLATE` → `booking_confirmation`.
-   Optionally pin the language with `WA_TEMPLATE_LANGUAGE` (for example `en` or `en_US`, exactly
-   as in WhatsApp Manager). Without it, Avery uses `hi` for a Hindi business and `en` otherwise.
+### 9.1 Give the Worker your WhatsApp Business Account id
 
-After that, when Avery books an appointment on a call for a business that has a WhatsApp
-number, the caller also gets the confirmation on WhatsApp. The booking text fills `{{1}}`.
-**Safe fallback:** without `WA_CONFIRMATION_TEMPLATE`, nothing is sent on WhatsApp outside the
-window (the SMS confirmation still goes, if SMS is set up). Customers who replied STOP get nothing.
+WhatsApp Manager → **Account tools** (or Business settings → Accounts → WhatsApp accounts): copy
+the **WhatsApp Business Account ID** (the same number as `WA_WABA_ID` in step 5), then:
+
+```bash
+npx wrangler secret put WA_BUSINESS_ACCOUNT_ID
+npx wrangler secret put ADMIN_NOTIFY_EMAIL     # optional: where number-quality alerts go
+```
+
+The System User token from step 4 already has `whatsapp_business_management`, which is what
+creating templates needs.
+
+### 9.2 Subscribe the webhook to template and quality updates
+
+Meta → your app → WhatsApp → **Configuration** → Webhook fields: besides `messages`, subscribe
+**`message_template_status_update`** (approvals arrive in seconds instead of on the next sync)
+and **`phone_number_quality_update`** (quality drops are picked up at once).
+
+### 9.3 Create the templates (Operator → WhatsApp → Message templates)
+
+For each event, press **Create Avery's template**. It sends one **Utility** template to Meta in
+three languages:
+
+| Event | Template name | Languages |
+|---|---|---|
+| Booking confirmation | `avery_booking_confirmation` | `en`, `hi`, and `avery_booking_confirmation_hinglish` in `en` |
+| Reminder, 24 hours before | `avery_appointment_reminder` | same pattern |
+| Cancellation | `avery_booking_cancellation` | same pattern |
+| Missed call: "reply here" | `avery_missed_call` | same pattern |
+
+Hinglish is written in Latin script and Meta has no language code for it, so it is a separate
+template name in English. Every body names the business, says what it's about, and ends with
+"Reply STOP to opt out" (in Hindi: "मैसेज बंद करने के लिए STOP लिखें"). You can see the
+wording under **Wording**, or create your own with **Create a custom template** (Avery checks
+Meta's rules first: no parameter at the very start or end, parameters numbered in order, an
+opt-out line).
+
+The status of each language shows as **pending**, **approved** or **rejected** (hover a rejected
+one for Meta's reason). **Sync from Meta** refreshes them all. Utility templates are usually
+approved within minutes. Meta may decide one is really **marketing**. A missed-call message is
+the likeliest. If that happens, it no longer shows as approved, so Avery stops using it.
+
+### 9.4 Choose which template each event uses
+
+Pick the template in each event's dropdown. Avery then sends the approved variant in the
+business's language (Settings → Voice), or the English one if that language isn't approved yet.
+Until an event has a chosen, approved template:
+
+| Event | Without an approved template |
+|---|---|
+| Booking confirmation / cancellation | SMS, exactly as before (and the legacy `WA_CONFIRMATION_TEMPLATE`, if set) |
+| Reminder | SMS if Twilio SMS is set up, otherwise skipped and logged |
+| Missed-call follow-up | skipped and logged (`[wa:missed_call:…]` in `wrangler tail`) |
+
+Once a confirmation/cancellation template is chosen, a customer gets it on WhatsApp **instead
+of** SMS, with SMS as the fallback if WhatsApp can't be used (no number, not approved, or sending fails).
+
+### 9.5 Owners turn reminders and follow-ups on (Settings → WhatsApp)
+
+Both are **off** for every business until its owner (or the operator) turns them on:
+
+- **Appointment reminders.** An hourly job sends one reminder per booking, 23–24 hours before
+  it. A missed hour is caught up by the next, up to 2 hours before the appointment. Bookings
+  made less than 12 hours ahead get none: they just got a confirmation. Each booking is marked
+  before it is sent, so it is never reminded twice.
+- **Missed-call follow-up.** When a caller hangs up before saying anything, the call is cut short
+  (their last words went unanswered, or it lasted under 20 seconds), or the assistant took a
+  message, the caller gets the `avery_missed_call` template inviting them to continue on
+  WhatsApp. It is never sent after a booking or a transfer to staff, and at most once per caller
+  per business every 7 days.
+
+The page also shows the business's WhatsApp number (read-only) and a preview of each message in
+the business's language.
+
+### 9.6 Opt-out and consent (Meta's rules for business-initiated messages)
+
+- **STOP is honoured everywhere.** `STOP`, `Unsubscribe`, `End`, `Quit`, `Opt out`, and in
+  Hindi/Hinglish `बंद`, `बंद करो`, `बंद करें`, `मत भेजो`, `रोको`, `band karo`, `mat bhejo`,
+  and similar, record an opt-out for that business. No reminder, follow-up or confirmation goes
+  to that customer again, **on WhatsApp or by SMS**, until they send `START` (or `शुरू`).
+  If they keep chatting, Avery still answers: they wrote first. "Cancel" on its own is *not* an
+  opt-out, because after a reminder it means "cancel my appointment".
+- **Consent records.** Every opt-in and opt-out is kept in `messaging_consent` (business,
+  hashed customer number, action, source such as `keyword:STOP` or `whatsapp_inbound`, time).
+  A customer's first WhatsApp message is their opt-in. Opt-out records are kept even after a
+  data erasure request, because the suppression record is what keeps honouring the STOP.
+- **Who may get one.** Meta requires an opt-in before you message someone first. Reminders
+  and confirmations go only to the number a booking was made with. Missed-call follow-ups go to
+  people who called you. Owners are asked to tell callers they may get WhatsApp messages about
+  their booking, for example in the call greeting or the privacy notice (Settings → Privacy).
+- **Templates only** outside the 24-hour window. Inside it, the same wording goes as a
+  free-form message, which Meta doesn't charge for.
+
+### 9.7 Number health (Operator → WhatsApp and Operator → Integrations)
+
+For each mapped number, the **WhatsApp number health** card shows the following, refreshed
+hourly and by **Refresh**:
+
+- Meta's **quality rating** (High / Medium / Low);
+- the **daily messaging limit** (250, 1,000, 10,000 … business-initiated conversations a day);
+- the **display-name status** and **verified name**;
+- when the webhook last delivered a customer message;
+- each event's template statuses.
+
+When a number drops to **Medium (yellow)** or **Low (red)**, the operator gets one email at
+`ADMIN_NOTIFY_EMAIL` per drop. A number that recovers to green and drops again alerts again. If
+quality is falling, turn off missed-call follow-ups first: they are the likeliest to be reported.
 
 ## 10. What it costs
 
@@ -192,7 +286,7 @@ customer's country. Your own WhatsApp number and the Cloud API itself are free.
 | What | Who starts it | Meta's charge |
 |------|---------------|---------------|
 | Avery's replies to a customer's message (service messages) | the customer | **Free** |
-| Utility template (booking confirmation) sent while the 24-hour window is open | you | Free, under the July 2025 rules |
+| Utility template (confirmation, reminder, cancellation, missed-call follow-up) sent while the 24-hour window is open | you | Free, under the July 2025 rules |
 | Utility template outside the window | you | about **₹0.12–0.15** per message |
 | Authentication template (OTP) | you | about **₹0.12–0.15** per message |
 | Marketing template (offers, reminders to come back) | you | about **₹0.86–1.09** per message (Avery doesn't send these) |

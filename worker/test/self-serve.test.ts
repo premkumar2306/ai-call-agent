@@ -380,7 +380,7 @@ describe('WhatsApp status', () => {
     expect(text).not.toContain('booking_confirmed');
     expect(JSON.parse(text).data).toEqual({
       appSecret: true, verifyToken: true, accessToken: false, phoneNumberMap: false,
-      confirmationTemplate: true, templateLanguage: false, graphApiVersion: false, webhookPath: '/whatsapp/webhook',
+      confirmationTemplate: true, templateLanguage: false, graphApiVersion: false, businessAccountId: false, webhookPath: '/whatsapp/webhook',
     });
     const token = await signIn('wastatus@example.com');
     expect((await req('/admin/whatsapp-status', { token })).status).toBe(401);

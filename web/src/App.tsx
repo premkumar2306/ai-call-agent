@@ -4,6 +4,8 @@ import VoiceTest from './pages/VoiceTest';
 import Calls from './pages/Calls';
 import DefaultLine, { LocaleSettings } from './pages/Settings';
 import Appointments from './pages/Appointments';
+import WhatsAppSettings from './pages/WhatsAppSettings';
+import WhatsAppHealth from './components/WhatsAppHealth';
 import WhatsAppSetup from './pages/WhatsAppSetup';
 import Integrations from './pages/Integrations';
 import WhatsAppNote from './components/WhatsAppNote';
@@ -52,6 +54,7 @@ const SETTINGS = [
   { key: 'business', label: 'Business details' },
   { key: 'assistant', label: 'Assistant' },
   { key: 'phone', label: 'Phone number' },
+  { key: 'whatsapp', label: 'WhatsApp' },
   { key: 'privacy', label: 'Privacy' },
   { key: 'billing', label: 'Billing' },
 ] as const;
@@ -320,6 +323,7 @@ export default function App() {
                 <PhoneNumber sector={sector} base={BASE} auth={headers} canEdit={canEdit} onTry={() => go('try')} />
                 <WhatsAppNote base={BASE} auth={headers} />
               </>}
+              {settingsKey === 'whatsapp' && <WhatsAppSettings base={BASE} auth={headers} sector={sector} name={selected?.name ?? ''} />}
               {settingsKey === 'privacy' && <PrivacySettings base={BASE} auth={headers} sectors={one} />}
               {settingsKey === 'billing' && <Billing sector={sector} base={BASE} auth={headers} />}
             </div>
@@ -353,6 +357,7 @@ export default function App() {
           {isOperator && current === 'op/integrations' && <>
             <PageHeader title="Integrations" description="Every outside service Avery uses: whether it's set up on this deployment and whether it works with the real keys. Values are never shown." />
             <Integrations base={BASE} adminKey={adminKey} />
+            <WhatsAppHealth base={BASE} adminKey={adminKey} sectors={sectors} compact />
           </>}
           {isOperator && current === 'op/plans' && sector && <>
             <PageHeader title="Plans & billing" description={<>Plans, the plan new businesses start on, and costs. Usage and invoices below are for <span className="strong">{selected?.name}</span>.</>} />

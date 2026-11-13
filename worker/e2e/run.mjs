@@ -47,6 +47,8 @@ const SECRETS = {
   WA_APP_SECRET: 'wa-app-secret-mock', WA_VERIFY_TOKEN: 'wa-verify-mock', WA_ACCESS_TOKEN: 'EAAmockwhatsapptoken0123456789',
   // The legacy single number; any other unmapped number is refused.
   WA_PHONE_NUMBER_ID: '109000000000999',
+  WA_BUSINESS_ACCOUNT_ID: '102000000000555',
+  ADMIN_NOTIFY_EMAIL: 'ops-alerts@example.com',
 };
 
 const only = process.argv[2]?.toLowerCase();
@@ -70,7 +72,7 @@ async function startWorker(mockUrl) {
   wrangler(['d1', 'execute', 'DB', '--local', '--persist-to', STATE, '--file=./schema.sql']);
   wrangler(['d1', 'migrations', 'apply', 'DB', '--local', '--persist-to', STATE]);
   const vars = { NODE_ENV: 'staging', PROVIDER_MOCK_URL: mockUrl, ADMIN_SECRET: ADMIN, ...SECRETS };
-  const args = ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1', '--persist-to', STATE,
+  const args = ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1', '--persist-to', STATE, '--test-scheduled',
     ...Object.entries(vars).flatMap(([k, v]) => ['--var', `${k}:${v}`])];
   const out = openSync(join(STATE, 'wrangler.log'), 'w');
   const proc = spawn('npx', args, { cwd: WORKER_DIR, stdio: ['ignore', out, out], detached: true });
@@ -597,6 +599,132 @@ async function whatsappScenario(mocks) {
   check(n, 'notice is in the consent audit trail once', waNotices.length === 1, `${waNotices.length} row(s)`);
 }
 
+// ── WhatsApp production: templates, reminders, fallback, STOP, follow-ups, health ──
+// Runs after the WhatsApp scenario (it reuses that chat's booking). Bookings
+// are moved with SQL so the reminder timing is exact; the reminder job is
+// run on demand with a fake clock (POST /admin/whatsapp/reminders/run {now}).
+
+const sql = command => JSON.parse(wrangler(['d1', 'execute', 'DB', '--local', '--persist-to', STATE, '--json', '--command', command]))[0]?.results ?? [];
+const templateSends = (mocks, to, since) => sends(mocks, to, since).filter(s => s.body.type === 'template');
+
+async function statusWebhook(name, language, event, reason) {
+  const raw = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: SECRETS.WA_BUSINESS_ACCOUNT_ID, changes: [{ field: 'message_template_status_update', value: { event, message_template_id: 1, message_template_name: name, message_template_language: language, reason: reason ?? 'NONE' } }] }] });
+  return waPost(raw);
+}
+
+async function whatsappProdScenario(mocks) {
+  const n = 'WhatsApp production';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_wa', REM = 'avery_appointment_reminder', MISSED = 'avery_missed_call';
+
+  // Templates: create Avery's defaults on Meta, then approval arrives by webhook / sync.
+  const t0 = await api('GET', '/admin/whatsapp/templates');
+  check(n, 'templates page: WABA configured, no event has an approved template yet', t0.wabaConfigured && t0.events.every(e => !e.ready) && t0.defaults.length === 4, JSON.stringify(t0.events.map(e => e.event)));
+  const created = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
+  await api('POST', '/admin/whatsapp/templates', { event: 'missed_call' });
+  const again = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
+  const onMeta = [...mocks.wa.templates.values()];
+  check(n, 'template create: en, hi and Hinglish, UTILITY, sent to the WABA with examples', created.length === 3 && created.every(t => t.status === 'PENDING')
+    && onMeta.some(t => t.name === REM && t.language === 'hi') && onMeta.some(t => t.name === `${REM}_hinglish` && t.language === 'en')
+    && onMeta.every(t => t.category === 'UTILITY' && t.components[0].example?.body_text?.[0]?.length >= 1)
+    && mocks.log.whatsapp.some(w => w.method === 'POST' && w.path.endsWith(`/${SECRETS.WA_BUSINESS_ACCOUNT_ID}/message_templates`)) && again.length === 0,
+    `${created.map(t => `${t.name}/${t.language}:${t.status}`).join(', ')}; re-create made ${again.length}`);
+  await api('PUT', '/admin/whatsapp/templates/choice', { event: 'reminder', family: REM });
+  await api('PUT', '/admin/whatsapp/templates/choice', { event: 'missed_call', family: MISSED });
+
+  // A booking 3 days out (business-local 11:00), with a number that isn't chatting (outside the 24-hour window).
+  const day = new Date(Date.now() + 3 * 86400e3 + 5.5 * 3600e3).toISOString().slice(0, 10);
+  const start = `${day}T11:00:00`;
+  const startUtc = Date.parse(`${start}+05:30`);
+  const remindee = '919812300055';
+  const order = sql(`SELECT id FROM orders WHERE business_type = '${B}' AND customer_name = 'Priya Sharma' LIMIT 1`)[0];
+  sql(`UPDATE orders SET scheduled_at = '${start}', callback_phone = '+${remindee}', reminder_sent_at = NULL WHERE id = '${order?.id}'`);
+  await api('PUT', `/admin/whatsapp/business/${B}`, { reminders: true });
+  const runAt = (hoursBefore) => api('POST', '/admin/whatsapp/reminders/run', { now: new Date(startUtc - hoursBefore * 3600e3).toISOString() });
+  const mine = r => r.filter(x => x.orderId === order?.id);
+
+  // No approved template yet → SMS fallback.
+  let t = Date.now();
+  const r1 = mine(await runAt(23.5));
+  const sms = mocks.log.sms.filter(m => m.at >= t && m.to === `+${remindee}`);
+  check(n, 'reminder with no approved template falls back to SMS', r1[0]?.outcome === 'sms' && sms.length === 1 && /reminder/i.test(sms[0].body) && /STOP/.test(sms[0].body) && templateSends(mocks, remindee, t).length === 0, `${r1[0]?.outcome}; "${sms[0]?.body?.slice(0, 80)}"`);
+
+  // Approval by webhook (en) and by sync (Hindi rejected on Meta).
+  mocks.wa.templates.get(`${REM}|en`).status = 'APPROVED';
+  mocks.wa.templates.get(`${MISSED}|en`).status = 'APPROVED';
+  Object.assign(mocks.wa.templates.get(`${REM}|hi`), { status: 'REJECTED', rejected_reason: 'INVALID_FORMAT' });
+  const wh = await statusWebhook(REM, 'en', 'APPROVED');
+  await statusWebhook(MISSED, 'en', 'APPROVED');
+  await sleep(800);
+  const afterHook = await api('GET', '/admin/whatsapp/templates');
+  await api('POST', '/admin/whatsapp/templates/sync');
+  const afterSync = await api('GET', '/admin/whatsapp/templates');
+  const st = (rows, name, lang) => rows.templates.find(r => r.name === name && r.language === lang);
+  check(n, 'template status: APPROVED by webhook, REJECTED (with reason) by sync; event shows ready', wh.status === 200 && st(afterHook, REM, 'en')?.status === 'APPROVED'
+    && st(afterSync, REM, 'hi')?.status === 'REJECTED' && st(afterSync, REM, 'hi')?.rejectedReason === 'INVALID_FORMAT' && afterSync.events.find(e => e.event === 'reminder').ready,
+    `en=${st(afterHook, REM, 'en')?.status} hi=${st(afterSync, REM, 'hi')?.status}`);
+
+  // Timing: nothing 25 h before; the template 23.5 h before; only once.
+  sql(`UPDATE orders SET reminder_sent_at = NULL, reminder_channel = NULL WHERE id = '${order?.id}'`);
+  t = Date.now();
+  const early = mine(await runAt(25));
+  const due = mine(await runAt(23.5));
+  const twice = mine(await runAt(23));
+  const tpl = templateSends(mocks, remindee, t);
+  const params = tpl[0]?.body.template?.components?.[0]?.parameters?.map(p => p.text) ?? [];
+  check(n, 'reminder is sent 24 h before (not 25 h), as the approved template, once', early.length === 0 && due[0]?.outcome === 'whatsapp' && twice.length === 0 && tpl.length === 1
+    && tpl[0].body.template.name === REM && tpl[0].body.template.language.code === 'en' && params[0] === 'WhatsApp Clinic' && /11:00/.test(params[2] ?? '') && tpl[0].phoneNumberId === WA.pnid,
+    `${due[0]?.outcome}; ${tpl[0]?.body.template?.name} [${params.join(' | ')}]`);
+
+  // STOP (in Hindi) is honoured: no template and no SMS; START resumes.
+  t = Date.now();
+  await waPost(waBody(WA.pnid, [waText(remindee, 'बंद करो')]));
+  const stopReply = await waReplies(mocks, remindee, t);
+  sql(`UPDATE orders SET reminder_sent_at = NULL, reminder_channel = NULL WHERE id = '${order?.id}'`);
+  const t2 = Date.now();
+  const blocked = mine(await runAt(23.5));
+  const consent = sql(`SELECT action, source FROM messaging_consent WHERE business_type = '${B}' ORDER BY created_at`);
+  check(n, 'STOP ("बंद करो") is confirmed and recorded; no reminder on WhatsApp or SMS afterwards', /unsubscribed/i.test(textOf(stopReply.at(-1) ?? {})) && blocked[0]?.outcome === 'skipped:opted_out'
+    && templateSends(mocks, remindee, t2).length === 0 && mocks.log.sms.filter(m => m.at >= t2).length === 0 && consent.some(c => c.action === 'opt_out' && /keyword/.test(c.source)),
+    `${blocked[0]?.outcome}; consent ${JSON.stringify(consent.map(c => c.action))}`);
+  t = Date.now();
+  await waPost(waBody(WA.pnid, [waText(remindee, 'START')]));
+  const startReply = await waReplies(mocks, remindee, t);
+  check(n, 'START opts back in', /subscribed again/i.test(textOf(startReply.at(-1) ?? {})) && sql(`SELECT action FROM messaging_consent WHERE customer_id_hashed = (SELECT customer_id_hashed FROM messaging_consent WHERE source LIKE 'keyword:START%' LIMIT 1) ORDER BY created_at DESC LIMIT 1`)[0]?.action === 'opt_in');
+
+  // Missed-call follow-up: a caller who hangs up without speaking gets the template on WhatsApp.
+  const off = templateSends(mocks, '919876543210', 0).length;   // the Exotel business has it off
+  await api('PUT', `/admin/whatsapp/business/${B}`, { missedCallFollowup: true });
+  t = Date.now();
+  const caller = '919876500077';
+  await placeCall(mocks, { carrier: 'exotel', number: '+918047100098', from: '09876500077', lines: [] });
+  let fu = [];
+  for (let i = 0; i < 30 && !fu.length; i++) { fu = templateSends(mocks, caller, t); if (!fu.length) await sleep(200); }
+  check(n, 'missed-call follow-up: template invites the caller to WhatsApp (and not for a business with it off)', fu.length === 1 && fu[0].body.template.name === MISSED && fu[0].body.template.components[0].parameters[0].text === 'WhatsApp Clinic' && off === 0, `${fu.length} sent; ${off} for the business with it off`);
+
+  // Owner Settings → WhatsApp.
+  const owner = await api('GET', `/admin/whatsapp/business/${B}`);
+  check(n, 'owner Settings → WhatsApp: number, switches, previews', owner.connected && owner.settings.reminders && owner.settings.missedCallFollowup && owner.ready.reminder && /WhatsApp Clinic/.test(owner.previews.reminder) && /STOP/.test(owner.previews.missed_call), JSON.stringify(owner.number));
+
+  // Number health: Graph fields, webhook health, template statuses; a drop to YELLOW emails the operator once.
+  const h1 = await api('POST', '/admin/whatsapp/health/refresh');
+  const num = h1.numbers.find(x => x.phoneNumberId === WA.pnid);
+  check(n, 'number health shows quality, tier, name status, verified name, last message and templates', num?.qualityRating === 'GREEN' && num.messagingLimitTier === 'TIER_1K' && num.nameStatus === 'APPROVED' && /Clinic/.test(num.verifiedName ?? '') && num.lastMessageAt > Date.now() - 600e3 && h1.templates.find(x => x.event === 'reminder')?.ready,
+    num ? `${num.qualityRating} ${num.messagingLimitTier} ${num.nameStatus} "${num.verifiedName}"` : 'missing');
+  mocks.wa.health.quality_rating = 'YELLOW';
+  t = Date.now();
+  await api('POST', '/admin/whatsapp/health/refresh');
+  await api('POST', '/admin/whatsapp/health/refresh');
+  mocks.wa.health.quality_rating = 'GREEN';
+  const alerts = mocks.log.email.filter(e => e.at >= t && e.to === SECRETS.ADMIN_NOTIFY_EMAIL && /quality YELLOW/.test(e.subject));
+  check(n, 'quality drop to YELLOW emails the operator once per number (two refreshes)', alerts.length === h1.numbers.length && new Set(alerts.map(a => a.subject)).size === alerts.length, `${alerts.length} email(s) for ${h1.numbers.length} number(s)`);
+
+  // Both cron triggers run (hourly: reminders + health; daily: retention, billing, dunning).
+  const hourly = await fetch(`${BASE}/__scheduled?cron=${encodeURIComponent('17 * * * *')}`);
+  const daily = await fetch(`${BASE}/__scheduled?cron=${encodeURIComponent('47 20 * * *')}`);
+  check(n, 'hourly and daily cron triggers both run', hourly.ok && daily.ok, `${hourly.status} / ${daily.status}`);
+}
+
 // ── Integrations: /admin/integrations against the stand-ins ──────────────────
 // Google Calendar has no keys here (Not set up); Exotel has no API key for its
 // live check (set up, not checked); every other service is set up and its
@@ -682,6 +810,7 @@ try {
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
+  if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
   if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);
 } catch (e) {
   console.error('\n✗ e2e run failed:', e.stack || e);
