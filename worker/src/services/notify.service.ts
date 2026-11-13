@@ -8,6 +8,10 @@ import { confirmBookingOnWhatsApp } from './whatsapp-api';
 import { resolveVoiceSettings } from './voice-language';
 import { hashId } from '../utils/identity';
 import { customerHashSalt } from '../config';
+import { sendSms } from './sms';
+import { eventChoices, type WaEvent } from './whatsapp-templates';
+import { formatWhen, sendEventMessage } from './whatsapp-outbound';
+import type { ReplyLanguage } from './whatsapp-api';
 
 // Tells people what the agent did: the business (email to the sector's
 // notify_email) and the caller (text to their callback number). Each channel
@@ -31,24 +35,6 @@ export async function sendEmail(env: Env, to: string, subject: string, text: str
     body: JSON.stringify({ from: env.EMAIL_FROM ?? 'Mogi <mogi@mogi.ai>', to: [to], subject, text, ...(html ? { html } : {}) }),
   });
   if (!res.ok) throw new Error(`Resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
-}
-
-async function sendSms(env: Env, to: string, body: string): Promise<void> {
-  const sid = env.TWILIO_ACCOUNT_SID;
-  if (!sid || !env.TWILIO_AUTH_TOKEN || !env.TWILIO_SMS_FROM) {
-    console.log('[notify] Twilio SMS not configured; skipping confirmation text');
-    return;
-  }
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    headers: {
-      Authorization: `Basic ${btoa(`${sid}:${env.TWILIO_AUTH_TOKEN}`)}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({ To: to, From: env.TWILIO_SMS_FROM, Body: body }),
-  });
-  if (!res.ok) throw new Error(`Twilio SMS ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
 const logFail = (what: string) => (e: any) => console.error(`[notify] ${what} failed`, e?.message || e);
@@ -85,6 +71,18 @@ export async function notifyBooking(env: Env, meta: SectorMeta | null | undefine
       : `${name}: you're booked for ${order.productName}${when}.${meta?.address ? ` ${meta.address}.` : ''}${meta?.phone ? ` Questions: ${meta.phone}.` : ''}`;
     // Empty unless the business has the DPDP notice on and a privacy URL set.
     text += privacyLinkSuffix(meta);
+    // Once the operator has picked a WhatsApp template for this event
+    // (Operator → WhatsApp), the customer gets it on WhatsApp, with this text
+    // as the SMS fallback; otherwise SMS as before.
+    const waEvent: WaEvent = event === 'cancelled' ? 'cancellation' : 'confirmation';
+    if ((await eventChoices(env).catch(() => ({} as Record<string, string>)))[waEvent]) {
+      const lang = resolveVoiceSettings(meta).language as ReplyLanguage;
+      const params = [name, order.productName, order.scheduledAt ? formatWhen(order.scheduledAt, lang) : '-'];
+      jobs.push(sendEventMessage(env, { event: waEvent, businessType: order.businessType, phone: order.callbackPhone, params, lang, smsText: text })
+        .then(r => console.log(`[notify] ${waEvent}: ${r}`)));
+      await Promise.all(jobs);
+      return;
+    }
     jobs.push(sendSms(env, order.callbackPhone, text).catch(logFail('confirmation text')));
     // WhatsApp too, via the approved template — only once WA_CONFIRMATION_TEMPLATE is set.
     if (env.WA_CONFIRMATION_TEMPLATE) {

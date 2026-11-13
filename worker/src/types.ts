@@ -221,6 +221,7 @@ export interface Env {
   WA_GRAPH_API_VERSION?: string;     // Optional override of the pinned Graph API version (e.g. "v24.0")
   WA_CONFIRMATION_TEMPLATE?: string; // Approved template (one body param {{1}}) for confirmations outside the 24 h window
   WA_TEMPLATE_LANGUAGE?: string;     // Optional template language code; default from the business language (en / hi)
+  WA_BUSINESS_ACCOUNT_ID?: string;   // WhatsApp Business Account (WABA) id: manages message templates
   // External calendars (services/calendar/). CALENDAR_TOKEN_KEY encrypts
   // stored refresh tokens and is required for any provider; each provider
   // then needs its own OAuth client. All secrets.

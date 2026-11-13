@@ -24,6 +24,9 @@ import { installProviderMock } from './utils/provider-mock';
 import { privacyAdminRouter } from './routes/privacy';
 import { featuresRouter, integrationsAdminRouter } from './routes/integrations';
 import { applyRetention } from './services/retention.service';
+import { whatsappAdminRouter } from './routes/whatsapp-admin';
+import { runReminders } from './services/whatsapp-outbound';
+import { refreshHealth } from './services/whatsapp-health';
 
 export { CallRelay } from './durable-objects/call-relay';
 
@@ -61,6 +64,7 @@ app.route('/admin/calendar', calendarAdminRouter);
 app.route('/admin/privacy', privacyAdminRouter);
 app.route('/admin/billing', billingAdminRouter);
 app.route('/admin/integrations', integrationsAdminRouter);
+app.route('/admin/whatsapp', whatsappAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/features', featuresRouter);
 app.route('/oauth',    oauthRouter);
@@ -107,23 +111,47 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 
-// Cron Triggers ([triggers] in wrangler.toml), once a day:
+// Cron Triggers ([triggers] in wrangler.toml).
+//
+// Daily (DAILY_CRON):
 // - data-retention sweep: a no-op until a business sets sectors.retention_days;
 // - month-end overage billing: idempotent (failed rows retry the next day) and
 //   only touches businesses with a billing plan;
 // - dunning: grace-period-over and trial-ending notices (once each).
-async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-  ctx.waitUntil(applyRetention(env).then(() => undefined)
-    .catch(e => console.error('[retention] sweep failed', e?.message || e)));
+//
+// Hourly (every other trigger):
+// - WhatsApp appointment reminders, 2–24 h ahead, for businesses that turned
+//   them on (a no-op otherwise); each booking is claimed before it is sent;
+// - WhatsApp number health (one Graph read per number) and quality alerts.
+export const DAILY_CRON = '47 20 * * *';
+
+async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  // An unknown cron string (e.g. a trigger added in the dashboard) runs the
+  // hourly jobs only; the daily ones are idempotent but shouldn't run hourly.
+  if (event.cron === DAILY_CRON) {
+    ctx.waitUntil(applyRetention(env).then(() => undefined)
+      .catch(e => console.error('[retention] sweep failed', e?.message || e)));
+    ctx.waitUntil(
+      closePeriod(env)
+        .then(r => { if (r.length) console.log('[billing] close-period', JSON.stringify(r)); })
+        .catch(e => console.error('[billing] close-period failed', e?.message || e)),
+    );
+    ctx.waitUntil(
+      runDunning(env)
+        .then(r => { if (r.length) console.log('[billing] dunning', JSON.stringify(r)); })
+        .catch(e => console.error('[billing] dunning failed', e?.message || e)),
+    );
+    return;
+  }
   ctx.waitUntil(
-    closePeriod(env)
-      .then(r => { if (r.length) console.log('[billing] close-period', JSON.stringify(r)); })
-      .catch(e => console.error('[billing] close-period failed', e?.message || e)),
+    runReminders(env)
+      .then(r => { if (r.length) console.log('[wa] reminders', JSON.stringify(r.map(x => x.outcome))); })
+      .catch(e => console.error('[wa] reminders failed', e?.message || e)),
   );
   ctx.waitUntil(
-    runDunning(env)
-      .then(r => { if (r.length) console.log('[billing] dunning', JSON.stringify(r)); })
-      .catch(e => console.error('[billing] dunning failed', e?.message || e)),
+    refreshHealth(env)
+      .then(r => { if (r.alerts.length) console.warn('[wa] quality alerts', JSON.stringify(r.alerts)); })
+      .catch(e => console.error('[wa] health refresh failed', e?.message || e)),
   );
 }
 

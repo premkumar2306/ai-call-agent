@@ -13,9 +13,10 @@
  *    MUST answer honestly. The system prompt includes an explicit rule for this.
  *    Do NOT claim to be human.
  *
- * 4. OPT-OUT MECHANISM: If a user sends "STOP", "Unsubscribe", or "Cancel", reply
- *    with a confirmation and do NOT send further messages. This handler checks for
- *    opt-out keywords before the agentic loop.
+ * 4. OPT-OUT MECHANISM: "STOP", "Unsubscribe", "बंद करो", "band karo" … (isOptOut)
+ *    record an opt-out (messaging_consent) and get a confirmation. No reminder,
+ *    follow-up or confirmation is sent to them again, on WhatsApp or SMS, until
+ *    they send START / शुरू. Messages they write are still answered.
  *
  * 5. NO PROHIBITED CONTENT: Do not send spam, misleading info, or illegal offers.
  *    The Mogi system prompt already prevents hallucinated prices/services.
@@ -52,9 +53,12 @@ import { resolveVoiceSettings } from '../services/voice-language';
 import { UsageMeter } from '../services/billing/meter';
 import { recordWhatsAppTurn } from '../services/billing/service';
 import {
-  cannedReply, downloadMedia, inboundMessages, markRead, maskId, noteInbound, sendText, setOptedOut,
+  cannedReply, downloadMedia, inboundMessages, markRead, maskId, noteInbound, sendText,
   utteranceOf, withinServiceWindow, type ReplyLanguage, type WaMessage,
 } from '../services/whatsapp-api';
+import { latestConsent, recordMessagingConsent } from '../services/whatsapp-outbound';
+import { applyStatusUpdate } from '../services/whatsapp-templates';
+import { notePnidInbound, refreshHealth } from '../services/whatsapp-health';
 import { hashId, getOrCreateCustomer } from '../utils/identity';
 import { getDefaultBusiness } from '../services/line-config';
 import type { Env, SectorMeta, SessionPayload } from '../types';
@@ -152,9 +156,23 @@ export async function resolveBusinessType(phoneNumberId: string, env: Env): Prom
 
 // Only a message that *is* an opt-out keyword counts. Matching the keyword
 // anywhere would unsubscribe "I need to cancel my appointment" or "can you
-// stop by Tuesday?" instead of handing them to the agent.
+// stop by Tuesday?" instead of handing them to the agent. "Cancel" on its own
+// is not an opt-out: after a reminder it means "cancel my appointment".
+// English, Hindi (Devanagari) and Hinglish.
+const OPT_OUT_RE = new RegExp('^\\s*(' + [
+  'stop', 'stop all', 'stop messages', 'unsubscribe', 'end', 'quit', 'opt[\\s-]?out',
+  'band', 'band karo', 'band karein', 'band kijiye', 'mat bhejo', 'mat bhejiye', 'rok do', 'roko',
+  'बंद', 'बंद करो', 'बंद करें', 'बंद कीजिए', 'बंद करे', 'मत भेजो', 'मत भेजें', 'मैसेज मत भेजो', 'रोको', 'रोकें', 'रोक दो', 'अनसब्सक्राइब', 'स्टॉप',
+].join('|') + ')\\s*[.!।]*\\s*$', 'iu');
+const OPT_IN_RE = /^\s*(start|unstop|subscribe|resume|shuru|shuru karo|शुरू|शुरू करो|शुरू करें|स्टार्ट)\s*[.!।]*\s*$/iu;
+
 export function isOptOut(text: string): boolean {
-  return /^\s*(stop|stop all|unsubscribe|cancel|end|quit|opt[\s-]?out)\s*[.!]*\s*$/i.test(text);
+  return OPT_OUT_RE.test(text.normalize('NFC'));
+}
+
+/** START (or शुरू) after an opt-out: business-initiated messages may resume. */
+export function isOptIn(text: string): boolean {
+  return OPT_IN_RE.test(text.normalize('NFC'));
 }
 
 // ── Voice notes ────────────────────────────────────────────────────────────────
@@ -238,6 +256,11 @@ whatsappRouter.post('/webhook', async (c) => {
   let payload: any;
   try { payload = JSON.parse(rawBody); } catch { return c.text('OK', 200); }
 
+  // Template approvals and number-quality changes (subscribe to these
+  // fields in Meta as well as "messages").
+  c.executionCtx.waitUntil(handleAccountUpdates(c.env, payload)
+    .catch(err => console.error('[wa] account update failed:', err?.message || err)));
+
   // Status-only webhooks (sent / delivered / read / failed) yield no messages.
   for (const { message, phoneNumberId } of inboundMessages(payload)) {
     if (!await claimMessage(c.env, message.id)) continue;
@@ -251,7 +274,25 @@ whatsappRouter.post('/webhook', async (c) => {
   return c.text('OK', 200);
 });
 
+async function handleAccountUpdates(env: Env, payload: any): Promise<void> {
+  if (payload?.object !== 'whatsapp_business_account') return;
+  for (const entry of Array.isArray(payload.entry) ? payload.entry : []) {
+    for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
+      if (change?.field === 'message_template_status_update') {
+        if (await applyStatusUpdate(env, change.value)) {
+          console.log(`[wa] template ${change.value?.message_template_name}/${change.value?.message_template_language}: ${change.value?.event}`);
+        }
+      } else if (change?.field === 'phone_number_quality_update') {
+        console.warn(`[wa] number quality update: ${change.value?.event} (${change.value?.current_limit ?? ''}); refreshing health`);
+        await refreshHealth(env);
+      }
+    }
+  }
+}
+
 async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string): Promise<void> {
+  // Webhook health (Operator → WhatsApp): when each number last got a message.
+  if (phoneNumberId) await notePnidInbound(env, phoneNumberId).catch(() => undefined);
   const businessType = await resolveBusinessType(phoneNumberId, env);
   if (!businessType) {
     console.warn(`[wa] message to unmapped phone_number_id ${maskId(phoneNumberId)}; map it in Operator → WhatsApp. Not replying.`);
@@ -288,16 +329,25 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
   if (said.kind === 'text') {
     utterance = said.text;
     if (isOptOut(utterance)) {
-      await setOptedOut(env, phoneHash, true);
+      await recordMessagingConsent(env, { businessType, phoneHash, action: 'opt_out', source: `keyword:${utterance.trim().slice(0, 30)}` });
       await reply(cannedReply('optedOut', lang));
+      return;
+    }
+    if (isOptIn(utterance) && (await latestConsent(env, businessType, phoneHash)) === 'opt_out') {
+      await recordMessagingConsent(env, { businessType, phoneHash, action: 'opt_in', source: `keyword:${utterance.trim().slice(0, 30)}` });
+      await reply(cannedReply('optedIn', lang));
       return;
     }
   } else {
     utterance = await transcribeVoiceNote(env, said.mediaId, lang);
     if (!utterance) { await reply(cannedReply('voiceFailed', lang)); return; }
   }
-  // Writing again after "STOP" is a new opt-in.
-  await setOptedOut(env, phoneHash, false);
+  // First contact is the customer's opt-in to hear from this business. After
+  // a STOP, chatting is still answered (they wrote first), but reminders and
+  // follow-ups stay off until they send START.
+  if ((await latestConsent(env, businessType, phoneHash)) === null) {
+    await recordMessagingConsent(env, { businessType, phoneHash, action: 'opt_in', source: 'whatsapp_inbound' });
+  }
 
   try {
     const account = await getOrCreateCustomer(env, phoneHash);

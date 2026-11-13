@@ -68,10 +68,10 @@ describe('verifyMetaSignature', () => {
 
 describe('isOptOut', () => {
   it('matches bare keywords only', () => {
-    for (const t of ['STOP', 'stop', ' Unsubscribe ', 'cancel', 'opt out', 'opt-out', 'Stop!']) expect(isOptOut(t)).toBe(true);
+    for (const t of ['STOP', 'stop', ' Unsubscribe ', 'opt out', 'opt-out', 'Stop!', 'बंद करो', 'बंद', 'Band karo', 'मत भेजो।']) expect(isOptOut(t)).toBe(true);
   });
   it('does not unsubscribe booking requests', () => {
-    for (const t of ['I need to cancel my appointment', 'can you stop by tuesday', 'cancel my oil change']) {
+    for (const t of ['I need to cancel my appointment', 'can you stop by tuesday', 'cancel my oil change', 'cancel', 'Cancel.', 'क्लिनिक कब बंद होता है?']) {
       expect(isOptOut(t)).toBe(false);
     }
   });
