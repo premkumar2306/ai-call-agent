@@ -9,6 +9,7 @@ import { billingState, validatePlanInput } from '../src/services/billing/service
 import { UsageMeter } from '../src/services/billing/meter';
 import { razorpayRouter, validateBillingDetails, billingRouter } from '../src/routes/billing';
 import type { Env } from '../src/types';
+import { createD1 } from './stubs/d1';
 
 const STARTER = { monthlyFeePaise: 299_900, includedMinutes: 300, overagePaisePerMinute: 700, gstRateBps: 1800 };
 
@@ -61,7 +62,7 @@ describe('POST /razorpay/webhook', () => {
     expect((await post(env({ RAZORPAY_WEBHOOK_SECRET: 's' }), { 'x-razorpay-signature': 'nope' })).status).toBe(401);
   });
   it('accepts a correctly signed event (non-subscription events are ignored)', async () => {
-    const res = await post(env({ RAZORPAY_WEBHOOK_SECRET: 's' }), { 'x-razorpay-signature': await hmacHex('s', body) });
+    const res = await post(env({ RAZORPAY_WEBHOOK_SECRET: 's', DB: createD1() as any }), { 'x-razorpay-signature': await hmacHex('s', body) });
     expect(res.status).toBe(200);
   });
 });

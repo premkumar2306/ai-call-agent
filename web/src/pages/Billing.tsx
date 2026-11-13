@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Badge, Button, Card, Notice, Status, Table } from '../components/ui';
+import CallCosts from '../components/CallCosts';
 
 // Billing tab: plan, minutes this month, GST-inclusive amounts, invoices and
 // the Razorpay Checkout button. Cost and margin come back from the API only
@@ -10,8 +11,19 @@ import { Badge, Button, Card, Notice, Status, Table } from '../components/ui';
 interface Props { sector: string; base: string; auth: Record<string, string> }
 
 interface Gst { amountPaise: number; gstPaise: number; totalPaise: number; cgst: number; sgst: number; igst: number }
+interface TaxInvoice { id: string; number: string; issuedAt: number; taxablePaise: number; cgst: number; sgst: number; igst: number; totalPaise: number; refundedPaise: number }
+interface OwnerPlan { id: string; name: string; monthlyFeePaise: number; includedMinutes: number; overagePaisePerMinute: number; gstRateBps: number; checkoutReady: boolean }
 interface Summary {
-  state: 'off' | 'trialing' | 'active' | 'past_due' | 'cancelled' | 'unpaid';
+  state: 'off' | 'trialing' | 'active' | 'past_due' | 'paused' | 'cancelled' | 'unpaid';
+  nextAction: 'subscribe' | 'update_payment' | 'upgrade' | null;
+  trialDaysLeft: number | null;
+  nextCharge: { at: number; amountPaise: number } | null;
+  payment: null | { lastStatus: string | null; lastAt: number | null; lastError: string | null; pastDueSince: number | null; graceEndsAt: number | null };
+  overageAllowed: boolean;
+  cancelAtPeriodEnd: boolean;
+  pendingPlan: { id: string; name: string } | null;
+  upgradeTo: { id: string; name: string } | null;
+  taxInvoices: TaxInvoice[];
   razorpayConfigured: boolean;
   razorpayKeyId: string | null;
   plan: null | {
@@ -48,6 +60,7 @@ const STATE_LABEL: Record<Summary['state'], [string, 'success' | 'warning' | 'da
   trialing: ['Free trial', 'success'],
   active: ['Subscribed', 'success'],
   past_due: ['Payment failed', 'danger'],
+  paused: ['Paused', 'warning'],
   cancelled: ['Cancelled', 'danger'],
   unpaid: ['Trial ended — subscribe to continue billing', 'warning'],
 };
@@ -55,6 +68,7 @@ const STATE_LABEL: Record<Summary['state'], [string, 'success' | 'warning' | 'da
 const INVOICE_STATUS: Record<string, string> = {
   no_overage: 'Within plan', trial: 'Free trial', billed: 'Added to next invoice',
   unbilled: 'Not charged (no active subscription)', failed: 'Failed — retried daily',
+  deferred: 'Waiting for payment — retried daily', waived: 'Not charged (payment overdue)', billing: 'Being added…',
 };
 
 function loadCheckout(): Promise<void> {
@@ -66,6 +80,14 @@ function loadCheckout(): Promise<void> {
     s.onerror = () => reject(new Error('Could not load Razorpay Checkout'));
     document.body.appendChild(s);
   });
+}
+
+const day = (unix: number) => new Date(unix * 1000).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
+
+// Razorpay Checkout draws in its own frame: it needs a real colour, not a CSS variable.
+function accentHex(): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  return /^#[0-9a-f]{3,8}$/i.test(v) ? v : '#4f46e5';
 }
 
 function GstLines({ g, rateBps }: { g: Gst; rateBps: number }) {
@@ -84,6 +106,7 @@ export default function Billing({ sector, base, auth }: Props) {
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<Record<string, string>>({});
+  const [ownerPlans, setOwnerPlans] = useState<OwnerPlan[]>([]);
 
   const headers = { ...auth, 'Content-Type': 'application/json' };
   const signedIn = Object.keys(auth).length > 0;
@@ -105,6 +128,7 @@ export default function Billing({ sector, base, auth }: Props) {
         state: a?.state ?? '', postalCode: a?.postalCode ?? '',
       });
       if (d.cost) call('/admin/billing/plans').then(setPlans).catch(() => {});
+      if (d.plan) call(`/billing/${encodeURIComponent(sector)}/plans`).then(setOwnerPlans).catch(() => {});
     } catch (e: any) {
       setMsg({ text: e.message, ok: false });
     }
@@ -124,28 +148,56 @@ export default function Billing({ sector, base, auth }: Props) {
     finally { setBusy(false); }
   };
 
+  // Razorpay Checkout: success → the server verifies the signature; failure
+  // shows Razorpay's reason; closing it charges nothing.
   const subscribe = () => run(async () => {
-    const { subscriptionId, keyId } = await call(`/billing/${encodeURIComponent(sector)}/subscribe`, { method: 'POST' });
+    const start = await call(`/billing/${encodeURIComponent(sector)}/subscribe`, { method: 'POST' });
     await loadCheckout();
-    await new Promise<void>((resolve, reject) => {
+    const outcome = await new Promise<'paid' | 'closed'>((resolve, reject) => {
       const rzp = new window.Razorpay!({
-        key: keyId,
-        subscription_id: subscriptionId,
+        key: start.keyId,
+        subscription_id: start.subscriptionId,
         name: 'Avery AI receptionist',
-        description: data?.plan ? `${data.plan.name} plan — ${inr(data.plan.monthly.totalPaise)}/month incl. GST` : undefined,
-        prefill: { email: data?.account?.billingEmail ?? undefined },
+        description: start.description,
+        prefill: start.prefill,
         notes: { business_type: sector },
-        theme: { color: 'var(--accent)' },
+        theme: { color: accentHex() },
         handler: (r: Record<string, string>) => {
           call(`/billing/${encodeURIComponent(sector)}/confirm`, { method: 'POST', body: JSON.stringify(r) })
-            .then(() => resolve(), reject);
+            .then(() => resolve('paid'), reject);
         },
-        modal: { ondismiss: () => reject(new Error('Checkout closed')) },
+        modal: { ondismiss: () => resolve('closed') },
       });
-      rzp.on('payment.failed', (r: any) => reject(new Error(r?.error?.description ?? 'Payment failed')));
+      rzp.on('payment.failed', (r: any) => reject(new Error(`Payment failed: ${r?.error?.description ?? 'please try another method'}`)));
       rzp.open();
     });
-  }, 'Subscription set up. Razorpay will confirm it shortly.');
+    if (outcome === 'closed') throw new Error('Checkout closed. Nothing was charged.');
+  }, 'Subscribed. Razorpay will confirm the payment shortly.');
+
+  const updatePayment = () => run(async () => {
+    const r = await call(`/billing/${encodeURIComponent(sector)}/update-payment`, { method: 'POST' });
+    if (!r.url) throw new Error('Razorpay has no payment page for this subscription: use Subscribe to set up payment again.');
+    window.open(r.url, '_blank', 'noopener');
+  }, 'Razorpay\'s payment page opened in a new tab. This page updates once the payment goes through.');
+
+  const changePlan = (p: OwnerPlan) => run(async () => {
+    const r = await call(`/billing/${encodeURIComponent(sector)}/change-plan`, { method: 'POST', body: JSON.stringify({ planId: p.id }) });
+    setMsg({ ok: true, text: r.needsCheckout ? `Switched to ${p.name}. Subscribe again to set up payment for the new amount.`
+      : r.effective === 'cycle_end' ? `You'll move to ${p.name} at the end of this billing period.` : `You're now on ${p.name}.` });
+  });
+
+  const cancel = () => {
+    if (!window.confirm('Cancel your subscription? It stays active until the end of the period you have paid for. Your assistant keeps answering calls until then.')) return;
+    return run(() => call(`/billing/${encodeURIComponent(sector)}/cancel`, { method: 'POST' }), 'Subscription cancelled at the end of this period.');
+  };
+
+  const openInvoice = (id: string) => run(async () => {
+    const res = await fetch(`${base}/billing/${encodeURIComponent(sector)}/invoices/${encodeURIComponent(id)}`, { headers: auth });
+    if (!res.ok) throw new Error('Could not open the invoice');
+    const url = URL.createObjectURL(new Blob([await res.text()], { type: 'text/html' }));
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  });
 
   const saveDetails = () => run(() => call(`/billing/${encodeURIComponent(sector)}/details`, {
     method: 'PUT', body: JSON.stringify(details),
@@ -173,7 +225,7 @@ export default function Billing({ sector, base, auth }: Props) {
   const { plan, usage, account } = data;
   const [stateLabel, stateTone] = STATE_LABEL[data.state];
   const pct = plan && plan.includedMinutes ? Math.min(100, (usage.minutes / plan.includedMinutes) * 100) : 0;
-  const canSubscribe = plan && ['trialing', 'unpaid', 'cancelled', 'past_due'].includes(data.state);
+  const action = data.nextAction;
   const field = (k: string, label: string, placeholder = '') => (
     <div className="field">
       <label htmlFor={`bill-${k}`}>{label}</label>
@@ -182,19 +234,29 @@ export default function Billing({ sector, base, auth }: Props) {
     </div>
   );
   const checkoutBlocked = !data.razorpayConfigured ? 'Online payment isn\'t switched on for this service yet (Razorpay keys).' : plan && !plan.checkoutReady ? 'This plan hasn\'t been set up in Razorpay yet.' : '';
+  const pay = data.payment;
+  const statusLine =
+    data.state === 'trialing' && account?.trialEndsAt ? `Free trial: ${data.trialDaysLeft} day${data.trialDaysLeft === 1 ? '' : 's'} left (until ${day(account.trialEndsAt)}). Nothing is charged before then.`
+    : data.state === 'past_due' ? `We couldn't collect your payment${pay?.lastError ? ` (${pay.lastError})` : ''}. Your assistant keeps answering every call.${pay?.graceEndsAt && data.overageAllowed ? ` Please update payment before ${day(pay.graceEndsAt)}; after that, minutes beyond your plan are paused.` : ' Minutes beyond your plan are paused until payment goes through.'}`
+    : data.state === 'unpaid' ? 'Your free trial has ended. Subscribe to keep your plan.'
+    : data.cancelAtPeriodEnd && account?.currentPeriodEnd ? `Cancelled: active until ${day(account.currentPeriodEnd)}.`
+    : data.state === 'cancelled' ? 'Your subscription has ended. Subscribe again any time.'
+    : undefined;
+  const actionButton =
+    action === 'subscribe' ? <Button disabled={busy || !!checkoutBlocked} title={checkoutBlocked} onClick={subscribe}>Subscribe</Button>
+    : action === 'update_payment' ? <Button disabled={busy} onClick={updatePayment}>Update payment</Button>
+    : action === 'upgrade' && data.upgradeTo ? <Button disabled={busy} onClick={() => { const p = ownerPlans.find(x => x.id === data.upgradeTo!.id); if (p) changePlan(p); }}>Upgrade to {data.upgradeTo.name}</Button>
+    : null;
+  const subscribed = ['active', 'past_due'].includes(data.state);
 
   return (
     <>
       <Status msg={msg} />
 
       <Card
-        title={<>{plan ? `${plan.name} plan` : 'No plan'} <Badge tone={stateTone}>{stateLabel}</Badge></>}
-        description={data.state === 'trialing' && account?.trialEndsAt ? `Free until ${new Date(account.trialEndsAt * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.` : undefined}
-        actions={canSubscribe && (
-          <Button disabled={busy || !!checkoutBlocked} title={checkoutBlocked} onClick={subscribe}>
-            {data.state === 'past_due' ? 'Update payment' : 'Subscribe with Razorpay'}
-          </Button>
-        )}
+        title={<>{plan ? `${plan.name} plan` : 'No plan'} <Badge tone={stateTone}>{data.cancelAtPeriodEnd && data.state === 'active' ? 'Cancels at period end' : stateLabel}</Badge></>}
+        description={statusLine}
+        actions={actionButton}
       >
         {plan ? (
           <div className="stack-sm">
@@ -202,7 +264,14 @@ export default function Billing({ sector, base, auth }: Props) {
             <p className="muted small">{inr(plan.monthly.amountPaise)} + {plan.gstRateBps / 100}% GST ({inr(plan.monthly.gstPaise)})</p>
             <GstLines g={plan.monthly} rateBps={plan.gstRateBps} />
             <p className="muted small">{plan.includedMinutes} minutes included, then {inr(plan.overagePaisePerMinute)}/minute + GST. UPI AutoPay or card.</p>
-            {canSubscribe && checkoutBlocked && <p className="muted small">{checkoutBlocked}</p>}
+            <dl className="kv">
+              <dt>Next charge</dt>
+              <dd>{data.nextCharge ? `${inr(data.nextCharge.amountPaise)} on ${day(data.nextCharge.at)}${data.pendingPlan ? ` (${data.pendingPlan.name})` : ''}, plus any extra minutes` : '—'}</dd>
+              <dt>Last payment</dt>
+              <dd>{pay?.lastStatus === 'failed' ? <Badge tone="danger">Failed</Badge> : pay?.lastStatus === 'captured' ? <Badge tone="success">Paid</Badge> : '—'}{pay?.lastAt ? ` ${day(pay.lastAt)}` : ''}</dd>
+              {data.pendingPlan && <><dt>Plan change</dt><dd>Moves to {data.pendingPlan.name} at the end of this period</dd></>}
+            </dl>
+            {action === 'subscribe' && checkoutBlocked && <p className="muted small">{checkoutBlocked}</p>}
           </div>
         ) : (
           <p className="muted">Billing is off for this business: calls are not charged.</p>
@@ -266,6 +335,54 @@ export default function Billing({ sector, base, auth }: Props) {
         </Card>
       )}
 
+      {data.cost && <CallCosts base={base} auth={auth} sector={sector} />}
+
+      {plan && ownerPlans.length > 1 && (
+        <Card title="Change plan" description={subscribed ? 'Upgrades start now (Razorpay charges the difference). Downgrades start at the end of this billing period.' : 'Pick the plan you want before you subscribe.'}>
+          <div className="plan-grid">
+            {ownerPlans.map(p => {
+              const current = p.id === plan.id && !data.pendingPlan;
+              return (
+                <div key={p.id} className={`plan-option${p.id === plan.id ? ' current' : ''}`}>
+                  <p className="strong">{p.name}</p>
+                  <p><span className="price">{inr(Math.round(p.monthlyFeePaise * (1 + p.gstRateBps / 10_000)))}</span> <span className="muted small">/ month incl. GST</span></p>
+                  <p className="muted small">{p.includedMinutes} min included · then {inr(p.overagePaisePerMinute)}/min + GST</p>
+                  {current ? <Badge tone="accent">Current plan</Badge>
+                    : <Button variant="secondary" size="sm" disabled={busy || (subscribed && !p.checkoutReady)} onClick={() => changePlan(p)}>
+                        {p.id === plan.id ? 'Keep this plan' : p.monthlyFeePaise > (ownerPlans.find(x => x.id === plan.id)?.monthlyFeePaise ?? 0) ? 'Upgrade' : 'Downgrade'}
+                      </Button>}
+                </div>
+              );
+            })}
+          </div>
+          {subscribed && !data.cancelAtPeriodEnd && (
+            <div className="form-actions"><Button variant="secondary" disabled={busy} onClick={cancel}>Cancel subscription</Button></div>
+          )}
+        </Card>
+      )}
+      {plan && ownerPlans.length <= 1 && subscribed && !data.cancelAtPeriodEnd && (
+        <Card title="Subscription">
+          <div className="form-actions"><Button variant="secondary" disabled={busy} onClick={cancel}>Cancel subscription</Button></div>
+        </Card>
+      )}
+
+      <Card title="Invoices" description={data.supplierGstin ? `GST tax invoices for each payment. Supplier GSTIN ${data.supplierGstin}${account?.gstin ? ` · Your GSTIN ${account.gstin}` : ''}` : 'GST tax invoices for each payment.'}>
+        {data.taxInvoices.length === 0 ? <p className="muted">No payments yet. An invoice appears here (and is emailed) after each payment.</p> : (
+          <Table head={['Invoice', 'Date', 'Taxable', 'GST', 'Total', '']}>
+            {data.taxInvoices.map(t => (
+              <tr key={t.id}>
+                <td data-label="Invoice">{t.number}</td>
+                <td data-label="Date">{day(t.issuedAt)}</td>
+                <td data-label="Taxable">{inr(t.taxablePaise)}</td>
+                <td data-label="GST">{t.igst > 0 ? `IGST ${inr(t.igst)}` : `CGST ${inr(t.cgst)} + SGST ${inr(t.sgst)}`}</td>
+                <td data-label="Total">{inr(t.totalPaise)}{t.refundedPaise > 0 && <span className="muted small"> (refunded {inr(t.refundedPaise)})</span>}</td>
+                <td data-label=""><Button variant="secondary" size="sm" disabled={busy} onClick={() => openInvoice(t.id)}>Download</Button></td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
+
       <Card title="Billing details (GST)" description="Shown on your invoices.">
         <div className="form-grid">
           {field('legalName', 'Legal name')}
@@ -280,9 +397,8 @@ export default function Billing({ sector, base, auth }: Props) {
         <div className="form-actions"><Button busy={busy} onClick={saveDetails}>Save details</Button></div>
       </Card>
 
-      <Card title="Extra-minute invoices"
-        description={data.supplierGstin ? `Supplier GSTIN ${data.supplierGstin}${account?.gstin ? ` · Your GSTIN ${account.gstin}` : ''}` : undefined}>
-        {data.invoices.length === 0 ? <p className="muted">No closed months yet. The monthly plan fee is invoiced by Razorpay.</p> : (
+      <Card title="Extra minutes by month" description="Minutes beyond your plan are added to the next payment (and its invoice).">
+        {data.invoices.length === 0 ? <p className="muted">No closed months yet.</p> : (
           <Table head={['Month', 'Minutes', 'Extra', 'Amount', 'GST', 'Total', 'Status']}>
             {data.invoices.map(i => (
               <tr key={i.period}>

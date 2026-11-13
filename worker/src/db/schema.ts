@@ -322,6 +322,14 @@ export const billingAccounts = sqliteTable('billing_accounts', {
   country:                text('country').notNull().default('IN'),
   alert80Period:          text('alert_80_period'),
   alert100Period:         text('alert_100_period'),
+  // 0019: dunning, plan changes, cancellation
+  pastDueSince:           integer('past_due_since'),
+  lastPaymentStatus:      text('last_payment_status'),
+  lastPaymentAt:          integer('last_payment_at'),
+  lastPaymentError:       text('last_payment_error'),
+  cancelAtPeriodEnd:      integer('cancel_at_period_end', { mode: 'boolean' }).notNull().default(false),
+  pendingPlanId:          text('pending_plan_id'),
+  lastNotice:             text('last_notice'),
   createdAt:              integer('created_at').notNull(),
   updatedAt:              integer('updated_at').notNull(),
 }, (t) => [
@@ -365,7 +373,7 @@ export const billingInvoices = sqliteTable('billing_invoices', {
   overagePaise:    integer('overage_paise').notNull(),
   gstPaise:        integer('gst_paise').notNull(),
   totalPaise:      integer('total_paise').notNull(),
-  status:          text('status').notNull(),   // no_overage | trial | billed | unbilled | failed
+  status:          text('status').notNull(),   // no_overage | trial | billed | deferred (payment overdue, retried) | waived (restricted) | unbilled | failed
   razorpayAddonId: text('razorpay_addon_id'),
   error:           text('error'),
   createdAt:       integer('created_at').notNull(),
@@ -373,6 +381,42 @@ export const billingInvoices = sqliteTable('billing_invoices', {
 }, (t) => [
   uniqueIndex('idx_billing_invoices_business_period').on(t.businessType, t.period),
 ]);
+
+// 0019: GST tax invoice per payment collected, numbered per financial year.
+export const taxInvoices = sqliteTable('tax_invoices', {
+  id:                text('id').primaryKey(),
+  invoiceNumber:     text('invoice_number').notNull(),
+  businessType:      text('business_type').notNull(),
+  razorpayInvoiceId: text('razorpay_invoice_id'),
+  razorpayPaymentId: text('razorpay_payment_id'),
+  issuedAt:          integer('issued_at').notNull(),
+  periodStart:       integer('period_start'),
+  periodEnd:         integer('period_end'),
+  linesJson:         text('lines_json').notNull(),
+  taxablePaise:      integer('taxable_paise').notNull(),
+  cgstPaise:         integer('cgst_paise').notNull().default(0),
+  sgstPaise:         integer('sgst_paise').notNull().default(0),
+  igstPaise:         integer('igst_paise').notNull().default(0),
+  totalPaise:        integer('total_paise').notNull(),
+  gstRateBps:        integer('gst_rate_bps').notNull(),
+  supplierGstin:     text('supplier_gstin'),
+  customerGstin:     text('customer_gstin'),
+  customerJson:      text('customer_json'),
+  placeOfSupply:     text('place_of_supply'),
+  refundedPaise:     integer('refunded_paise').notNull().default(0),
+  emailedAt:         integer('emailed_at'),
+  createdAt:         integer('created_at').notNull(),
+}, (t) => [
+  uniqueIndex('idx_tax_invoices_number').on(t.invoiceNumber),
+  uniqueIndex('idx_tax_invoices_rzp').on(t.razorpayInvoiceId),
+  index('idx_tax_invoices_business').on(t.businessType, t.issuedAt),
+  index('idx_tax_invoices_payment').on(t.razorpayPaymentId),
+]);
+
+export const invoiceCounters = sqliteTable('invoice_counters', {
+  fy:   text('fy').primaryKey(),
+  last: integer('last').notNull(),
+});
 
 export const razorpayEvents = sqliteTable('razorpay_events', {
   id:         text('id').primaryKey(),

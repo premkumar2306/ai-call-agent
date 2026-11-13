@@ -425,3 +425,14 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 @media (min-width: 861px) { .app { background: linear-gradient(to right, var(--surface) calc(var(--sidebar-w) - 1px), var(--border) 0 var(--sidebar-w), var(--bg) 0); } }
 .card.card-flush { padding: 0; }
 @media (max-width: 640px) { .chat-box { height: 320px; } .feed-when { margin-left: 0; width: 100%; } }
+.table tr.total-row td { border-top: 2px solid var(--border-strong); font-weight: 650; color: var(--text-strong); }
+.input-auto { width: auto; }
+.table td.ok { color: var(--success); }
+.table td.bad { color: var(--danger); }
+@media (max-width: 640px) { .table.cards tr.total-row td { border-top: 0; } }
+
+/* Billing: plan picker */
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--s3); }
+.plan-option { border: 1px solid var(--border); border-radius: var(--radius, 10px); padding: var(--s3); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; background: var(--surface); }
+.plan-option.current { border-color: var(--accent); }
+.plan-option .price { font-size: 20px; }

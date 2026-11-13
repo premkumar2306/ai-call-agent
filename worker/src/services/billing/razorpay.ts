@@ -51,7 +51,7 @@ export function verifyCheckoutSignature(env: Env, paymentId: string, subscriptio
   return verifyRazorpaySignature(`${paymentId}|${subscriptionId}`, signature, env.RAZORPAY_KEY_SECRET);
 }
 
-async function call<T>(env: Env, method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+async function call<T>(env: Env, method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<T> {
   if (!razorpayConfigured(env)) throw new RazorpayNotConfigured();
   const res = await fetch(`${API}${path}`, {
     method,
@@ -66,7 +66,8 @@ async function call<T>(env: Env, method: 'GET' | 'POST', path: string, body?: un
   if (!res.ok) {
     let detail = text.slice(0, 300);
     try { detail = JSON.parse(text)?.error?.description ?? detail; } catch { /* not JSON */ }
-    throw new Error(`Razorpay ${method} ${path} → ${res.status}: ${detail}`);
+    // 4xx keeps its status (the owner can act on the message); anything else is a 502.
+    throw Object.assign(new Error(`Razorpay: ${detail}`), { status: res.status >= 400 && res.status < 500 ? 409 : 502 });
   }
   return JSON.parse(text) as T;
 }
@@ -75,6 +76,12 @@ export interface RazorpayPlan { id: string }
 export interface RazorpaySubscription {
   id: string; status: string; short_url?: string; plan_id: string;
   current_start?: number | null; current_end?: number | null; customer_id?: string | null;
+  charge_at?: number | null; start_at?: number | null; has_scheduled_changes?: boolean;
+}
+export interface RazorpayInvoice {
+  id: string; subscription_id?: string | null; payment_id?: string | null; status?: string;
+  amount?: number; amount_paid?: number; billing_start?: number | null; billing_end?: number | null; paid_at?: number | null;
+  line_items?: Array<{ name?: string; description?: string | null; amount?: number; unit_amount?: number; net_amount?: number; quantity?: number; type?: string }>;
 }
 export interface RazorpayAddon { id: string }
 
@@ -113,5 +120,29 @@ export function createAddon(env: Env, subscriptionId: string, a: { name: string;
   return call<RazorpayAddon>(env, 'POST', `/subscriptions/${encodeURIComponent(subscriptionId)}/addons`, {
     item: { name: a.name, description: a.description, amount: a.amountPaise, currency: a.currency },
     quantity: 1,
+  });
+}
+
+/** GET /invoices/:id — a subscription charge's invoice (links a payment to its subscription). */
+export function fetchInvoice(env: Env, id: string) {
+  return call<RazorpayInvoice>(env, 'GET', `/invoices/${encodeURIComponent(id)}`);
+}
+
+/**
+ * POST /subscriptions/:id/cancel. `atCycleEnd` keeps the subscription active
+ * until the paid-for cycle ends (status stays active, then → cancelled).
+ */
+export function cancelSubscription(env: Env, id: string, atCycleEnd: boolean) {
+  return call<RazorpaySubscription>(env, 'POST', `/subscriptions/${encodeURIComponent(id)}/cancel`, { cancel_at_cycle_end: atCycleEnd ? 1 : 0 });
+}
+
+/**
+ * PATCH /subscriptions/:id — change plan. `now` (upgrade) or `cycle_end`
+ * (downgrade). Razorpay only allows this for card mandates; a UPI AutoPay
+ * subscription is refused (4xx), and the owner is told to cancel and resubscribe.
+ */
+export function updateSubscriptionPlan(env: Env, id: string, planId: string, when: 'now' | 'cycle_end') {
+  return call<RazorpaySubscription>(env, 'PATCH', `/subscriptions/${encodeURIComponent(id)}`, {
+    plan_id: planId, schedule_change_at: when, customer_notify: 1,
   });
 }

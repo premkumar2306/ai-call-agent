@@ -247,7 +247,7 @@ signed webhook → stream token → media frames in the carrier's format → pla
 | US business over **Twilio**, English | signed webhook, greeting, **no** AI notice, µ-law frames, Deepgram µ-law 8 kHz, Cartesia µ-law 8 kHz, spoken booking saved, transfer → `<Dial>` staff, call metered |
 | Indian business over **Exotel**, English | as above, plus the AI/recording notice **before** the greeting, Exotel PCM16 framing (multiples of 320 bytes, ≤100 000), Passthru → Connect applet dials staff, consent audit row |
 | Indian business over **Plivo**, Hindi on **Sarvam** | Hindi notice and greeting, Sarvam STT gets 16 kHz PCM `hi-IN`, Sarvam TTS asked for µ-law 8 kHz `hi-IN`, booking in Hindi, transfer → `<Dial><Number>` |
-| **Razorpay** | plan synced, subscription created, badly signed webhook refused, signed webhook → account `active` |
+| **Razorpay** billing | trial on the default plan; plan synced (fee incl. GST); Checkout prefilled, bad payment signature refused, good one → `authenticated`; badly signed webhook refused; `subscription.activated` → active (redelivery a no-op); `payment.failed` → past due, one dunning email via Resend, Update payment link; `subscription.halted` → overage paused; recovery; month-end overage → one add-on incl. GST, not repeated; `invoice.paid` → numbered GST tax invoice (CGST+SGST), downloadable and emailed; cancel at period end → `cancelled`; US business stays billing-off |
 | **WhatsApp** (Meta Cloud API) | verification handshake (right token → challenge, wrong → 403), badly signed POST refused, Indian business on a mapped `phone_number_id`: question → reply from that number to the customer, DPDP notice first and only once, mark-as-read, chat booking saved with the WhatsApp number as callback, voice note → Deepgram → answer, retried webhook answered once, status-only webhook → no reply, unmapped number → no reply, Hindi business → Hindi notice and reply, one billed conversation with tokens, one consent row |
 
 The redirect is `PROVIDER_MOCK_URL` (`src/utils/provider-mock.ts`); it is ignored whenever
@@ -611,30 +611,56 @@ curl -X POST $W/admin/billing/close-period -H "$H" -d '{"period":"2026-10"}'  # 
 Razorpay plans can't be edited: after changing a price, call `/razorpay` again; new
 subscriptions use the new plan.
 
-**Owner flow** (admin **Billing** tab, `/billing/<business>`): plan and status, minutes
-this month against the plan, amounts with 18% GST (CGST+SGST when the business's
-GSTIN is in the same state as `BILLING_SUPPLIER_GSTIN`, otherwise IGST), GSTIN and
-billing address, past overage invoices, and **Subscribe with Razorpay**, which
-creates a subscription (first charge after the trial) and opens Checkout for UPI
-AutoPay or card. Cost and margin per minute are shown to the operator only.
+**Setup for the owner of the deployment** (KYC, keys, webhook events, GSTIN, plans, a test-mode
+run, going live): [docs/razorpay-setup.md](docs/razorpay-setup.md).
 
+**Owner flow** (Settings → **Billing**, `/billing/<business>`): plan and status, trial days
+left, minutes this month against the plan, next charge, last payment, GST-inclusive
+amounts, GST tax invoices to download, and one next action: **Subscribe** (Razorpay
+Checkout for UPI AutoPay or card; the first charge waits for the trial's end; the
+payment signature is verified on the server), **Update payment** (Razorpay's hosted
+page) or **Upgrade**. Owners can upgrade (now), downgrade (at the cycle end) and cancel
+(at the end of the paid period). Cost and margin are shown to the operator only, who
+also gets an all-businesses status table and cost/revenue/margin per call.
+
+- **States:** Razorpay's `created → authenticated → active`, then `pending`/`halted`
+  (failed charges), `paused`, `cancelled`/`completed`. Shown as Trial, Subscribed,
+  Payment failed, Paused, Cancelled or Trial ended (`billingState()` in `service.ts`).
+- **Dunning** (`lifecycle.ts`): a failed payment emails the owner once and starts a
+  grace period (`BILLING_GRACE_DAYS`, default 7). After it, or at once when halted,
+  the account is *restricted*: **the assistant keeps answering every call**; only minutes
+  beyond the plan stop being charged (`entitlements()`). The daily cron also sends a
+  "trial ends in 3 days" reminder and a "grace period over" notice, once each.
 - **Soft limits:** the owner (`billing_email`, else `sectors.notify_email`) is emailed
   once a month at 80% and 100% of the included minutes. Calls are never refused or
   cut off.
-- **Overage:** a daily cron (`[triggers]` in `wrangler.toml`) closes last month: minutes
+- **Overage:** the daily cron (`[triggers]` in `wrangler.toml`) closes last month: minutes
   over the plan × rate + GST become a Razorpay add-on on the subscription, charged
-  with the next monthly invoice. One `billing_invoices` row per business per month;
-  `failed` rows retry daily. With no active subscription the row is `unbilled` for
-  the operator to invoice by hand.
-- **Webhook:** Razorpay Dashboard → Webhooks → URL `https://<worker-host>/razorpay/webhook`,
-  a secret (= `RAZORPAY_WEBHOOK_SECRET`), events `subscription.*`. The raw body's
-  HMAC-SHA256 (`X-Razorpay-Signature`) is checked before parsing; production rejects
-  every webhook while the secret is unset. Events are de-duplicated on
-  `X-Razorpay-Event-Id`, and the subscription is re-read from the API so out-of-order
-  deliveries can't roll its status back.
+  with the next monthly payment. One `billing_invoices` row per business per month,
+  claimed before Razorpay is called so an add-on is never created twice. `failed` and
+  `deferred` (payment overdue, in grace) rows retry daily. `waived` means the account was
+  restricted; `unbilled` means there was no subscription.
+- **Tax invoices** (`invoices.ts`): one per payment (`invoice.paid`), numbered
+  `AVY/<FY>/000001` with no gaps per financial year, GST backed out of the amount paid,
+  CGST+SGST in `BILLING_SUPPLIER_GSTIN`'s state and IGST otherwise. Each is emailed and
+  has a printable HTML view (`GET /billing/<business>/invoices/<id>`). Refunds made in
+  the Dashboard show on the invoice (read-only).
+- **Webhook:** `https://<worker-host>/razorpay/webhook`, secret = `RAZORPAY_WEBHOOK_SECRET`,
+  events `subscription.*`, `payment.captured`, `payment.failed`, `invoice.paid`,
+  `refund.processed`. The raw body's HMAC-SHA256 (`X-Razorpay-Signature`) is checked
+  before parsing, and production rejects every webhook while the secret is unset. Each
+  event id is claimed before it is applied, and released if applying fails, so the
+  5xx makes Razorpay retry. The subscription is re-read from the API, so out-of-order
+  deliveries can't roll its status back. A payment event older than the last one
+  recorded is ignored.
+- **Default plan:** only Indian businesses (`country_code = IN`) are put on it at signup.
 
-Access goes through `resolveBillingViewer()` in `src/routes/billing.ts`, which today
-accepts only the operator's `X-Admin-Key`; owner logins plug in there.
+Access goes through `resolveBillingViewer()` in `src/routes/billing.ts`: the operator's
+`X-Admin-Key`, or a signed-in owner of that business.
+
+Tables: `drizzle/0016_billing.sql` (plans, accounts, usage, month rows, webhook ids) and
+`drizzle/0019_billing_prod.sql` (dunning and plan-change columns on `billing_accounts`,
+`tax_invoices`, `invoice_counters`). Both are additive.
 
 ### Database schema change
 

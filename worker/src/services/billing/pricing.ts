@@ -136,7 +136,7 @@ export interface CostRates {
 
 export const DEFAULT_COST_RATES: CostRates = {
   usdToInr: 88,
-  telephonyPerMinute: { twilio: 0.0085, exotel: 0.006, plivo: 0.006, default: 0.0085 },
+  telephonyPerMinute: { twilio: 0.0085, exotel: 0.006, plivo: 0.006, web: 0, default: 0.0085 }, // web: in-app test calls, no phone line
   sttPerSecond: 0.0077 / 60,     // Deepgram nova-3 streaming
   ttsPerChar: 0.00003,           // Cartesia sonic
   // Sarvam (Hindi lines): ~₹30/hour STT, ~₹15 per 10K characters TTS, at ₹88/USD.
@@ -198,7 +198,68 @@ export function estimateCostUsdMicros(u: UsageForCost, rates: CostRates = DEFAUL
   return Math.round(usd * 1e6);
 }
 
+/** The phone-line and AI-model parts of a cost (speech is the rest). */
+export function costParts(u: UsageForCost, rates: CostRates = DEFAULT_COST_RATES): { telephony: number; llm: number } {
+  const llmRate = (u.llmModel && rates.llm[u.llmModel]) || rates.llm.default;
+  const llm = (u.llm.input * llmRate.inputPerMTok + u.llm.output * llmRate.outputPerMTok
+    + u.llm.cacheRead * llmRate.cacheReadPerMTok + u.llm.cacheWrite * llmRate.cacheWritePerMTok) / 1e6;
+  const telephony = u.channel === 'voice'
+    ? billableMinutes(u.durationSeconds) * (rates.telephonyPerMinute[u.provider ?? 'default'] ?? rates.telephonyPerMinute.default ?? 0)
+    : rates.whatsappPerConversation;
+  return { telephony: Math.round(telephony * 1e6), llm: Math.round(llm * 1e6) };
+}
+
 /** micro-USD → paise at the configured exchange rate. */
 export function usdMicrosToPaise(micros: number, rates: CostRates = DEFAULT_COST_RATES): number {
   return Math.round((micros / 1e6) * rates.usdToInr * 100);
+}
+
+// ── Tax invoices ────────────────────────────────────────────────────────────
+
+/** Indian financial year (April–March, India time) as 'YY-YY', e.g. '26-27'. */
+export function financialYear(at: Date, timeZone = BILLING_TIMEZONE): string {
+  const [y, m] = billingPeriod(at, timeZone).split('-').map(Number);
+  const start = m >= 4 ? y : y - 1;
+  return `${String(start % 100).padStart(2, '0')}-${String((start + 1) % 100).padStart(2, '0')}`;
+}
+
+/** 'AVY/26-27/000042': 16 characters, inside GST's 16-character invoice-number limit. */
+export function formatInvoiceNumber(fy: string, seq: number, prefix = 'AVY'): string {
+  return `${prefix}/${fy}/${String(seq).padStart(6, '0')}`;
+}
+
+/** Splits a GST-inclusive amount (what Razorpay charges) into taxable value + GST. */
+export function splitInclusive(totalPaise: number, gstRateBps: number): { taxablePaise: number; gstPaise: number } {
+  const taxablePaise = Math.round((totalPaise * 10_000) / (10_000 + gstRateBps));
+  return { taxablePaise, gstPaise: totalPaise - taxablePaise };
+}
+
+export interface InvoiceLine { description: string; amountPaise: number } // excl. GST
+
+export interface InvoiceTotals extends GstSplit {
+  lines: InvoiceLine[]; taxablePaise: number; gstPaise: number; totalPaise: number;
+}
+
+/**
+ * Builds a tax invoice from the GST-inclusive lines Razorpay charged. The
+ * total is exactly what was paid; each line's taxable value is backed out and
+ * any rounding paisa goes to the last line, so the lines add up.
+ */
+export function invoiceTotals(chargedLines: Array<{ description: string; totalPaise: number }>, gstRateBps: number,
+  supplierStateCode: string | null, customerStateCode: string | null): InvoiceTotals {
+  const totalPaise = chargedLines.reduce((s, l) => s + l.totalPaise, 0);
+  const { taxablePaise, gstPaise } = splitInclusive(totalPaise, gstRateBps);
+  const lines = chargedLines.map(l => ({ description: l.description, amountPaise: splitInclusive(l.totalPaise, gstRateBps).taxablePaise }));
+  const drift = taxablePaise - lines.reduce((s, l) => s + l.amountPaise, 0);
+  if (lines.length && drift) lines[lines.length - 1].amountPaise += drift;
+  return { lines, taxablePaise, gstPaise, totalPaise, ...splitGst(gstPaise, supplierStateCode, customerStateCode) };
+}
+
+// ── Dunning ─────────────────────────────────────────────────────────────────
+
+export const DEFAULT_GRACE_DAYS = 7;
+
+export function graceDays(v: string | undefined): number {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= 60 ? n : DEFAULT_GRACE_DAYS;
 }

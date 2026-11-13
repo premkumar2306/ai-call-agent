@@ -17,8 +17,9 @@
 // after-stream webhook dials staff; the call is metered for billing; the
 // notice is in the consent audit trail. Plus WhatsApp: the Meta webhook
 // handshake, signatures, a chat booking, voice notes, retries, status
-// webhooks, unmapped numbers, Hindi, the DPDP notice and billing. Plus Razorpay: plan sync →
-// subscription → signed webhook → account active.
+// webhooks, unmapped numbers, Hindi, the DPDP notice and billing. Plus Razorpay billing end to
+// end: trial, Checkout signature (good and bad), activation, failed payment → dunning email,
+// halted, month-end overage add-on, GST tax invoice, plan change and cancellation.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomUUID } from 'node:crypto';
@@ -41,6 +42,7 @@ const SECRETS = {
   EXOTEL_WEBHOOK_SECRET: 'ex-secret-mock', PLIVO_AUTH_TOKEN: 'pl-auth-mock', PLIVO_WEBHOOK_URL: BASE,
   RAZORPAY_KEY_ID: 'rzp_test_mock', RAZORPAY_KEY_SECRET: 'rzp-secret-mock', RAZORPAY_WEBHOOK_SECRET: 'rzp-webhook-mock',
   RESEND_API_KEY: 're_mock', EMAIL_FROM: 'Avery <test@example.com>',
+  BILLING_SUPPLIER_GSTIN: '27AAPFU0939F1ZV',   // Maharashtra: a Maharashtra customer gets CGST+SGST
   WA_APP_SECRET: 'wa-app-secret-mock', WA_VERIFY_TOKEN: 'wa-verify-mock', WA_ACCESS_TOKEN: 'EAAmockwhatsapptoken0123456789',
   // The legacy single number; any other unmapped number is refused.
   WA_PHONE_NUMBER_ID: '109000000000999',
@@ -365,23 +367,110 @@ async function callScenario(mocks, s) {
   }
 }
 
+async function rzpHook(event, payload, eventId = `evt_${randomUUID()}`, signature) {
+  const raw = JSON.stringify({ entity: 'event', event, payload, created_at: Math.floor(Date.now() / 1000) });
+  const sig = signature ?? createHmac('sha256', SECRETS.RAZORPAY_WEBHOOK_SECRET).update(raw).digest('hex');
+  return fetch(`${BASE}/razorpay/webhook`, { method: 'POST', body: raw, headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': sig, 'X-Razorpay-Event-Id': eventId } });
+}
+const post = (path, body) => fetch(`${BASE}${path}`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+
 async function razorpayScenario(mocks) {
-  const n = 'Razorpay subscription';
+  const n = 'Razorpay billing';
   console.log(`\n▶ ${n}`);
-  await api('PUT', '/admin/billing/accounts/in_exotel', { planId: 'in_starter' });
-  const plan = await api('POST', '/admin/billing/plans/in_starter/razorpay');
-  check(n, 'plan is created in Razorpay', mocks.log.razorpay.some(r => r.path === '/v1/plans' && r.auth), JSON.stringify(plan).slice(0, 80));
-  const sub = await api('POST', '/billing/in_exotel/subscribe');
-  check(n, 'subscription is created for checkout', /^sub_/.test(sub?.subscriptionId ?? ''), sub?.subscriptionId);
-  const evt = { entity: 'event', event: 'subscription.activated', payload: { subscription: { entity: { id: sub.subscriptionId, status: 'active' } } }, created_at: Math.floor(Date.now() / 1000) };
-  const raw = JSON.stringify(evt);
-  const bad = await fetch(`${BASE}/razorpay/webhook`, { method: 'POST', body: raw, headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': 'bad', 'X-Razorpay-Event-Id': 'evt_bad' } });
+  const B = 'in_exotel', OWNER = 'billing@clinic.example';
+  const emailsTo = (re, since) => mocks.log.email.filter(e => e.to === OWNER && re.test(e.subject) && e.at >= since);
+
+  // Trial: the seeded Starter plan (14-day trial) on the Hindi Plivo business.
+  await api('PUT', '/admin/billing/accounts/in_plivo_hi', { planId: 'in_starter' });
+  const trial = await api('GET', '/billing/in_plivo_hi');
+  check(n, 'trial: a new plan starts a 14-day free trial, next action Subscribe', trial?.state === 'trialing' && trial.trialDaysLeft === 14 && trial.nextAction === 'subscribe', `state=${trial?.state}, ${trial?.trialDaysLeft} days, ${trial?.nextAction}`);
+
+  // A no-trial plan with every minute billed as overage, so month-end has something to bill.
+  await api('PUT', '/admin/billing/plans/e2e_metered', { name: 'E2E Metered', monthlyFeePaise: 100000, includedMinutes: 0, overagePaisePerMinute: 700, trialDays: 0, gstRateBps: 1800 });
+  await api('PUT', `/admin/billing/accounts/${B}`, { planId: 'e2e_metered' });
+  await api('PUT', `/billing/${B}/details`, { legalName: 'Exotel Clinic Pvt Ltd', billingEmail: OWNER, gstin: '27AAACR5055K1Z7', state: 'Maharashtra' });
+  const plan = await api('POST', '/admin/billing/plans/e2e_metered/razorpay');
+  const planCall = mocks.log.razorpay.find(r => r.path === '/v1/plans' && r.auth);
+  check(n, 'plan is created in Razorpay (monthly, fee incl. GST)', /^plan_/.test(plan?.razorpayPlanId ?? '') && planCall?.body?.period === 'monthly' && planCall?.body?.item?.amount === 118000, `${plan?.razorpayPlanId}, ₹${(planCall?.body?.item?.amount ?? 0) / 100}`);
+
+  const sub = await api('POST', `/billing/${B}/subscribe`);
+  check(n, 'subscription is created for Checkout, prefilled', /^sub_/.test(sub?.subscriptionId ?? '') && sub?.keyId === SECRETS.RAZORPAY_KEY_ID && sub?.prefill?.email === OWNER, `${sub?.subscriptionId}, prefill ${sub?.prefill?.email}`);
+  const id = sub.subscriptionId;
+
+  const badSig = await post(`/billing/${B}/confirm`, { razorpay_payment_id: 'pay_e2e1', razorpay_subscription_id: id, razorpay_signature: 'f'.repeat(64) });
+  const goodSig = await post(`/billing/${B}/confirm`, { razorpay_payment_id: 'pay_e2e1', razorpay_subscription_id: id, razorpay_signature: createHmac('sha256', SECRETS.RAZORPAY_KEY_SECRET).update(`pay_e2e1|${id}`).digest('hex') });
+  check(n, 'Checkout: a bad payment signature is refused', badSig.status === 400, `${badSig.status}`);
+  check(n, 'Checkout: a valid payment signature is accepted', goodSig.ok && (await api('GET', `/billing/${B}`))?.account?.subscriptionStatus === 'authenticated', `${goodSig.status}`);
+
+  const s = mocks.razorpaySub(id);
+  Object.assign(s, { status: 'active', customer_id: 'cust_e2e', current_end: Math.floor(Date.now() / 1000) + 30 * 86400 });
+  const bad = await rzpHook('subscription.activated', { subscription: { entity: { id } } }, 'evt_bad', 'bad');
   check(n, 'webhook with a bad signature is refused', bad.status === 401, `${bad.status}`);
-  const sig = createHmac('sha256', SECRETS.RAZORPAY_WEBHOOK_SECRET).update(raw).digest('hex');
-  const ok = await fetch(`${BASE}/razorpay/webhook`, { method: 'POST', body: raw, headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': sig, 'X-Razorpay-Event-Id': 'evt_e2e_1' } });
-  check(n, 'signed webhook is accepted', ok.ok, `${ok.status}`);
-  const summary = await api('GET', '/billing/in_exotel');
-  check(n, 'account becomes active', summary?.state === 'active', `state=${summary?.state}`);
+  const ok = await rzpHook('subscription.activated', { subscription: { entity: { id } } }, 'evt_e2e_1');
+  const again = await rzpHook('subscription.activated', { subscription: { entity: { id } } }, 'evt_e2e_1');
+  let sum = await api('GET', `/billing/${B}`);
+  check(n, 'subscription.activated → active (redelivery is a no-op)', ok.ok && again.ok && sum?.state === 'active' && sum.account.subscriptionStatus === 'active' && sum.nextCharge?.amountPaise === 118000, `state=${sum?.state}, next ${JSON.stringify(sum?.nextCharge)}`);
+
+  // Failed charge: Razorpay marks the subscription pending and sends payment.failed.
+  let t = Date.now();
+  s.status = 'pending';
+  await rzpHook('payment.failed', { payment: { entity: { id: 'pay_fail1', entity: 'payment', status: 'failed', invoice_id: 'inv_fail1', customer_id: 'cust_e2e', error_description: 'Card declined by bank', created_at: Math.floor(Date.now() / 1000) } } });
+  await rzpHook('subscription.pending', { subscription: { entity: { id } } });
+  sum = await api('GET', `/billing/${B}`);
+  check(n, 'payment.failed → past_due, next action Update payment, overage still allowed in grace', sum?.state === 'past_due' && sum.nextAction === 'update_payment' && sum.overageAllowed === true && sum.payment?.lastError === 'Card declined by bank', `state=${sum?.state}, ${sum?.nextAction}, grace to ${sum?.payment?.graceEndsAt}`);
+  await sleep(300);
+  const dunning = emailsTo(/payment failed/i, t);
+  check(n, 'dunning email reaches the owner once (Resend)', dunning.length === 1 && /keeps answering every call/.test(dunning[0].text), `${dunning.length} email(s): ${dunning[0]?.subject}`);
+  const upd = await api('POST', `/billing/${B}/update-payment`);
+  check(n, 'Update payment opens Razorpay\'s hosted page', upd?.url === 'https://rzp.io/i/mock', JSON.stringify(upd));
+
+  s.status = 'halted';
+  await rzpHook('subscription.halted', { subscription: { entity: { id } } });
+  sum = await api('GET', `/billing/${B}`);
+  check(n, 'subscription.halted → past_due, overage stops (calls never cut off)', sum?.state === 'past_due' && sum.account.subscriptionStatus === 'halted' && sum.overageAllowed === false, `status=${sum?.account?.subscriptionStatus}, overageAllowed=${sum?.overageAllowed}`);
+
+  // The owner pays the due invoice: Razorpay reactivates and charges.
+  s.status = 'active';
+  await rzpHook('subscription.charged', { subscription: { entity: { id } }, payment: { entity: { id: 'pay_ok1' } } });
+  sum = await api('GET', `/billing/${B}`);
+  check(n, 'subscription.charged after recovery → active again', sum?.state === 'active' && sum.overageAllowed === true, `state=${sum?.state}`);
+
+  // Month end: this month's metered minutes (the e2e call) become an add-on incl. GST.
+  const period = sum.usage.period, minutes = sum.usage.minutes;
+  const closed = await api('POST', '/admin/billing/close-period', { period });
+  const addon = mocks.log.razorpay.find(r => r.method === 'POST' && r.path === `/v1/subscriptions/${id}/addons`);
+  const want = Math.round(minutes * 700 * 1.18);
+  check(n, 'month-end overage → one Razorpay add-on, amount incl. GST', minutes > 0 && closed.find(c => c.businessType === B)?.status === 'billed' && addon?.body?.item?.amount === want, `${minutes} min → ₹${(addon?.body?.item?.amount ?? 0) / 100} (want ₹${want / 100})`);
+  const rerun = await api('POST', '/admin/billing/close-period', { period });
+  check(n, 'closing the month again adds nothing', !rerun.some(c => c.businessType === B) && mocks.log.razorpay.filter(r => r.path.endsWith('/addons')).length === 1);
+
+  // Razorpay charges the next invoice (plan + add-on) → GST tax invoice, emailed.
+  t = Date.now();
+  const inv = { id: 'inv_e2e_1', entity: 'invoice', subscription_id: id, status: 'paid', amount: 118000 + want, amount_paid: 118000 + want, paid_at: Math.floor(Date.now() / 1000),
+    line_items: [{ type: 'plan', name: 'E2E Metered', net_amount: 118000, quantity: 1 }, { type: 'addon', name: `Extra minutes ${period}`, net_amount: want, quantity: 1 }] };
+  await rzpHook('invoice.paid', { invoice: { entity: inv }, payment: { entity: { id: 'pay_inv1' } } });
+  sum = await api('GET', `/billing/${B}`);
+  const ti = sum?.taxInvoices?.[0];
+  const gst = ti ? ti.cgst + ti.sgst + ti.igst : 0;
+  check(n, 'invoice.paid → GST tax invoice: CGST+SGST (same state), totals add up, numbered', ti && ti.totalPaise === 118000 + want && ti.igst === 0 && ti.cgst > 0 && ti.taxablePaise + gst === ti.totalPaise && Math.abs(gst - Math.round(ti.taxablePaise * 0.18)) <= 1 && /^AVY\/\d\d-\d\d\/000001$/.test(ti.number), ti ? `${ti.number}: ₹${ti.taxablePaise / 100} + CGST ₹${ti.cgst / 100} + SGST ₹${ti.sgst / 100} = ₹${ti.totalPaise / 100}` : 'none');
+  const html = ti ? await fetch(`${BASE}/billing/${B}/invoices/${ti.id}`, { headers: { 'X-Admin-Key': ADMIN } }) : null;
+  const htmlText = html ? await html.text() : '';
+  await sleep(300);
+  check(n, 'tax invoice is downloadable (print view) and emailed', html?.ok && /Tax invoice/.test(htmlText) && htmlText.includes(SECRETS.BILLING_SUPPLIER_GSTIN) && emailsTo(/Tax invoice/, t).some(e => e.html), `${html?.status}, ${emailsTo(/Tax invoice/, t).length} email(s)`);
+
+  // Cancel at period end, then Razorpay cancels at the cycle end.
+  const cancel = await api('POST', `/billing/${B}/cancel`);
+  const cancelCall = mocks.log.razorpay.find(r => r.path === `/v1/subscriptions/${id}/cancel`);
+  sum = await api('GET', `/billing/${B}`);
+  check(n, 'owner cancels at period end: still active, no next charge', cancel?.atPeriodEnd === true && cancelCall?.body?.cancel_at_cycle_end === 1 && sum?.state === 'active' && sum.cancelAtPeriodEnd && !sum.nextCharge, `state=${sum?.state}, cancelAtPeriodEnd=${sum?.cancelAtPeriodEnd}`);
+  s.status = 'cancelled';
+  await rzpHook('subscription.cancelled', { subscription: { entity: { id } } });
+  sum = await api('GET', `/billing/${B}`);
+  check(n, 'subscription.cancelled → cancelled, next action Subscribe', sum?.state === 'cancelled' && sum.nextAction === 'subscribe', `state=${sum?.state}`);
+
+  const all = await api('GET', '/admin/billing/accounts');
+  const us = all.find(a => a.businessType === 'us_twilio');
+  check(n, 'operator sees every business; the US business stays billing-off', all.length >= 3 && us?.state === 'off' && !us.plan, `${all.length} businesses, us_twilio ${us?.state}`);
 }
 
 // ── WhatsApp (Meta Cloud API webhook → Graph API mock) ───────────────────────
@@ -545,7 +634,8 @@ try {
     await api('PUT', '/admin/whatsapp-numbers', { phoneNumberId: WA.pnid, businessType: 'in_wa', label: 'E2E clinic' });
     await api('PUT', '/admin/whatsapp-numbers', { phoneNumberId: WA.pnidHi, businessType: 'in_wa_hi', label: 'E2E Hindi clinic' });
   }
-  for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only) await callScenario(mocks, s);
+  // The Razorpay scenario bills the Exotel business's call minutes, so `-- razorpay` places that call too.
+  for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
 } catch (e) {

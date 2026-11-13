@@ -8,6 +8,8 @@ import { getSectorGreeting } from '../services/recommendations.service';
 import { executeTool, getToolDefinitions } from '../services/tool-router.service';
 import { emailTranscript } from '../services/email.service';
 import { saveTranscript, getTranscripts, webSessionCallSid } from '../services/transcript.service';
+import { UsageMeter } from '../services/billing/meter';
+import { recordTestTurn } from '../services/billing/service';
 import { getProducts } from '../services/catalog.service';
 import { agentTools, buildSystemPrompt } from '../services/turn.service';
 import { createAnthropic, HTTP_TIMEOUT_MS, MAX_TOOL_ROUNDS, voiceModel } from '../config';
@@ -147,13 +149,16 @@ mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), a
   ];
 
   let spokenResponse = '';
+  // Cost of this test turn (recorded, never billed); see recordTestTurn.
+  const meter = new UsageMeter();
   const toolCallLog: Array<{ name: string; input: unknown; result: unknown }> = [];
   const anthropic = createAnthropic(c.env);
 
   try {
     for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
+      const model = voiceModel(c.env);
       const response = await anthropic.messages.create({
-        model: voiceModel(c.env),
+        model,
         max_tokens: 400,
         thinking: { type: 'disabled' },
         output_config: { effort: 'low' },
@@ -161,6 +166,7 @@ mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), a
         tools,
         messages,
       });
+      meter.addLlm(model, response.usage);
 
       if (response.stop_reason === 'tool_use') {
         const toolBlocks = response.content.filter(b => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
@@ -201,6 +207,9 @@ mogiRouter.post('/voice-turn', withSession, sessionRateLimit('voice', 30, 60), a
     { role: 'assistant' as const, content: spokenResponse },
   ];
 
+  if (meter.llmModel) {
+    c.executionCtx.waitUntil(recordTestTurn(c.env, businessType, webSessionCallSid(session), session.iat, meter.llmModel, meter.llm));
+  }
   // One row per test session (updated each turn), not one per turn.
   c.executionCtx.waitUntil(saveTranscript(c.env, { callSid: webSessionCallSid(session), customerIdHashed: sub, businessType, turns: updatedHistory })
     .catch(err => console.error('transcript save error', err.message)));

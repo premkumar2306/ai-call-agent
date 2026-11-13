@@ -230,4 +230,12 @@ export interface Env {
   BILLING_SUPPLIER_GSTIN?: string;
   /** Plain var: JSON merged over DEFAULT_COST_RATES (pricing.ts) for the margin estimate. */
   BILLING_COST_RATES?: string;
+  /** Plain var: days after a failed payment (or the trial's end) before overage stops being charged. Default 7. */
+  BILLING_GRACE_DAYS?: string;
+  /** Plain vars printed on GST tax invoices: the supplier's legal name and address, and the SAC code. */
+  BILLING_SUPPLIER_NAME?: string;
+  BILLING_SUPPLIER_ADDRESS?: string;
+  BILLING_SAC_CODE?: string;
+  /** Plain var: the admin UI's address, linked from billing emails (e.g. https://app.example.com). */
+  APP_URL?: string;
 }

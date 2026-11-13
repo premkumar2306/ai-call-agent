@@ -17,6 +17,7 @@ import { whatsappRouter } from './routes/whatsapp';
 import { calendarAdminRouter, oauthRouter } from './routes/calendar';
 import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/billing';
 import { closePeriod } from './services/billing/service';
+import { runDunning } from './services/billing/lifecycle';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
 import { installProviderMock } from './utils/provider-mock';
@@ -106,7 +107,8 @@ app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 // Cron Triggers ([triggers] in wrangler.toml), once a day:
 // - data-retention sweep: a no-op until a business sets sectors.retention_days;
 // - month-end overage billing: idempotent (failed rows retry the next day) and
-//   only touches businesses with a billing plan.
+//   only touches businesses with a billing plan;
+// - dunning: grace-period-over and trial-ending notices (once each).
 async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   ctx.waitUntil(applyRetention(env).then(() => undefined)
     .catch(e => console.error('[retention] sweep failed', e?.message || e)));
@@ -114,6 +116,11 @@ async function scheduled(_event: ScheduledController, env: Env, ctx: ExecutionCo
     closePeriod(env)
       .then(r => { if (r.length) console.log('[billing] close-period', JSON.stringify(r)); })
       .catch(e => console.error('[billing] close-period failed', e?.message || e)),
+  );
+  ctx.waitUntil(
+    runDunning(env)
+      .then(r => { if (r.length) console.log('[billing] dunning', JSON.stringify(r)); })
+      .catch(e => console.error('[billing] dunning failed', e?.message || e)),
   );
 }
 

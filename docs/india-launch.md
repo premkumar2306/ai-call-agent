@@ -37,7 +37,7 @@ Workstreams run one at a time, in the order A, G, D, C, B, E, F, to stay within 
 | C | [#71](https://github.com/premkumar2306/ai-call-agent/pull/71) | merged | live (off until configured) | Exotel account with KYC, an Indian number, the Voicebot flow and `EXOTEL_*` secrets; then add the number in Settings. Needs a live test call |
 | B | [#72](https://github.com/premkumar2306/ai-call-agent/pull/72) | merged | live (off until configured) | Sarvam account and `SARVAM_API_KEY`; pick Hindi/Hinglish voice in Settings. Needs live test calls |
 | E | [#73](https://github.com/premkumar2306/ai-call-agent/pull/73) | merged | live (off until configured) | `RESEND_API_KEY` and `EMAIL_FROM` for sign-in emails. After merging, switch the other PRs' routes to `withBusinessAccess` (list in #73) |
-| F | [#74](https://github.com/premkumar2306/ai-call-agent/pull/74) | merged | live (off until configured) | Razorpay account, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, webhook URL; set a plan per business. Needs a test-mode run |
+| F | [#74](https://github.com/premkumar2306/ai-call-agent/pull/74) | merged | live (off until configured) | Razorpay account, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, webhook URL; set a plan per business. Needs a test-mode run. End-to-end billing (dunning, plan changes, GST tax invoices) in #84: follow [razorpay-setup.md](razorpay-setup.md) |
 
 All seven were merged on 10 Nov 2026, in the order A #68, G #69, D #70, C #71, B #72, E #73, F #74,
 after testing them together (307 worker tests, web build, wrangler dry-run, every migration in merge

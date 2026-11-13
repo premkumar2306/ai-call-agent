@@ -11,6 +11,7 @@ import Business from './pages/Business';
 import Services from './pages/Services';
 import Team from './pages/Team';
 import Billing from './pages/Billing';
+import BillingAccounts from './components/BillingAccounts';
 import Practitioners from './pages/Practitioners';
 import PrivacySettings from './pages/PrivacySettings';
 import VoiceSettings from './pages/VoiceSettings';
@@ -345,6 +346,7 @@ export default function App() {
           </>}
           {isOperator && current === 'op/plans' && sector && <>
             <PageHeader title="Plans & billing" description={<>Plans, the plan new businesses start on, and costs. Usage and invoices below are for <span className="strong">{selected?.name}</span>.</>} />
+            <BillingAccounts base={BASE} auth={headers} current={sector} onSelect={setSector} />
             <Billing key={sector} sector={sector} base={BASE} auth={headers} />
           </>}
         </main>

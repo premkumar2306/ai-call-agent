@@ -1,15 +1,16 @@
 import { and, eq, isNotNull, ne, or, isNull, sql, desc } from 'drizzle-orm';
 import { getDb } from '../../db/client';
-import { billingAccounts, billingInvoices, billingPlans, razorpayEvents, usageRecords } from '../../db/schema';
+import { billingAccounts, billingInvoices, billingPlans, sectors, usageRecords } from '../../db/schema';
 import type { Env } from '../../types';
 import { getSector } from '../sector.service';
 import { sendEmail } from '../notify.service';
 import {
-  billableMinutes, billingPeriod, computeOverage, costRates, estimateCostUsdMicros, formatInr,
-  gstinStateCode, previousPeriod, splitGst, usageAlertLevel, usdMicrosToPaise, withGst, gstOn,
+  billableMinutes, billingPeriod, computeOverage, costParts, costRates, estimateCostUsdMicros, formatInr,
+  gstinStateCode, graceDays, previousPeriod, splitGst, usageAlertLevel, usdMicrosToPaise, withGst, gstOn,
   type LlmUsage,
 } from './pricing';
 import * as razorpay from './razorpay';
+import { listTaxInvoices } from './invoices';
 
 export type Plan = typeof billingPlans.$inferSelect;
 export type Account = typeof billingAccounts.$inferSelect;
@@ -20,22 +21,63 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 
 export type BillingState =
   | 'off'        // no plan: nothing is billed (the default for every business)
-  | 'trialing'   // inside the free trial
-  | 'active'     // Razorpay subscription authenticated/active
-  | 'past_due'   // Razorpay could not charge (pending/halted)
+  | 'trialing'   // inside the free trial, not subscribed yet
+  | 'active'     // Razorpay subscription authenticated (mandate set up) or active
+  | 'past_due'   // a charge failed (subscription pending/halted, or payment.failed)
+  | 'paused'     // subscription paused in Razorpay
   | 'cancelled'  // subscription cancelled/completed/expired
   | 'unpaid';    // trial over and no subscription yet
 
-/** Pure: what the owner sees as their billing status. Never blocks calls. */
-export function billingState(account: Pick<Account, 'planId' | 'trialEndsAt' | 'subscriptionStatus'> | null | undefined, now = nowSec()): BillingState {
+type StateFields = Pick<Account, 'planId' | 'trialEndsAt' | 'subscriptionStatus'> & Partial<Pick<Account, 'pastDueSince'>>;
+
+/**
+ * Pure: what the owner sees as their billing status. Razorpay's statuses:
+ * created (Checkout not finished), authenticated (mandate set up; first charge
+ * at start_at, e.g. trial end), active, pending (a charge failed; Razorpay
+ * retries), halted (retries exhausted), paused, cancelled, completed, expired.
+ * Never blocks calls.
+ */
+export function billingState(account: StateFields | null | undefined, now = nowSec()): BillingState {
   if (!account?.planId) return 'off';
   switch (account.subscriptionStatus) {
-    case 'authenticated': case 'active': case 'resumed': return 'active';
+    case 'authenticated': case 'active': case 'resumed': return account.pastDueSince ? 'past_due' : 'active';
     case 'pending': case 'halted': return 'past_due';
+    case 'paused': return 'paused';
     case 'cancelled': case 'completed': case 'expired': return 'cancelled';
   }
   if (account.trialEndsAt && account.trialEndsAt > now) return 'trialing';
   return 'unpaid';
+}
+
+export interface Entitlements {
+  /** Minutes beyond the plan are billed. False = "restricted": the assistant keeps answering, extra minutes aren't charged. */
+  overageAllowed: boolean;
+  restricted: boolean;
+  /** When a past-due or unpaid account becomes restricted (unix seconds). */
+  graceEndsAt: number | null;
+}
+
+/**
+ * Pure: what a billing state still allows. Nothing here ever stops a call or
+ * the assistant: a restricted account just stops accruing (and being charged)
+ * overage until payment is fixed. A failed payment gets `graceDays` first; a
+ * halted subscription (Razorpay gave up retrying) is restricted at once.
+ */
+export function entitlements(account: StateFields | null | undefined, graceDays: number, now = nowSec()): Entitlements {
+  const state = billingState(account, now);
+  const grace = graceDays * 86_400;
+  if (state === 'past_due') {
+    const graceEndsAt = (account!.pastDueSince ?? now) + grace;
+    const restricted = account!.subscriptionStatus === 'halted' || now >= graceEndsAt;
+    return { overageAllowed: !restricted, restricted, graceEndsAt };
+  }
+  if (state === 'unpaid') {
+    const graceEndsAt = (account!.trialEndsAt ?? now) + grace;
+    const restricted = now >= graceEndsAt;
+    return { overageAllowed: !restricted, restricted, graceEndsAt };
+  }
+  if (state === 'paused' || state === 'cancelled') return { overageAllowed: false, restricted: true, graceEndsAt: null };
+  return { overageAllowed: true, restricted: false, graceEndsAt: null };
 }
 
 // ── Plans ───────────────────────────────────────────────────────────────────
@@ -131,9 +173,13 @@ export async function assignPlan(env: Env, businessType: string, planId: string 
   }
   const existing = await getAccount(env, businessType);
   if (existing) {
+    const unpaidCheckout = existing.subscriptionStatus === 'created' && existing.planId !== planId;
     await db.update(billingAccounts).set({
       planId,
       ...(existing.trialEndsAt == null && !existing.razorpaySubscriptionId && planId ? { trialEndsAt } : {}),
+      // A Checkout that was opened for the old plan and never paid is dropped; Subscribe creates a new one.
+      ...(unpaidCheckout ? { razorpaySubscriptionId: null, subscriptionStatus: null } : {}),
+      pendingPlanId: null,
       updatedAt: now,
     }).where(eq(billingAccounts.businessType, businessType));
   } else {
@@ -148,6 +194,10 @@ export async function assignPlan(env: Env, businessType: string, planId: string 
  * subscribes. No default plan (the starting state) = billing stays off.
  */
 export async function assignDefaultPlan(env: Env, businessType: string): Promise<Account | null> {
+  // Plans are in INR with GST: only Indian businesses start on one. A US
+  // business stays exactly as it was (billing off).
+  const country = (await getSector(env, businessType))?.countryCode ?? 'US';
+  if (country !== 'IN') return null;
   const [plan] = await getDb(env.DB).select().from(billingPlans)
     .where(and(eq(billingPlans.isDefault, true), eq(billingPlans.isActive, true))).limit(1);
   if (!plan || await getAccount(env, businessType)) return null;
@@ -348,9 +398,49 @@ export async function billingSummary(env: Env, businessType: string, viewer: Vie
   const overage = plan ? computeOverage(plan, usage.minutes) : null;
   const rates = costRates(env.BILLING_COST_RATES);
 
+  const now = nowSec();
+  const state = billingState(account, now);
+  const ent = entitlements(account, graceDays(env.BILLING_GRACE_DAYS), now);
+  const pendingPlan = account?.pendingPlanId ? await getPlan(env, account.pendingPlanId) : null;
+  const plans = await listPlans(env);
+  const bigger = plan ? plans.find(p => p.isActive && p.monthlyFeePaise > plan.monthlyFeePaise) : null;
+  const alertLevel = plan ? usageAlertLevel(usage.minutes, plan.includedMinutes) : 0;
+  const tax = await listTaxInvoices(env, businessType);
+
+  // When Razorpay charges next: the trial's end for a mandate set up during
+  // the trial, else the end of the current cycle. Nothing after cancellation.
+  let nextCharge: { at: number; amountPaise: number } | null = null;
+  if (plan && (state === 'active' || state === 'past_due') && !account?.cancelAtPeriodEnd) {
+    const at = account?.subscriptionStatus === 'authenticated' && account.trialEndsAt && account.trialEndsAt > now
+      ? account.trialEndsAt : account?.currentPeriodEnd ?? null;
+    const nextPlan = pendingPlan ?? plan;
+    if (at) nextCharge = { at, amountPaise: withGst(nextPlan.monthlyFeePaise, nextPlan.gstRateBps) };
+  }
+  const nextAction: 'subscribe' | 'update_payment' | 'upgrade' | null =
+    !plan ? null
+    : state === 'past_due' ? (account?.subscriptionStatus === 'halted' ? 'subscribe' : 'update_payment')
+    : ['trialing', 'unpaid', 'cancelled'].includes(state) ? 'subscribe'
+    : state === 'active' && alertLevel >= 80 && bigger ? 'upgrade'
+    : null;
+
   const summary: Record<string, unknown> = {
     businessType,
-    state: billingState(account),
+    state,
+    nextAction,
+    trialDaysLeft: state === 'trialing' && account?.trialEndsAt ? Math.max(0, Math.ceil((account.trialEndsAt - now) / 86_400)) : null,
+    nextCharge,
+    payment: account && {
+      lastStatus: account.lastPaymentStatus, lastAt: account.lastPaymentAt, lastError: account.lastPaymentError,
+      pastDueSince: account.pastDueSince, graceEndsAt: ent.graceEndsAt,
+    },
+    overageAllowed: ent.overageAllowed,
+    cancelAtPeriodEnd: !!account?.cancelAtPeriodEnd,
+    pendingPlan: pendingPlan && { id: pendingPlan.id, name: pendingPlan.name },
+    upgradeTo: bigger && { id: bigger.id, name: bigger.name },
+    taxInvoices: tax.map(t => ({
+      id: t.id, number: t.invoiceNumber, issuedAt: t.issuedAt, taxablePaise: t.taxablePaise,
+      cgst: t.cgstPaise, sgst: t.sgstPaise, igst: t.igstPaise, totalPaise: t.totalPaise, refundedPaise: t.refundedPaise,
+    })),
     razorpayConfigured: razorpay.razorpayConfigured(env),
     razorpayKeyId: env.RAZORPAY_KEY_ID ?? null, // public key id, needed by Checkout
     plan: plan && {
@@ -370,7 +460,7 @@ export async function billingSummary(env: Env, businessType: string, viewer: Vie
     usage: {
       period, minutes: usage.minutes, calls: usage.calls, whatsappConversations: usage.whatsappConversations,
       includedMinutes: plan?.includedMinutes ?? null,
-      alertLevel: plan ? usageAlertLevel(usage.minutes, plan.includedMinutes) : 0,
+      alertLevel,
       overageSoFar: overage && plan && { minutes: overage.overageMinutes, ...gstBreakdown(overage.overagePaise, plan.gstRateBps) },
     },
     invoices: invoices.map(i => ({
@@ -403,18 +493,37 @@ export async function billingSummary(env: Env, businessType: string, viewer: Vie
 // Monthly cycles before Razorpay marks the subscription completed (10 years).
 const SUBSCRIPTION_CYCLES = 120;
 
-export async function startSubscription(env: Env, businessType: string): Promise<{ subscriptionId: string; keyId: string; shortUrl?: string }> {
+export interface CheckoutStart {
+  subscriptionId: string; keyId: string; shortUrl?: string;
+  prefill: { name?: string; email?: string; contact?: string };
+  description: string;
+}
+
+export async function startSubscription(env: Env, businessType: string): Promise<CheckoutStart> {
   const account = await getAccount(env, businessType);
   if (!account?.planId) throw Object.assign(new Error('Billing is not enabled for this business'), { status: 409 });
   const plan = await getPlan(env, account.planId);
   if (!plan?.razorpayPlanId) throw Object.assign(new Error('Plan is not set up in Razorpay yet'), { status: 409 });
   if (!razorpay.razorpayConfigured(env)) throw new razorpay.RazorpayNotConfigured();
 
+  const sector = await getSector(env, businessType);
+  const extra = {
+    prefill: {
+      name: account.legalName || sector?.name || undefined,
+      email: account.billingEmail || sector?.notifyEmail || undefined,
+      contact: sector?.phone || undefined,
+    },
+    description: `${plan.name} plan: ${formatInr(withGst(plan.monthlyFeePaise, plan.gstRateBps))}/month incl. GST`,
+  };
   // Re-use a subscription that hasn't been paid for yet (the owner closed Checkout).
   if (account.razorpaySubscriptionId && (account.subscriptionStatus === 'created' || !account.subscriptionStatus)) {
-    return { subscriptionId: account.razorpaySubscriptionId, keyId: env.RAZORPAY_KEY_ID! };
+    return { subscriptionId: account.razorpaySubscriptionId, keyId: env.RAZORPAY_KEY_ID!, ...extra };
   }
-  if (billingState(account) === 'active') throw Object.assign(new Error('Already subscribed'), { status: 409 });
+  const state = billingState(account);
+  if (state === 'active') throw Object.assign(new Error('Already subscribed'), { status: 409 });
+  if (state === 'past_due' && account.subscriptionStatus !== 'halted') {
+    throw Object.assign(new Error('A payment is overdue: use Update payment instead'), { status: 409 });
+  }
 
   const now = nowSec();
   // First charge after the trial; Razorpay needs start_at comfortably in the future.
@@ -423,10 +532,15 @@ export async function startSubscription(env: Env, businessType: string): Promise
     planId: plan.razorpayPlanId, totalCount: SUBSCRIPTION_CYCLES, startAt,
     notes: { business_type: businessType, avery_plan_id: plan.id },
   });
+  // A halted subscription can't be revived by Checkout: it is replaced (Razorpay keeps its history).
+  if (account.razorpaySubscriptionId && account.subscriptionStatus === 'halted') {
+    await razorpay.cancelSubscription(env, account.razorpaySubscriptionId, false)
+      .catch(e => console.error('[billing] could not cancel halted subscription', e?.message || e));
+  }
   await getDb(env.DB).update(billingAccounts).set({
-    razorpaySubscriptionId: sub.id, subscriptionStatus: sub.status, updatedAt: now,
+    razorpaySubscriptionId: sub.id, subscriptionStatus: sub.status, cancelAtPeriodEnd: false, updatedAt: now,
   }).where(eq(billingAccounts.businessType, businessType));
-  return { subscriptionId: sub.id, keyId: env.RAZORPAY_KEY_ID!, shortUrl: sub.short_url };
+  return { subscriptionId: sub.id, keyId: env.RAZORPAY_KEY_ID!, shortUrl: sub.short_url, ...extra };
 }
 
 /**
@@ -439,62 +553,11 @@ export async function confirmCheckout(env: Env, businessType: string, p: { payme
   if (!account || account.razorpaySubscriptionId !== p.subscriptionId) return false;
   if (!(await razorpay.verifyCheckoutSignature(env, p.paymentId, p.subscriptionId, p.signature))) return false;
   if (!account.subscriptionStatus || account.subscriptionStatus === 'created') {
-    await getDb(env.DB).update(billingAccounts).set({ subscriptionStatus: 'authenticated', updatedAt: nowSec() })
-      .where(eq(billingAccounts.businessType, businessType));
+    await getDb(env.DB).update(billingAccounts).set({
+      subscriptionStatus: 'authenticated', pastDueSince: null, lastPaymentStatus: 'captured', lastPaymentError: null, updatedAt: nowSec(),
+    }).where(eq(billingAccounts.businessType, businessType));
   }
   return true;
-}
-
-// ── Webhook ─────────────────────────────────────────────────────────────────
-
-export interface RazorpayWebhook {
-  event: string;
-  created_at?: number;
-  payload?: {
-    subscription?: { entity?: { id?: string; status?: string; current_end?: number | null; customer_id?: string | null; notes?: Record<string, string> } };
-    payment?: { entity?: { id?: string; amount?: number; status?: string } };
-  };
-}
-
-/**
- * Returns what happened, for the log line. Idempotent on the event id, which
- * is recorded only after the event is applied (a failure → 5xx → Razorpay
- * retries). Webhooks can arrive out of order, so when the API keys are set
- * the subscription's current state is re-read from Razorpay rather than
- * trusting the (possibly stale) payload.
- */
-export async function applyWebhook(env: Env, eventId: string | null, evt: RazorpayWebhook): Promise<string> {
-  const db = getDb(env.DB);
-  if (eventId) {
-    const [seen] = await db.select().from(razorpayEvents).where(eq(razorpayEvents.id, eventId));
-    if (seen) return 'duplicate';
-  }
-  const result = await applySubscriptionEvent(env, evt);
-  if (eventId) await db.insert(razorpayEvents).values({ id: eventId, event: evt.event, receivedAt: nowSec() }).onConflictDoNothing();
-  return result;
-}
-
-async function applySubscriptionEvent(env: Env, evt: RazorpayWebhook): Promise<string> {
-  if (!evt.event?.startsWith('subscription.')) return 'ignored';
-  const payloadSub = evt.payload?.subscription?.entity;
-  if (!payloadSub?.id) return 'no subscription in payload';
-
-  const db = getDb(env.DB);
-  const [account] = await db.select().from(billingAccounts).where(eq(billingAccounts.razorpaySubscriptionId, payloadSub.id));
-  if (!account) return `unknown subscription ${payloadSub.id}`;
-
-  let sub: { status?: string; current_end?: number | null; customer_id?: string | null } = payloadSub;
-  if (razorpay.razorpayConfigured(env)) {
-    try { sub = await razorpay.fetchSubscription(env, payloadSub.id); }
-    catch (e: any) { console.error('[billing] could not re-read subscription; using payload', e?.message || e); }
-  }
-  await db.update(billingAccounts).set({
-    ...(sub.status ? { subscriptionStatus: sub.status } : {}),
-    ...(sub.current_end ? { currentPeriodEnd: sub.current_end } : {}),
-    ...(sub.customer_id ? { razorpayCustomerId: sub.customer_id } : {}),
-    updatedAt: nowSec(),
-  }).where(eq(billingAccounts.businessType, account.businessType));
-  return `${account.businessType}: ${evt.event} → ${sub.status ?? 'unchanged'}`;
 }
 
 // ── Month-end close ─────────────────────────────────────────────────────────
@@ -509,51 +572,155 @@ export async function closePeriod(env: Env, period = previousPeriod(billingPerio
   const db = getDb(env.DB);
   const accounts = await db.select().from(billingAccounts).where(isNotNull(billingAccounts.planId));
   const results: Array<{ businessType: string; status: string; error?: string }> = [];
-  const [py, pm] = period.split('-').map(Number);
-  const periodEnd = Math.floor(Date.UTC(pm === 12 ? py + 1 : py, pm === 12 ? 0 : pm, 1) / 1000) - 19_800; // IST midnight
+  const periodEnd = periodEndUnix(period);
+  const grace = graceDays(env.BILLING_GRACE_DAYS);
 
   for (const account of accounts) {
     const [existing] = await db.select().from(billingInvoices)
       .where(and(eq(billingInvoices.businessType, account.businessType), eq(billingInvoices.period, period)));
-    if (existing && existing.status !== 'failed') continue;
+    if (existing && !RETRYABLE.includes(existing.status)) continue;
 
     const plan = await getPlan(env, account.planId!);
     if (!plan) continue;
     const usage = await periodUsage(env, account.businessType, period);
     const o = computeOverage(plan, usage.minutes);
-
-    let status: string;
-    let addonId: string | null = null;
-    let error: string | null = null;
-    if (o.overagePaise === 0) status = 'no_overage';
-    else if (account.trialEndsAt && account.trialEndsAt >= periodEnd) status = 'trial'; // trial covered the whole month
-    else if (!account.razorpaySubscriptionId || billingState(account) !== 'active') status = 'unbilled';
-    else {
-      try {
-        const addon = await razorpay.createAddon(env, account.razorpaySubscriptionId, {
-          name: `Extra minutes ${period}`,
-          description: `${o.overageMinutes} min over ${plan.includedMinutes} @ ${formatInr(plan.overagePaisePerMinute)} + ${plan.gstRateBps / 100}% GST`,
-          amountPaise: o.totalPaise, currency: plan.currency,
-        });
-        addonId = addon.id;
-        status = 'billed';
-      } catch (e: any) {
-        status = 'failed';
-        error = String(e?.message || e).slice(0, 500);
-      }
-    }
+    const status = overageDecision(account, o.overagePaise, periodEnd, grace);
 
     const now = nowSec();
     const row = {
       planId: plan.id, minutesUsed: o.minutesUsed, includedMinutes: o.includedMinutes, overageMinutes: o.overageMinutes,
       overagePaise: o.overagePaise, gstPaise: o.gstPaise, totalPaise: o.totalPaise,
-      status, razorpayAddonId: addonId, error, updatedAt: now,
+      status, razorpayAddonId: null as string | null, error: null as string | null, updatedAt: now,
     };
-    if (existing) await db.update(billingInvoices).set(row).where(eq(billingInvoices.id, existing.id));
-    else await db.insert(billingInvoices).values({ id: crypto.randomUUID(), businessType: account.businessType, period, ...row, createdAt: now });
-    results.push({ businessType: account.businessType, status, ...(error ? { error } : {}) });
+    if (status !== 'bill') {
+      await saveInvoiceRow(env, existing?.id, account.businessType, period, row);
+      results.push({ businessType: account.businessType, status });
+      continue;
+    }
+
+    // Claim the month before calling Razorpay ('billing'), so a crash or a
+    // second run can never add the same add-on twice. A row stuck in
+    // 'billing' is left for the operator rather than retried.
+    const id = await saveInvoiceRow(env, existing?.id, account.businessType, period, { ...row, status: 'billing' });
+    try {
+      const addon = await razorpay.createAddon(env, account.razorpaySubscriptionId!, {
+        name: `Extra minutes ${period}`,
+        description: `${o.overageMinutes} min over ${plan.includedMinutes} @ ${formatInr(plan.overagePaisePerMinute)} + ${plan.gstRateBps / 100}% GST`,
+        amountPaise: o.totalPaise, currency: plan.currency,
+      });
+      await db.update(billingInvoices).set({ status: 'billed', razorpayAddonId: addon.id, updatedAt: nowSec() }).where(eq(billingInvoices.id, id));
+      results.push({ businessType: account.businessType, status: 'billed' });
+    } catch (e: any) {
+      const error = String(e?.message || e).slice(0, 500);
+      await db.update(billingInvoices).set({ status: 'failed', error, updatedAt: nowSec() }).where(eq(billingInvoices.id, id));
+      results.push({ businessType: account.businessType, status: 'failed', error });
+    }
   }
   return results;
+}
+
+/** Month rows retried by the next daily run. */
+const RETRYABLE = ['failed', 'deferred'];
+
+/** Unix seconds of the end of a 'YYYY-MM' period: midnight India time on the 1st of the next month. */
+export function periodEndUnix(period: string): number {
+  const [py, pm] = period.split('-').map(Number);
+  return Math.floor(Date.UTC(pm === 12 ? py + 1 : py, pm === 12 ? 0 : pm, 1) / 1000) - 19_800;
+}
+
+/**
+ * Pure: what month-end does with a business's overage.
+ *   no_overage — within the plan
+ *   trial      — the free trial covered the whole month
+ *   waived     — payment overdue past the grace period (or paused/cancelled): extra minutes aren't charged
+ *   deferred   — payment overdue, still in grace (or trial just ended, not subscribed yet): retried daily
+ *   unbilled   — no subscription to bill
+ *   bill       — add it to the subscription's next invoice
+ */
+export function overageDecision(account: Account, overagePaise: number, periodEnd: number, grace: number, now = nowSec()):
+  'no_overage' | 'trial' | 'waived' | 'deferred' | 'unbilled' | 'bill' {
+  if (overagePaise === 0) return 'no_overage';
+  if (account.trialEndsAt && account.trialEndsAt >= periodEnd) return 'trial';
+  const state = billingState(account, now);
+  if (entitlements(account, grace, now).restricted) return 'waived';
+  if (state === 'past_due' || state === 'unpaid') return 'deferred';
+  if (state !== 'active' || !account.razorpaySubscriptionId) return 'unbilled';
+  return 'bill';
+}
+
+async function saveInvoiceRow(env: Env, existingId: string | undefined, businessType: string, period: string, row: Partial<typeof billingInvoices.$inferInsert>): Promise<string> {
+  const db = getDb(env.DB);
+  if (existingId) {
+    await db.update(billingInvoices).set(row).where(eq(billingInvoices.id, existingId));
+    return existingId;
+  }
+  const id = crypto.randomUUID();
+  await db.insert(billingInvoices).values({ id, businessType, period, createdAt: nowSec(), ...row } as typeof billingInvoices.$inferInsert);
+  return id;
+}
+
+// ── In-app test calls ───────────────────────────────────────────────────────
+// "Try your assistant" (/mogi/voice-turn) uses the same AI model as a phone
+// call but no phone line. Its cost is recorded, never billed.
+
+export async function recordTestTurn(env: Env, businessType: string, sourceId: string, startedAt: number, model: string, llm: LlmUsage): Promise<void> {
+  try {
+    await recordUsage(env, { businessType, channel: 'voice', provider: 'web', sourceId, startedAt, billable: false });
+    await addLlmUsage(env, 'voice', sourceId, model, llm);
+  } catch (e: any) {
+    console.error('[billing] recordTestTurn failed', e?.message || e);
+  }
+}
+
+// ── Cost per call (operator) ────────────────────────────────────────────────
+// Each call's estimated provider cost (phone line, speech, AI model), the share
+// of revenue it brought in, and the margin. Revenue: billable minutes are taken
+// in time order; the plan's included minutes earn the monthly fee spread evenly
+// over them, minutes beyond earn the overage rate. Any unused part of the fee
+// isn't tied to a call, so the month's margin can be higher than the rows' sum.
+
+export interface CallCost {
+  id: string; sourceId: string; channel: string; provider: string | null; billable: boolean;
+  startedAt: number; durationSeconds: number; billableMinutes: number; llmModel: string | null;
+  costPaise: number; phonePaise: number; speechPaise: number; aiPaise: number;
+  revenuePaise: number; marginPaise: number;
+}
+
+export async function callCosts(env: Env, businessType: string, period: string): Promise<{ rows: CallCost[]; unallocatedFeePaise: number }> {
+  const rates = costRates(env.BILLING_COST_RATES);
+  const records = await usageRecordsFor(env, businessType, period, 1000);
+  const account = await getAccount(env, businessType);
+  const plan = account?.planId ? await getPlan(env, account.planId) : null;
+  const feePerMinute = plan && plan.includedMinutes > 0 ? plan.monthlyFeePaise / plan.includedMinutes : 0;
+  let minutesSoFar = 0;
+  const revenue = new Map<string, number>();
+  for (const r of [...records].sort((a, b) => a.startedAt - b.startedAt)) {
+    if (!plan || !r.billable || r.channel !== 'voice') continue;
+    let paise = 0;
+    for (let m = 0; m < r.billableMinutes; m++, minutesSoFar++) {
+      paise += minutesSoFar < plan.includedMinutes ? feePerMinute : plan.overagePaisePerMinute;
+    }
+    revenue.set(r.id, Math.round(paise));
+  }
+  const rows = records.map(r => {
+    const parts = costParts({
+      channel: r.channel as 'voice' | 'whatsapp', provider: r.provider, durationSeconds: r.durationSeconds,
+      sttSeconds: r.sttSeconds, ttsChars: r.ttsChars, llmModel: r.llmModel,
+      llm: { input: r.llmInputTokens, output: r.llmOutputTokens, cacheRead: r.llmCacheReadTokens, cacheWrite: r.llmCacheWriteTokens },
+    }, rates);
+    const costPaise = usdMicrosToPaise(r.costUsdMicros, rates);
+    const phonePaise = usdMicrosToPaise(parts.telephony, rates);
+    const aiPaise = usdMicrosToPaise(parts.llm, rates);
+    const revenuePaise = revenue.get(r.id) ?? 0;
+    return {
+      id: r.id, sourceId: r.sourceId, channel: r.channel, provider: r.provider, billable: r.billable,
+      startedAt: r.startedAt, durationSeconds: r.durationSeconds, billableMinutes: r.billableMinutes, llmModel: r.llmModel,
+      costPaise, phonePaise, aiPaise, speechPaise: Math.max(0, costPaise - phonePaise - aiPaise),
+      revenuePaise, marginPaise: revenuePaise - costPaise,
+    };
+  });
+  const includedRevenue = plan ? Math.min(minutesSoFar, plan.includedMinutes) * feePerMinute : 0;
+  return { rows, unallocatedFeePaise: plan ? Math.max(0, Math.round(plan.monthlyFeePaise - includedRevenue)) : 0 };
 }
 
 // ── WhatsApp ────────────────────────────────────────────────────────────────
@@ -576,4 +743,39 @@ export async function recordWhatsAppTurn(env: Env, businessType: string, custome
   } catch (e: any) {
     console.error('[billing] recordWhatsAppTurn failed', e?.message || e);
   }
+}
+
+// ── All businesses (operator) ───────────────────────────────────────────────
+
+/** Every business with its billing state and this month's minutes, for the operator's Plans & billing page. */
+export async function allAccountsStatus(env: Env, period = billingPeriod(new Date())) {
+  const db = getDb(env.DB);
+  const [rows, accounts, plans, minutes] = await Promise.all([
+    db.select({ key: sectors.key, name: sectors.name, countryCode: sectors.countryCode }).from(sectors),
+    db.select().from(billingAccounts),
+    listPlans(env),
+    db.select({
+      businessType: usageRecords.businessType,
+      minutes: sql<number>`coalesce(sum(${usageRecords.billableMinutes}), 0)`,
+      costUsdMicros: sql<number>`coalesce(sum(${usageRecords.costUsdMicros}), 0)`,
+    }).from(usageRecords).where(eq(usageRecords.period, period)).groupBy(usageRecords.businessType),
+  ]);
+  const byKey = new Map(accounts.map(a => [a.businessType, a]));
+  const planById = new Map(plans.map(p => [p.id, p]));
+  const use = new Map(minutes.map(m => [m.businessType, m]));
+  const rates = costRates(env.BILLING_COST_RATES);
+  const grace = graceDays(env.BILLING_GRACE_DAYS);
+  return rows.map(r => {
+    const a = byKey.get(r.key) ?? null;
+    const plan = a?.planId ? planById.get(a.planId) ?? null : null;
+    const m = use.get(r.key);
+    return {
+      businessType: r.key, name: r.name, countryCode: r.countryCode,
+      state: billingState(a), overageAllowed: entitlements(a, grace).overageAllowed,
+      plan: plan && { id: plan.id, name: plan.name, includedMinutes: plan.includedMinutes },
+      trialEndsAt: a?.trialEndsAt ?? null, subscriptionStatus: a?.subscriptionStatus ?? null,
+      cancelAtPeriodEnd: !!a?.cancelAtPeriodEnd, lastPaymentStatus: a?.lastPaymentStatus ?? null,
+      minutes: Number(m?.minutes ?? 0), costPaise: usdMicrosToPaise(Number(m?.costUsdMicros ?? 0), rates),
+    };
+  });
 }

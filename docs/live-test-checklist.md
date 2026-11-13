@@ -33,13 +33,31 @@ be exactly the URL Plivo calls. A wrong value gives a 403, because the signature
      was wrongly ignored as an echo.
    - [ ] Try Hinglish (switching languages mid-sentence) and a noisy room.
 
-## Razorpay (test mode first)
-1. Set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` (test keys) and `RAZORPAY_WEBHOOK_SECRET`. Add the
-   webhook `https://<worker>/razorpay/webhook` for `subscription.*` events.
-2. Admin → Billing: sync the Starter plan to Razorpay, then assign it to the test business.
-3. As the owner, open Billing → Subscribe and pay with Razorpay's test card or UPI.
-   - [ ] Billing shows **active** within a minute.
-   - [ ] After a few test calls, the minutes used go up.
+## Razorpay billing (test mode first)
+Setup is in [razorpay-setup.md](razorpay-setup.md). Use **test** keys until every box is ticked.
+1. Keys, webhook secret, `BILLING_SUPPLIER_GSTIN` set; webhook added with the events listed there.
+2. Operator → Plans & billing: Starter is created in Razorpay and set as the plan new businesses start on.
+   - [ ] The US business still shows **Billing off** in the all-businesses table.
+3. Trial: create a test business as an owner.
+   - [ ] Settings → Billing shows **Free trial: 14 days left**, 0 / 300 minutes, and **Subscribe**.
+4. Checkout: Subscribe, then close the window.
+   - [ ] "Nothing was charged". Subscribe again and pay with `failure@razorpay`: Razorpay's reason is shown.
+   - [ ] Pay with `success@razorpay` (or a test recurring card): **Subscribed**, next charge on the trial's end date.
+5. Usage: make two short calls and one in-app test call.
+   - [ ] Minutes go up by the calls only. The operator's Cost per call shows the test call with ₹0 revenue.
+6. Failed payment: fail a charge from the Razorpay Dashboard (test mode).
+   - [ ] **Payment failed**, with the grace date; the owner gets one email; **Update payment** opens Razorpay's page.
+   - [ ] A call during this time is answered normally.
+7. Recovery: let the retry succeed (or pay through Update payment).
+   - [ ] Back to **Subscribed**. An invoice appears under **Invoices** and arrives by email.
+   - [ ] The invoice has the right GST: CGST + SGST if the billing GSTIN is in your state, else IGST. Its number is `AVY/<FY>/…`.
+8. Month end: run close-period for the current month (see razorpay-setup.md § 7).
+   - [ ] Extra minutes show **Added to next invoice**, and the add-on is on the subscription in the Dashboard.
+9. Plan change: Upgrade (starts now); Downgrade (shows "Moves to … at the end of this period").
+10. Cancel: **Cancel subscription**.
+    - [ ] "Cancels at period end", no next charge; after the period (or cancelling in the Dashboard) it shows **Cancelled**.
+11. Switch to live keys (razorpay-setup.md § 8) and repeat steps 4 and 7 with a real ₹ payment, then refund it in the Dashboard.
+    - [ ] The invoice shows the refund.
 
 ## Resend (owner sign-in)
 - [ ] Set `RESEND_API_KEY` and `EMAIL_FROM` (on a verified domain), sign up with a real email, and
