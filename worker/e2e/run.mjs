@@ -632,6 +632,12 @@ async function integrationsScenario(mocks) {
   check(n, 'no secret value appears in any integrations response', leaked.length === 0, leaked.length ? `${leaked.length} leaked` : 'none');
   const again = await fetch(`${BASE}/admin/integrations/deepgram/check`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN } });
   check(n, 'checks are rate limited', again.status === 429, `${again.status}`);
+
+  // npm run preflight against this Worker: a checklist, never a value.
+  const pf = spawnSync('node', ['scripts/preflight.mjs', '--no-wrangler', '--no-check'], { cwd: WORKER_DIR, encoding: 'utf8', env: { ...process.env, WORKER_URL: BASE, ADMIN_KEY: ADMIN } });
+  const out = pf.stdout + pf.stderr;
+  const pfLeaks = [ADMIN, ...Object.values(SECRETS)].filter(v => v.length >= 6 && out.includes(v));
+  check(n, 'preflight prints the go-live checklist with ✓ / ✗ and next actions, and no secret', /✓ Anthropic/.test(out) && /✗ Google Calendar/.test(out) && /wrangler secret put GOOGLE_CLIENT_ID/.test(out) && pfLeaks.length === 0, `exit ${pf.status}; ${pfLeaks.length} leaked`);
 }
 
 const SCENARIOS = [

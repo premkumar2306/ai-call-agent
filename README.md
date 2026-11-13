@@ -351,6 +351,10 @@ Merging to `main` runs CI, applies D1 migrations, deploys the Worker, smoke-test
 
 ### Production secrets (one-time)
 
+The full list of outside services, their secrets, costs and the go-live order is in
+[docs/production-readiness.md](docs/production-readiness.md). Before go-live, run
+`WORKER_URL=… ADMIN_KEY=… npm run preflight` in `worker/`, and check **Operator → Integrations**.
+
 The Worker **fails closed** in production: if a secret below is missing, the routes that
 depend on it reject requests instead of running unauthenticated.
 

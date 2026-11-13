@@ -87,7 +87,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'DB', required: true, plain: true, purpose: 'D1 binding (wrangler.toml)' },
       { name: 'CACHE', required: true, plain: true, purpose: 'KV binding (wrangler.toml)' },
     ],
-    getFrom: 'https://dash.cloudflare.com/', doc: 'README.md#deploy', cost: 'Workers paid plan, ~$5/month base',
+    getFrom: 'https://dash.cloudflare.com/', doc: 'docs/production-readiness.md#cloudflare', cost: 'Workers paid plan, ~$5/month base',
     isConfigured: env => !!env.DB && !!env.CACHE,
     async check(env) {
       await env.DB.prepare('SELECT 1').first();
@@ -104,7 +104,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'ADMIN_SECRET', required: true, purpose: 'The operator admin key' },
       { name: 'MOGI_SECRET', purpose: 'Shared secret for the storefront widget' },
     ],
-    getFrom: 'Generate: openssl rand -hex 32', doc: 'README.md#deploy', cost: 'Free',
+    getFrom: 'Generate: openssl rand -hex 32', doc: 'docs/production-readiness.md#avery-secrets', cost: 'Free',
     async check(env) {
       if (v(env, 'TOKEN_SECRET').length < 32) return { ok: false, error: 'TOKEN_SECRET is shorter than 32 characters' };
       return { ok: true };
@@ -118,7 +118,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'ANTHROPIC_MODEL', plain: true, purpose: 'Optional model override for chat' },
       { name: 'VOICE_MODEL', plain: true, purpose: 'Optional model override for calls' },
     ],
-    getFrom: 'https://console.anthropic.com/settings/keys', doc: 'docs/production-readiness.md', cost: 'Per token; roughly ₹0.3–1 per call',
+    getFrom: 'https://console.anthropic.com/settings/keys', doc: 'docs/production-readiness.md#anthropic', cost: 'Per input and output token',
     check: env => probe('https://api.anthropic.com/v1/models?limit=1', {
       headers: { 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
     }),
@@ -127,7 +127,7 @@ export const INTEGRATIONS: Integration[] = [
     id: 'deepgram', name: 'Deepgram', requirement: 'required',
     unlocks: 'Speech recognition on English phone calls.',
     settings: [{ name: 'DEEPGRAM_API_KEY', required: true, purpose: 'API key' }],
-    getFrom: 'https://console.deepgram.com/', doc: 'docs/production-readiness.md', cost: 'Per audio minute',
+    getFrom: 'https://console.deepgram.com/', doc: 'docs/production-readiness.md#deepgram', cost: 'Per audio minute',
     check: env => probe('https://api.deepgram.com/v1/projects', { headers: { Authorization: `Token ${v(env, 'DEEPGRAM_API_KEY')}` } }),
   },
   {
@@ -138,7 +138,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'CARTESIA_VOICE_ID', plain: true, purpose: 'Optional default voice' },
       { name: 'CARTESIA_MODEL_ID', plain: true, purpose: 'Optional model' },
     ],
-    getFrom: 'https://play.cartesia.ai/keys', doc: 'docs/production-readiness.md', cost: 'Per character spoken',
+    getFrom: 'https://play.cartesia.ai/keys', doc: 'docs/production-readiness.md#cartesia', cost: 'Per character spoken',
     check: env => probe('https://api.cartesia.ai/voices?limit=1', {
       headers: { 'X-API-Key': v(env, 'CARTESIA_API_KEY'), 'Cartesia-Version': CARTESIA_VERSION },
     }),
@@ -147,7 +147,7 @@ export const INTEGRATIONS: Integration[] = [
     id: 'sarvam', name: 'Sarvam', requirement: 'optional',
     unlocks: 'Hindi and Hinglish calls (speech recognition and voice).',
     settings: [{ name: 'SARVAM_API_KEY', required: true, purpose: 'API subscription key' }],
-    getFrom: 'https://dashboard.sarvam.ai/', doc: 'docs/production-readiness.md', cost: 'Per audio minute and per character',
+    getFrom: 'https://dashboard.sarvam.ai/', doc: 'docs/production-readiness.md#sarvam', cost: 'Per audio minute and per character',
     // No free read endpoint: send an empty request. A valid key gets a
     // validation error (400/422) and nothing is synthesised or charged; a bad
     // key gets 401/403.
@@ -164,7 +164,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'TWILIO_ACCOUNT_SID', purpose: 'Account (for texts and the live check)' },
       { name: 'TWILIO_SMS_FROM', purpose: 'Number that sends confirmation texts' },
     ],
-    getFrom: 'https://console.twilio.com/', doc: 'README.md#twilio', cost: 'Per number per month, per minute, per text',
+    getFrom: 'https://console.twilio.com/', doc: 'docs/production-readiness.md#twilio', cost: 'Per number per month, per minute, per text',
     async check(env) {
       const sid = v(env, 'TWILIO_ACCOUNT_SID');
       if (!sid) return skip('Add TWILIO_ACCOUNT_SID to check the key');
@@ -183,7 +183,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'EXOTEL_API_TOKEN', checkOnly: true, purpose: 'API token (live check only)' },
       { name: 'EXOTEL_SUBDOMAIN', plain: true, checkOnly: true, purpose: 'api.exotel.com or api.in.exotel.com' },
     ],
-    getFrom: 'https://my.exotel.com/apisettings/site#api-credentials', doc: 'README.md#exotel', cost: 'Per number per month and per minute',
+    getFrom: 'https://my.exotel.com/apisettings/site#api-credentials', doc: 'docs/production-readiness.md#exotel', cost: 'Per number per month and per minute',
     async check(env) {
       const sid = v(env, 'EXOTEL_ACCOUNT_SID'), key = v(env, 'EXOTEL_API_KEY'), token = v(env, 'EXOTEL_API_TOKEN');
       if (!sid || !key || !token) return skip('Add EXOTEL_ACCOUNT_SID, EXOTEL_API_KEY and EXOTEL_API_TOKEN to check the account');
@@ -202,7 +202,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'PLIVO_WEBHOOK_URL', required: true, purpose: 'Public base URL Plivo calls' },
       { name: 'PLIVO_AUTH_ID', checkOnly: true, purpose: 'Auth ID (live check only)' },
     ],
-    getFrom: 'https://console.plivo.com/dashboard/', doc: 'README.md#plivo', cost: 'Per number per month and per minute',
+    getFrom: 'https://console.plivo.com/dashboard/', doc: 'docs/production-readiness.md#plivo', cost: 'Per number per month and per minute',
     async check(env) {
       const id = v(env, 'PLIVO_AUTH_ID');
       if (!id) return skip('Add PLIVO_AUTH_ID to check the account');
@@ -219,7 +219,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'EMAIL_FROM', required: true, plain: true, purpose: 'Sender, e.g. Avery <hello@yourdomain>' },
       { name: 'ADMIN_NOTIFY_EMAIL', plain: true, purpose: 'Where number requests are emailed' },
     ],
-    getFrom: 'https://resend.com/api-keys', doc: 'docs/production-readiness.md', cost: 'Free up to 3,000 emails/month',
+    getFrom: 'https://resend.com/api-keys', doc: 'docs/production-readiness.md#resend', cost: 'Free up to 3,000 emails/month',
     // A sending-only key may not list domains: Resend answers 401
     // restricted_api_key, which still proves the key is real.
     check: env => probe('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${v(env, 'RESEND_API_KEY')}` } },
@@ -275,7 +275,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'GOOGLE_CLIENT_SECRET', required: true, purpose: 'OAuth client secret' },
       { name: 'CALENDAR_TOKEN_KEY', required: true, purpose: 'Encrypts stored calendar tokens' },
     ],
-    getFrom: 'https://console.cloud.google.com/apis/credentials', doc: 'README.md#google-calendar', cost: 'Free',
+    getFrom: 'https://console.cloud.google.com/apis/credentials', doc: 'docs/production-readiness.md#google-calendar', cost: 'Free',
     // Exchange a deliberately invalid refresh token: Google answers
     // invalid_grant when the client id and secret are right, invalid_client
     // when they're not. Nothing is created.
