@@ -69,6 +69,11 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # SARVAM_HIGH_VAD_SENSITIVITY = "1"
 # BILLING_SUPPLIER_GSTIN = "27AAAAA0000A1Z5"       # your GSTIN on invoices; same state → CGST+SGST, else IGST
 # BILLING_COST_RATES = '{"usdToInr": 88}'          # override provider cost estimates (src/services/billing/pricing.ts)
+# BILLING_SUPPLIER_NAME = "Avery Technologies Pvt Ltd"   # on GST tax invoices (docs/razorpay-setup.md)
+# BILLING_SUPPLIER_ADDRESS = "…, Mumbai 400001"
+# BILLING_SAC_CODE = ""                                  # printed on invoices if set
+# BILLING_GRACE_DAYS = "7"                               # after a failed payment, before extra minutes pause
+# APP_URL = "https://app.example.com"                    # linked from billing emails
 
 # Secrets — run: wrangler secret put <NAME>
 # Required in production (the Worker fails closed without them):
