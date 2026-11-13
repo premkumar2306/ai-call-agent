@@ -1,0 +1,90 @@
+name: Send and monitor dental email campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Preview candidates, monitor replies, or send a verified batch
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - monitor
+          - send
+      city:
+        description: City list to use
+        required: true
+        default: bengaluru
+        type: choice
+        options:
+          - bengaluru
+          - hyderabad
+          - chennai
+      max_emails:
+        description: Daily limit; values above 10 are capped
+        required: true
+        default: '10'
+        type: choice
+        options:
+          - '1'
+          - '5'
+          - '10'
+      confirm_send:
+        description: Required only when action is send
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: '0 4-10 * * 1-5'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: dental-email-campaign
+  cancel-in-progress: false
+
+jobs:
+  campaign:
+    if: >-
+      github.event_name != 'schedule' ||
+      vars.DENTAL_CAMPAIGN_ENABLED == 'true' ||
+      vars.DENTAL_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CAMPAIGN_ACTION: ${{ github.event_name == 'schedule' && vars.DENTAL_CAMPAIGN_ENABLED == 'true' && 'send' || github.event_name == 'schedule' && 'monitor' || inputs.action }}
+      CAMPAIGN_CITY: ${{ github.event_name == 'schedule' && (vars.DENTAL_CAMPAIGN_CITY || 'bengaluru') || inputs.city }}
+      MAX_EMAILS: ${{ github.event_name == 'schedule' && (vars.DENTAL_CAMPAIGN_DAILY_LIMIT || '10') || inputs.max_emails }}
+      CONFIRM_SEND: ${{ inputs.confirm_send }}
+      AUTOMATION_ENABLED: ${{ vars.DENTAL_CAMPAIGN_ENABLED }}
+      OUTLOOK_SENDER: premkumar@deskzen.in
+      MICROSOFT_TENANT_ID: ${{ secrets.MICROSOFT_TENANT_ID }}
+      MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+      MICROSOFT_CLIENT_SECRET: ${{ secrets.MICROSOFT_CLIENT_SECRET }}
+      CAMPAIGN_OUTPUT_DIR: ${{ github.workspace }}/.campaign-report
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Run campaign action
+        id: campaign
+        run: node campaigns/india-dental-leads/scripts/cloud-email-campaign.mjs
+      - name: Add report to workflow summary
+        if: always()
+        run: |
+          if [ -f "$CAMPAIGN_OUTPUT_DIR/campaign-report.md" ]; then
+            cat "$CAMPAIGN_OUTPUT_DIR/campaign-report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload campaign report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dental-email-campaign-report
+          path: .campaign-report/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
