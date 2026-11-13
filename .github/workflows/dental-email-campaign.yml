@@ -64,7 +64,6 @@ jobs:
       MICROSOFT_TENANT_ID: ${{ secrets.MICROSOFT_TENANT_ID }}
       MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
       MICROSOFT_CLIENT_SECRET: ${{ secrets.MICROSOFT_CLIENT_SECRET }}
-      ZEROBOUNCE_API_KEY: ${{ secrets.ZEROBOUNCE_API_KEY }}
       CAMPAIGN_OUTPUT_DIR: ${{ github.workspace }}/.campaign-report
     steps:
       - uses: actions/checkout@v7

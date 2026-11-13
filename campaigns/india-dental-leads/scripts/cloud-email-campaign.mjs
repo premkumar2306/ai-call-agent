@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { appendFileSync } from 'node:fs';
+import { resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -80,6 +81,41 @@ export function dateKey(value, timeZone = 'Asia/Kolkata') {
 export function maskEmail(email) {
   const [account, domain] = email.split('@');
   return `${account.slice(0, 2)}***@${domain}`;
+}
+
+export async function validateRecipientDomain(email, options = {}) {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 254) {
+    return { status: 'invalid_syntax', domain: null, mxHosts: [] };
+  }
+
+  const domain = normalizedEmail.slice(normalizedEmail.lastIndexOf('@') + 1);
+  const resolveMxImpl = options.resolveMxImpl ?? resolveMx;
+  const resolve4Impl = options.resolve4Impl ?? resolve4;
+  const resolve6Impl = options.resolve6Impl ?? resolve6;
+
+  try {
+    const mxRecords = await resolveMxImpl(domain);
+    if (mxRecords.some((record) => record.exchange === '.')) {
+      return { status: 'domain_no_mail', domain, mxHosts: [] };
+    }
+    const mxHosts = mxRecords
+      .map((record) => record.exchange?.toLowerCase())
+      .filter(Boolean);
+    if (mxHosts.length > 0) return { status: 'mx_valid', domain, mxHosts };
+  } catch (error) {
+    if (!['ENODATA', 'ENOTFOUND'].includes(error.code)) {
+      return { status: 'dns_error', domain, mxHosts: [] };
+    }
+  }
+
+  const addressResults = await Promise.allSettled([resolve4Impl(domain), resolve6Impl(domain)]);
+  const hasAddress = addressResults.some((result) => result.status === 'fulfilled' && result.value.length > 0);
+  return {
+    status: hasAddress ? 'implicit_mx' : 'domain_unresolved',
+    domain,
+    mxHosts: []
+  };
 }
 
 export function buildMessage(target, city) {
@@ -170,24 +206,26 @@ async function main() {
       qualityScore: target.qualityScore
     })),
     sent: [],
-    rejectedByMailboxValidation: []
+    rejectedByRecipientValidation: []
   };
 
   if (action === 'send') {
-    const apiKey = process.env.ZEROBOUNCE_API_KEY;
-    if (!apiKey) throw new Error('Sending is blocked: ZEROBOUNCE_API_KEY is not configured');
+    const domainValidationCache = new Map();
 
     for (const candidate of candidates) {
       if (result.sentCount >= remainingToday) break;
-      const validation = await validateMailbox(candidate.email, apiKey);
-      if (validation.status !== 'valid' || validation.catchallDomain === true) {
+      const domain = candidate.email.slice(candidate.email.lastIndexOf('@') + 1);
+      if (!domainValidationCache.has(domain)) {
+        domainValidationCache.set(domain, validateRecipientDomain(candidate.email));
+      }
+      const validation = await domainValidationCache.get(domain);
+      if (!['mx_valid', 'implicit_mx'].includes(validation.status)) {
         result.skippedValidationCount += 1;
-        result.rejectedByMailboxValidation.push({
+        result.rejectedByRecipientValidation.push({
           clinicId: candidate.target.id,
           email: maskEmail(candidate.email),
           status: validation.status,
-          subStatus: validation.subStatus,
-          catchallDomain: validation.catchallDomain
+          domain: validation.domain
         });
         continue;
       }
@@ -290,22 +328,6 @@ function buildReplyReport(inboxMessages, sentRecipients) {
   return { replies, bounces };
 }
 
-async function validateMailbox(email, apiKey) {
-  const body = new URLSearchParams({ api_key: apiKey, email, ip_address: '', timeout: '30' });
-  const response = await fetch('https://api.zerobounce.net/v2/validate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body
-  });
-  const result = await response.json();
-  if (!response.ok || result.error) throw new Error(`Mailbox validation failed for ${maskEmail(email)}: ${result.error ?? response.status}`);
-  return {
-    status: result.status,
-    subStatus: result.sub_status,
-    catchallDomain: result.catchall_domain
-  };
-}
-
 async function sendMail(token, sender, recipient, message) {
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/sendMail`;
   const response = await fetch(url, {
@@ -360,7 +382,7 @@ function renderMarkdown(result) {
     `- Candidates after safety gates: ${result.candidateCount}`,
     `- Sent today before this run: ${result.alreadySentToday}`,
     `- Sent by this run: ${result.sentCount}`,
-    `- Rejected by mailbox validation: ${result.skippedValidationCount}`,
+    `- Rejected by recipient validation: ${result.skippedValidationCount}`,
     `- Replies detected: ${result.replyCount}`,
     `- Bounces detected: ${result.bounceCount}`,
     '',
