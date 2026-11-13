@@ -39,7 +39,7 @@ on:
     - cron: '0 4-10 * * 1-5'
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -73,6 +73,18 @@ jobs:
       - name: Run campaign action
         id: campaign
         run: node campaigns/india-dental-leads/scripts/cloud-email-campaign.mjs
+      - name: Persist campaign ledger
+        if: always()
+        run: |
+          ledger=campaigns/india-dental-leads/delivery-ledger.json
+          if ! git diff --quiet -- "$ledger"; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add "$ledger"
+            git commit -m "Record dental campaign delivery"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
       - name: Add report to workflow summary
         if: always()
         run: |
