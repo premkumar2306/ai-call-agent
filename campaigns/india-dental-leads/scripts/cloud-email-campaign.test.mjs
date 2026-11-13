@@ -8,6 +8,7 @@ import {
   graphRequest,
   isBounce,
   listFolderMessages,
+  listMailboxMessages,
   maskEmail,
   selectCandidates,
   validateRecipientDomain
@@ -97,6 +98,25 @@ test('listFolderMessages uses bounded small pages', async () => {
   assert.equal(requestedUrls.length, 2);
   assert.match(requestedUrls[0], /mailFolders\('Inbox'\)/);
   assert.match(requestedUrls[0], /\$top=25/);
+  assert.doesNotMatch(requestedUrls[0], /bodyPreview/);
+});
+
+test('listMailboxMessages reads sent and received metadata in one bounded request', async () => {
+  const requestedUrls = [];
+  const graphRequestImpl = async (url) => {
+    requestedUrls.push(url);
+    return { value: [{ id: 'one' }] };
+  };
+
+  const messages = await listMailboxMessages('token', 'sender@example.com', { graphRequestImpl });
+
+  assert.deepEqual(messages, [{ id: 'one' }]);
+  assert.equal(requestedUrls.length, 1);
+  assert.match(requestedUrls[0], /\/users\/sender%40example\.com\/messages\?/);
+  assert.match(requestedUrls[0], /toRecipients/);
+  assert.match(requestedUrls[0], /from/);
+  assert.match(requestedUrls[0], /\$top=25/);
+  assert.doesNotMatch(requestedUrls[0], /mailFolders/);
   assert.doesNotMatch(requestedUrls[0], /bodyPreview/);
 });
 
