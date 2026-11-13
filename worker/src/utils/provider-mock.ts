@@ -2,8 +2,8 @@ import type { Env } from '../types';
 
 // End-to-end test hook (worker/e2e/): send every call to an outside service
 // (Anthropic, Deepgram, Cartesia, Sarvam, Razorpay, Resend, Twilio REST,
-// WhatsApp) to a local stand-in instead, so a whole phone call can run on one
-// machine with no accounts or keys:
+// WhatsApp, and the integration checks' Plivo, Exotel and Google OAuth) to a
+// local stand-in instead, so a whole phone call can run on one machine with no accounts or keys:
 //
 //   https://api.sarvam.ai/text-to-speech/stream  →  $PROVIDER_MOCK_URL/api.sarvam.ai/text-to-speech/stream
 //
@@ -19,6 +19,10 @@ export const MOCKED_HOSTS = new Set([
   'api.resend.com',
   'api.twilio.com',
   'graph.facebook.com',
+  'api.plivo.com',
+  'api.exotel.com',
+  'api.in.exotel.com',
+  'oauth2.googleapis.com',
 ]);
 
 /** The URL to fetch instead of `url`, or null to leave it alone. */

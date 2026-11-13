@@ -14,6 +14,9 @@
 //   WhatsApp    graph.facebook.com           messages / mark-as-read logged; media → voice-note bytes
 //   Deepgram    POST /v1/listen              voice-note transcription (the "audio" is the text)
 //   Resend / Twilio REST                     accepted and logged
+//   Integration checks (GET models, projects, voices, domains, plans, accounts) answer 200;
+//   failing.add(host) makes that host answer 401 echoing the credentials it was sent,
+//   so the e2e can prove the Worker redacts them.
 
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
@@ -21,6 +24,7 @@ import { WebSocketServer } from 'ws';
 export async function startMocks({ port = 0 } = {}) {
   const log = { tts: [], stt: [], anthropic: [], razorpay: [], email: [], whatsapp: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
+  const failing = new Set();
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://mock');
@@ -28,6 +32,10 @@ export async function startMocks({ port = 0 } = {}) {
     const path = '/' + rest.join('/');
     const body = await readBody(req);
     try {
+      if (failing.has(host)) {
+        log.other.push({ host, path, method: req.method, failed: true });
+        return json(res, 401, { err_msg: `Invalid credentials: ${req.headers.authorization ?? req.headers['x-api-key'] ?? ''}` });
+      }
       if (host === 'api.anthropic.com' && path === '/v1/messages') return anthropic(JSON.parse(body), res, log);
       if (host === 'api.cartesia.ai' && path === '/tts/bytes') {
         const b = JSON.parse(body);
@@ -117,6 +125,7 @@ export async function startMocks({ port = 0 } = {}) {
     url, log, say,
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
+    failing,
     sttKind: () => stt?.kind ?? null,
     close: () => new Promise(r => { wss.close(); server.close(r); server.closeAllConnections?.(); }),
   };
@@ -250,6 +259,7 @@ function razorpay(method, path, body, auth, res, log) {
   log.razorpay.push({ method, path, auth: !!auth, body: b });
   if (!auth?.startsWith('Basic ')) return json(res, 401, { error: { code: 'BAD_REQUEST_ERROR', description: 'Authentication failed' } });
   const id = p => `${p}_mock${Date.now()}${++rzpSeq}`;
+  if (method === 'GET' && path === '/v1/plans') return json(res, 200, { entity: 'collection', count: 0, items: [] });
   if (method === 'POST' && path === '/v1/plans') return json(res, 200, { id: id('plan'), entity: 'plan', item: b.item });
   if (method === 'POST' && path === '/v1/subscriptions') {
     const sub = { id: id('sub'), entity: 'subscription', plan_id: b.plan_id, status: 'created', short_url: 'https://rzp.io/i/mock', customer_id: null, current_start: null, current_end: null, start_at: b.start_at ?? null };
