@@ -1,8 +1,11 @@
 /*
  * META WHATSAPP BUSINESS POLICY — AI RULES (reference: business.whatsapp.com/policy)
  *
- * 1. OPT-IN REQUIRED: Only message users who have initiated contact first.
- *    This handler only replies — it never sends outbound proactive messages.
+ * 1. OPT-IN REQUIRED: This handler only replies. Business-initiated messages
+ *    (reminders, missed-call follow-ups, confirmations) live in
+ *    services/whatsapp-outbound.ts: approved templates only, off per business
+ *    until the owner turns them on, and never to someone who opted out. A
+ *    customer's first message here is recorded as their opt-in.
  *
  * 2. 24-HOUR SERVICE WINDOW: Free-form replies are only allowed within 24 hours
  *    of the user's last message. Replies to a message older than that are not
