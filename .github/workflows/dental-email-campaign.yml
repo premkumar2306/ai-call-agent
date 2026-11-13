@@ -36,7 +36,7 @@ on:
         default: false
         type: boolean
   schedule:
-    - cron: '0 4-10 * * 1-5'
+    - cron: '7,22,37,52 4-10 * * 1-5'
 
 permissions:
   contents: write
