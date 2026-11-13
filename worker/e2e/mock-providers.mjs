@@ -22,7 +22,7 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 
 export async function startMocks({ port = 0 } = {}) {
-  const log = { tts: [], stt: [], anthropic: [], razorpay: [], email: [], whatsapp: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
+  const log = { tts: [], stt: [], anthropic: [], razorpay: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
   const failing = new Set();
 
@@ -47,7 +47,12 @@ export async function startMocks({ port = 0 } = {}) {
         log.tts.push({ provider: 'sarvam', text: b.text, format: { codec: b.output_audio_codec, sample_rate: b.speech_sample_rate, language: b.language_code }, at: Date.now() });
         return audioResponse(res, b.text);
       }
-      if (host === 'graph.facebook.com') return graph(req, path, body, res, log);
+      if (host === 'graph.facebook.com') return graph(req, path, body, res, log, url);
+      if (host === 'api.twilio.com' && path.endsWith('/Messages.json')) {
+        const f = new URLSearchParams(body);
+        log.sms.push({ to: f.get('To'), from: f.get('From'), body: f.get('Body'), at: Date.now() });
+        return json(res, 201, { sid: `SM${Date.now()}`, status: 'queued' });
+      }
       if (host === 'api.deepgram.com' && path === '/v1/listen' && req.method === 'POST') {
         log.deepgramRest.push({ query: Object.fromEntries(url.searchParams), contentType: req.headers['content-type'], at: Date.now() });
         return json(res, 200, { results: { channels: [{ alternatives: [{ transcript: body, confidence: 0.97 }] }] } });
@@ -126,6 +131,8 @@ export async function startMocks({ port = 0 } = {}) {
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
     failing,
+    /** Meta's side of WhatsApp: stored templates and each number's health. */
+    wa: waState,
     sttKind: () => stt?.kind ?? null,
     close: () => new Promise(r => { wss.close(); server.close(r); server.closeAllConnections?.(); }),
   };
@@ -231,20 +238,42 @@ function anthropic(req, res, log) {
 // A voice note's media id is `voice-<base64url text>`; its "audio" is that text,
 // which the Deepgram mock then "recognises".
 
-function graph(req, path, body, res, log) {
+const waState = {
+  templates: new Map(),                     // `${name}|${language}` → { id, name, language, status, category, components }
+  health: { quality_rating: 'GREEN', messaging_limit_tier: 'TIER_1K', name_status: 'APPROVED' },
+};
+let tplSeq = 0;
+
+function graph(req, path, body, res, log, url) {
   const auth = req.headers.authorization ?? '';
   const parsed = body ? JSON.parse(body) : null;
-  const m = path.match(/^\/(v\d+\.\d+)\/([^/]+)(\/messages)?$/);
-  log.whatsapp.push({ method: req.method, path, version: m?.[1], phoneNumberId: m?.[3] ? m[2] : null, body: parsed, auth: auth.startsWith('Bearer '), at: Date.now() });
+  const m = path.match(/^\/(v\d+\.\d+)\/([^/]+)(\/messages|\/message_templates)?$/);
+  log.whatsapp.push({ method: req.method, path, version: m?.[1], phoneNumberId: m?.[3] === '/messages' ? m[2] : null, body: parsed, auth: auth.startsWith('Bearer '), at: Date.now() });
   if (!auth.startsWith('Bearer ')) return json(res, 401, { error: { code: 190, message: 'Invalid OAuth access token' } });
   const dl = path.match(/^\/media-download\/(.+)$/);
   if (dl) {
     res.writeHead(200, { 'content-type': 'audio/ogg' });
     return res.end(Buffer.from(dl[1].replace(/^voice-/, ''), 'base64url').toString('utf8'));
   }
-  if (m && m[3] && req.method === 'POST') {
+  if (m && m[3] === '/message_templates') {
+    if (req.method === 'GET') return json(res, 200, { data: [...waState.templates.values()], paging: { cursors: {} } });
+    const key = `${parsed?.name}|${parsed?.language}`;
+    if (waState.templates.has(key)) return json(res, 400, { error: { code: 100, error_subcode: 2388024, message: 'Content in this language already exists' } });
+    if (parsed?.category !== 'UTILITY' || !Array.isArray(parsed?.components)) return json(res, 400, { error: { code: 100, message: 'Invalid parameter' } });
+    const t = { id: String(900000 + ++tplSeq), name: parsed.name, language: parsed.language, status: 'PENDING', category: 'UTILITY', components: parsed.components };
+    waState.templates.set(key, t);
+    return json(res, 200, { id: t.id, status: 'PENDING', category: 'UTILITY' });
+  }
+  if (m && m[3] === '/messages' && req.method === 'POST') {
     if (parsed?.status === 'read') return json(res, 200, { success: true });
+    if (parsed?.type === 'template') {
+      const t = waState.templates.get(`${parsed.template?.name}|${parsed.template?.language?.code}`);
+      if (!t || t.status !== 'APPROVED') return json(res, 404, { error: { code: 132001, message: 'Template name does not exist in the translation' } });
+    }
     return json(res, 200, { messaging_product: 'whatsapp', contacts: [{ input: parsed?.to, wa_id: parsed?.to }], messages: [{ id: `wamid.mock${Date.now()}${Math.floor(Math.random() * 1e6)}` }] });
+  }
+  if (m && req.method === 'GET' && (url?.searchParams.get('fields') ?? '').includes('quality_rating')) {
+    return json(res, 200, { id: m[2], display_phone_number: `+91 80471 ${m[2].slice(-5)}`, verified_name: `Clinic ${m[2].slice(-3)}`, status: 'CONNECTED', ...waState.health });
   }
   if (m && req.method === 'GET') return json(res, 200, { url: `https://graph.facebook.com/media-download/${m[2]}`, mime_type: 'audio/ogg; codecs=opus', id: m[2] });
   return json(res, 404, { error: { message: `mock has no ${req.method} ${path}` } });

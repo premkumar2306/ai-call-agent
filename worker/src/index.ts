@@ -123,7 +123,7 @@ app.notFound((c) => c.json({ success: false, error: 'Not found' }, 404));
 // - WhatsApp appointment reminders, 2–24 h ahead, for businesses that turned
 //   them on (a no-op otherwise); each booking is claimed before it is sent;
 // - WhatsApp number health (one Graph read per number) and quality alerts.
-export const DAILY_CRON = '47 20 * * *';
+const DAILY_CRON = '47 20 * * *';
 
 async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   // An unknown cron string (e.g. a trigger added in the dashboard) runs the
