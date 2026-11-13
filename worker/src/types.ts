@@ -204,6 +204,13 @@ export interface Env {
   PLIVO_WEBHOOK_URL?: string;
   /** Business for Plivo numbers with no phone_numbers row. */
   PLIVO_DEFAULT_BUSINESS_TYPE?: string;
+  // Live account checks only (services/integrations.ts; calls never use them).
+  PLIVO_AUTH_ID?: string;
+  EXOTEL_ACCOUNT_SID?: string;
+  EXOTEL_API_KEY?: string;
+  EXOTEL_API_TOKEN?: string;
+  /** Plain var: api.exotel.com (default) or api.in.exotel.com. */
+  EXOTEL_SUBDOMAIN?: string;
   // WhatsApp Cloud API (all secrets — set via `wrangler secret put`)
   WA_APP_SECRET?: string;            // Meta app secret for X-Hub-Signature-256 verification
   WA_VERIFY_TOKEN?: string;          // Arbitrary token used in Meta webhook registration
