@@ -95,6 +95,7 @@ test('listFolderMessages uses bounded small pages', async () => {
 
   assert.deepEqual(messages, [{ id: 'one' }, { id: 'two' }]);
   assert.equal(requestedUrls.length, 2);
+  assert.match(requestedUrls[0], /mailFolders\('Inbox'\)/);
   assert.match(requestedUrls[0], /\$top=25/);
   assert.doesNotMatch(requestedUrls[0], /bodyPreview/);
 });
