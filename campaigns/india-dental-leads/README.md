@@ -6,7 +6,7 @@ Overture Maps Places dataset and are ranked by source confidence, contact-field
 coverage, and address completeness.
 
 These are research leads, not an automatic send list. Every record starts with
-`sendEligible: false`. An address must pass syntax, MX-domain, mailbox-level,
+`sendEligible: false`. An address must pass syntax, live MX-domain,
 duplicate-recipient, opt-out, and human relevance checks before outreach.
 
 ## Refresh all cities
@@ -22,24 +22,24 @@ unique clinics with a public address, at least one public contact channel, an
 Overture confidence score of at least 0.55, and no blocked non-clinic terms.
 
 Domain validation is only a precheck. An MX record does not prove that a
-specific mailbox exists, and catch-all domains must remain `sendEligible:
-false` until a mailbox-validation service or a verified reply confirms them.
+specific mailbox exists, so the campaign starts with a one-message test,
+uses a low daily cap, and suppresses every address already present in Sent
+Items. Delivery failures are reported for review before increasing volume.
 
 ## Cloud email workflow
 
 `Send and monitor dental email campaign` runs entirely in GitHub Actions, so
 the laptop may be off. It supports `preview`, `monitor`, and `send` actions from
 the GitHub mobile app or website. Sending is capped at ten messages per day,
-deduplicates against campaign messages in Sent Items, validates each selected
-mailbox through ZeroBounce, rejects catch-all results, saves messages in Sent
-Items, and reports replies and delivery failures without copying reply bodies
-into GitHub artifacts.
+deduplicates against campaign messages in Sent Items, performs a fresh live
+DNS/MX check immediately before sending, saves messages in Sent Items, and
+reports replies and delivery failures without copying reply bodies into GitHub
+artifacts. DNS validation cannot guarantee that a specific mailbox exists.
 
 The workflow fails closed until these repository secrets exist:
 
 - `MICROSOFT_TENANT_ID`
 - `MICROSOFT_CLIENT_ID`
-- `ZEROBOUNCE_API_KEY`
 
 `MICROSOFT_CLIENT_SECRET` is supported as a fallback, but GitHub OIDC is
 preferred. The Entra application needs application permissions `Mail.Send` and

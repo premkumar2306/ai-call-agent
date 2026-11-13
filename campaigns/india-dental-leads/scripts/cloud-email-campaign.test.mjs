@@ -8,7 +8,8 @@ import {
   graphRequest,
   isBounce,
   maskEmail,
-  selectCandidates
+  selectCandidates,
+  validateRecipientDomain
 } from './cloud-email-campaign.mjs';
 
 const baseTarget = {
@@ -77,4 +78,42 @@ test('graphRequest retries transient Microsoft Graph failures', async () => {
   assert.deepEqual(result, { value: ['message'] });
   assert.equal(attempts, 3);
   assert.deepEqual(delays, [1000, 2000]);
+});
+
+test('validateRecipientDomain accepts live MX and rejects malformed addresses', async () => {
+  const valid = await validateRecipientDomain('clinic@example.com', {
+    resolveMxImpl: async () => [{ exchange: 'mx.example.com', priority: 10 }]
+  });
+  const invalid = await validateRecipientDomain('not-an-email');
+
+  assert.deepEqual(valid, {
+    status: 'mx_valid',
+    domain: 'example.com',
+    mxHosts: ['mx.example.com']
+  });
+  assert.equal(invalid.status, 'invalid_syntax');
+});
+
+test('validateRecipientDomain fails closed when DNS has no mail route', async () => {
+  const validation = await validateRecipientDomain('clinic@example.invalid', {
+    resolveMxImpl: async () => [],
+    resolve4Impl: async () => [],
+    resolve6Impl: async () => []
+  });
+
+  assert.equal(validation.status, 'domain_unresolved');
+});
+
+test('validateRecipientDomain does not send through null MX or DNS errors', async () => {
+  const nullMx = await validateRecipientDomain('clinic@example.com', {
+    resolveMxImpl: async () => [{ exchange: '.', priority: 0 }]
+  });
+  const dnsError = new Error('temporary DNS failure');
+  dnsError.code = 'ETIMEOUT';
+  const unavailable = await validateRecipientDomain('clinic@example.com', {
+    resolveMxImpl: async () => { throw dnsError; }
+  });
+
+  assert.equal(nullMx.status, 'domain_no_mail');
+  assert.equal(unavailable.status, 'dns_error');
 });
