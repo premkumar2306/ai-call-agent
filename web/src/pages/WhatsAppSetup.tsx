@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../auth';
 import { Badge, Button, Card, EmptyState, Notice, Status, Table } from '../components/ui';
+import WhatsAppHealth from '../components/WhatsAppHealth';
+import WhatsAppTemplates from '../components/WhatsAppTemplates';
 
 // Operator → WhatsApp: what WhatsApp routing is, whether this deployment is
 // set up for it (GET /admin/whatsapp-status, booleans only), and which
@@ -9,7 +11,7 @@ import { Badge, Button, Card, EmptyState, Notice, Status, Table } from '../compo
 interface Props { base: string; adminKey: string; sectors: { key: string; name: string }[] }
 interface WaStatus {
   appSecret: boolean; verifyToken: boolean; accessToken: boolean; phoneNumberMap: boolean; webhookPath: string;
-  confirmationTemplate?: boolean; templateLanguage?: boolean; graphApiVersion?: boolean;
+  confirmationTemplate?: boolean; templateLanguage?: boolean; graphApiVersion?: boolean; businessAccountId?: boolean;
 }
 interface WaRow { phoneNumberId: string; businessType: string; label: string | null }
 
@@ -78,7 +80,8 @@ export default function WhatsAppSetup({ base, adminKey, sectors }: Props) {
             <summary>Optional settings</summary>
             <ul className="checklist">
               {[
-                { on: status.confirmationTemplate, name: 'WA_CONFIRMATION_TEMPLATE', what: 'an approved message template for booking confirmations, so they can be sent outside the 24-hour reply window' },
+                { on: status.businessAccountId, name: 'WA_BUSINESS_ACCOUNT_ID', what: 'your WhatsApp Business Account id: needed to create and sync the message templates below' },
+                { on: status.confirmationTemplate, name: 'WA_CONFIRMATION_TEMPLATE', what: 'legacy: one approved template for booking confirmations (use the template picker below instead)' },
                 { on: status.templateLanguage, name: 'WA_TEMPLATE_LANGUAGE', what: "that template's language code (e.g. en, hi)" },
                 { on: status.graphApiVersion, name: 'WA_GRAPH_API_VERSION', what: 'pin the Meta Graph API version; the default is used otherwise' },
               ].map(o => (
@@ -138,6 +141,9 @@ export default function WhatsAppSetup({ base, adminKey, sectors }: Props) {
         </form>
         <Status msg={msg} />
       </Card>
+
+      <WhatsAppHealth base={base} adminKey={adminKey} sectors={sectors} />
+      <WhatsAppTemplates base={base} adminKey={adminKey} />
     </>
   );
 }

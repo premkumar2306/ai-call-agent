@@ -449,3 +449,18 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .integration-ok { border-color: var(--success-border); }
 .integration-error code { white-space: normal; word-break: break-word; color: var(--danger); }
 .integration .plain-list code { word-break: break-all; }
+
+/* WhatsApp: number health, templates, owner previews. */
+.block { display: block; }
+.nowrap { white-space: nowrap; }
+.subhead { margin: var(--s3) 0 var(--s1); }
+.wa-events { display: grid; gap: var(--s3); }
+.wa-event { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--s3); display: grid; gap: var(--s2); }
+.wa-event .row-between { flex-wrap: wrap; gap: var(--s2); }
+.wa-previews { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.wa-preview { background: var(--surface-2); border-radius: var(--radius-sm); padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
+.wa-preview .bubble { max-width: 100%; }
+.switch-row { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s2) 0; }
+.switch-row + .switch-row { border-top: 1px solid var(--border); }
+.switch-row input { margin-top: 3px; }
+.switch-row .what { display: grid; gap: 2px; }
