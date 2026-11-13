@@ -166,8 +166,9 @@ async function main() {
 
   if (action !== 'preview') {
     graphToken = await getGraphToken();
-    sentMessages = await listFolderMessages(graphToken, sender, 'sentitems');
-    inboxMessages = await listFolderMessages(graphToken, sender, 'inbox');
+    const mailboxMessages = await listMailboxMessages(graphToken, sender);
+    sentMessages = mailboxMessages;
+    inboxMessages = mailboxMessages;
   }
 
   const campaignSent = sentMessages.filter((message) => message.subject?.startsWith(campaignSubjectPrefix));
@@ -307,6 +308,27 @@ export async function listFolderMessages(token, sender, folder, options = {}) {
       response = await graphRequestImpl(url, token);
     } catch (error) {
       throw new Error(`Microsoft Graph ${folder} read failed: ${error.message}`);
+    }
+    messages.push(...(response.value ?? []));
+    url = response['@odata.nextLink'] ?? null;
+  }
+  return messages;
+}
+
+export async function listMailboxMessages(token, sender, options = {}) {
+  const pageSize = options.pageSize ?? 25;
+  const maxPages = options.maxPages ?? 4;
+  const graphRequestImpl = options.graphRequestImpl ?? graphRequest;
+  const select = 'subject,from,toRecipients,sentDateTime,receivedDateTime';
+  let url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/messages?$select=${select}&$top=${pageSize}`;
+  const messages = [];
+
+  for (let page = 0; page < maxPages && url; page += 1) {
+    let response;
+    try {
+      response = await graphRequestImpl(url, token);
+    } catch (error) {
+      throw new Error(`Microsoft Graph mailbox read failed: ${error.message}`);
     }
     messages.push(...(response.value ?? []));
     url = response['@odata.nextLink'] ?? null;
