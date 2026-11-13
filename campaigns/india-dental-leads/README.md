@@ -51,10 +51,10 @@ restricted to `premkumar@deskzen.in`. Configure a federated credential for
 Scheduled monitoring is enabled with repository variable
 `DENTAL_MONITOR_ENABLED=true`. Scheduled sending additionally requires
 `DENTAL_CAMPAIGN_ENABLED=true`; configure `DENTAL_CAMPAIGN_CITY` and
-`DENTAL_CAMPAIGN_DAILY_LIMIT` before enabling it. Leave sending disabled until
-the first manual one-message test is verified in Sent Items. The cloud workflow
-retries hourly from 09:30 through 15:30 IST on weekdays; the daily limit prevents
-later runs from sending beyond the configured cap.
+`DENTAL_CAMPAIGN_DAILY_LIMIT` before enabling it. Keep the daily limit at one
+until the first scheduled message is verified in Sent Items. The cloud workflow
+retries hourly from 09:30 through 15:30 IST on weekdays; the daily limit
+prevents later runs from sending beyond the configured cap.
 
 ## Outputs
 
