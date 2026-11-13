@@ -326,10 +326,28 @@ async function sendMail(token, sender, recipient, message) {
   if (!response.ok) throw new Error(`Microsoft Graph sendMail failed for ${maskEmail(recipient)}: ${response.status} ${await response.text()}`);
 }
 
-async function graphRequest(url, token) {
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Microsoft Graph request failed: ${response.status} ${await response.text()}`);
-  return response.json();
+export async function graphRequest(url, token, options = {}) {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const sleep = options.sleep ?? delay;
+  const maxAttempts = options.maxAttempts ?? 4;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const response = await fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (response.ok) return response.json();
+
+    const details = await response.text();
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === maxAttempts) {
+      throw new Error(`Microsoft Graph request failed: ${response.status} ${details}`);
+    }
+
+    const retryAfterHeader = response.headers.get('retry-after');
+    const retryAfter = retryAfterHeader === null ? Number.NaN : Number(retryAfterHeader);
+    const backoff = Number.isFinite(retryAfter) && retryAfter >= 0
+      ? retryAfter * 1000
+      : Math.min(1000 * (2 ** (attempt - 1)), 8000);
+    await sleep(backoff);
+  }
 }
 
 function renderMarkdown(result) {
