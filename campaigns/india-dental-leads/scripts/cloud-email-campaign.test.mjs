@@ -7,6 +7,7 @@ import {
   dateKey,
   graphRequest,
   isBounce,
+  listFolderMessages,
   maskEmail,
   selectCandidates,
   validateRecipientDomain
@@ -78,6 +79,23 @@ test('graphRequest retries transient Microsoft Graph failures', async () => {
   assert.deepEqual(result, { value: ['message'] });
   assert.equal(attempts, 3);
   assert.deepEqual(delays, [1000, 2000]);
+});
+
+test('listFolderMessages uses bounded small pages', async () => {
+  const requestedUrls = [];
+  const graphRequestImpl = async (url) => {
+    requestedUrls.push(url);
+    if (requestedUrls.length === 1) {
+      return { value: [{ id: 'one' }], '@odata.nextLink': 'https://graph.microsoft.com/next' };
+    }
+    return { value: [{ id: 'two' }], '@odata.nextLink': 'https://graph.microsoft.com/ignored' };
+  };
+
+  const messages = await listFolderMessages('token', 'sender@example.com', 'inbox', { graphRequestImpl });
+
+  assert.deepEqual(messages, [{ id: 'one' }, { id: 'two' }]);
+  assert.equal(requestedUrls.length, 2);
+  assert.match(requestedUrls[0], /\$top=50/);
 });
 
 test('validateRecipientDomain accepts live MX and rejects malformed addresses', async () => {
