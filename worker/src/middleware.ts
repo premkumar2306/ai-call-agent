@@ -129,13 +129,13 @@ export async function withAdminKey(c: Context<HonoEnv>, next: Next) {
 // bearer token. Non-members get the same 403 whether or not the business
 // exists, so the response doesn't reveal which keys are real.
 
-function isAdmin(c: Context<HonoEnv>): boolean | null {
+export function isAdmin(c: Context<HonoEnv>): boolean | null {
   const key = c.req.header('x-admin-key');
   if (key === undefined) return null; // not attempted
   return !!c.env.ADMIN_SECRET && !!key && timingSafeEqual(key, c.env.ADMIN_SECRET);
 }
 
-async function ownerFromRequest(c: Context<HonoEnv>): Promise<UserRow | null> {
+export async function ownerFromRequest(c: Context<HonoEnv>): Promise<UserRow | null> {
   const auth = c.req.header('authorization');
   if (!auth?.startsWith('Bearer ')) return null;
   return verifyOwnerToken(c.env, auth.slice(7));

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Badge, Button, Card, Notice, Status } from '../components/ui';
+import { Badge, Button, Card, Notice, Status, NotAvailable } from '../components/ui';
 
 interface Props {
   sector: string;
@@ -141,7 +141,7 @@ export default function Calendar({ sector, base, auth, oauthResult, canEdit = tr
           </div>
         </Notice>
       ) : (
-        <Notice tone="info">Google Calendar isn't available yet. The Avery team is setting it up; you'll be able to connect it here.</Notice>
+        <NotAvailable feature="Google Calendar">The Avery team is setting it up. You'll be able to connect it here once it's ready.</NotAvailable>
       ))}
 
       {conn && (

@@ -19,7 +19,8 @@
 // handshake, signatures, a chat booking, voice notes, retries, status
 // webhooks, unmapped numbers, Hindi, the DPDP notice and billing. Plus Razorpay billing end to
 // end: trial, Checkout signature (good and bad), activation, failed payment → dunning email,
-// halted, month-end overage add-on, GST tax invoice, plan change and cancellation.
+// halted, month-end overage add-on, GST tax invoice, plan change and cancellation. Plus
+// /admin/integrations: Working, Not set up, and Failing with a redacted error.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHmac, randomUUID } from 'node:crypto';
@@ -39,7 +40,7 @@ const SECRETS = {
   CUSTOMER_HASH_SALT: 'e2e-salt',
   ANTHROPIC_API_KEY: 'sk-ant-mock', DEEPGRAM_API_KEY: 'dg-mock', CARTESIA_API_KEY: 'ca-mock', SARVAM_API_KEY: 'sv-mock',
   TWILIO_AUTH_TOKEN: 'tw-auth-mock', TWILIO_WEBHOOK_URL: BASE, TWILIO_ACCOUNT_SID: 'ACmock', TWILIO_SMS_FROM: '+13125550000',
-  EXOTEL_WEBHOOK_SECRET: 'ex-secret-mock', PLIVO_AUTH_TOKEN: 'pl-auth-mock', PLIVO_WEBHOOK_URL: BASE,
+  EXOTEL_WEBHOOK_SECRET: 'ex-secret-mock', PLIVO_AUTH_TOKEN: 'pl-auth-mock', PLIVO_WEBHOOK_URL: BASE, PLIVO_AUTH_ID: 'MAMOCK0001',
   RAZORPAY_KEY_ID: 'rzp_test_mock', RAZORPAY_KEY_SECRET: 'rzp-secret-mock', RAZORPAY_WEBHOOK_SECRET: 'rzp-webhook-mock',
   RESEND_API_KEY: 're_mock', EMAIL_FROM: 'Avery <test@example.com>',
   BILLING_SUPPLIER_GSTIN: '27AAPFU0939F1ZV',   // Maharashtra: a Maharashtra customer gets CGST+SGST
@@ -596,6 +597,49 @@ async function whatsappScenario(mocks) {
   check(n, 'notice is in the consent audit trail once', waNotices.length === 1, `${waNotices.length} row(s)`);
 }
 
+// ── Integrations: /admin/integrations against the stand-ins ──────────────────
+// Google Calendar has no keys here (Not set up); Exotel has no API key for its
+// live check (set up, not checked); every other service is set up and its
+// stand-in answers, so its live check reports Working. Then Deepgram's
+// stand-in starts refusing the key and echoing it back: the check shows
+// Failing with an error that carries no secret.
+
+async function integrationsScenario(mocks) {
+  const n = 'integrations';
+  console.log('\n▶ Integrations readiness');
+  const before = await api('GET', '/admin/integrations');
+  const by0 = Object.fromEntries(before.integrations.map(i => [i.id, i]));
+  check(n, 'before any check: set-up services read "unchecked", missing ones "not_configured"', by0.anthropic.status === 'unchecked' && by0.google.status === 'not_configured' && by0.google.missing.includes('GOOGLE_CLIENT_ID'), `${by0.anthropic.status} / ${by0.google.status}`);
+
+  const results = {};
+  for (const i of before.integrations) results[i.id] = await api('POST', `/admin/integrations/${i.id}/check`);
+  const after = await api('GET', '/admin/integrations');
+  const st = Object.fromEntries(after.integrations.map(i => [i.id, i.status]));
+  const working = ['cloudflare', 'core', 'anthropic', 'deepgram', 'cartesia', 'sarvam', 'twilio', 'plivo', 'resend', 'razorpay', 'whatsapp'];
+  check(n, 'mocked services report Working', working.every(id => st[id] === 'ok'), working.filter(id => st[id] !== 'ok').map(id => `${id}=${st[id]}: ${results[id]?.error ?? results[id]?.note ?? ''}`).join(', ') || 'all ok');
+  check(n, 'missing services report Not set up; Exotel without an API key is set up but not checked', st.google === 'not_configured' && st.exotel === 'unchecked' && /EXOTEL_API_KEY/.test(after.integrations.find(i => i.id === 'exotel').lastCheck?.note ?? ''), `google=${st.google} exotel=${st.exotel}`);
+  check(n, 'production readiness: 100% with every blocker Working', after.readiness.score === 100 && after.readiness.blockers.length === 0, JSON.stringify(after.readiness));
+
+  mocks.failing.add('api.deepgram.com');
+  await sleep(10_500);   // the per-service cooldown
+  const res = await fetch(`${BASE}/admin/integrations/deepgram/check`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN } });
+  const text = await res.text();
+  const listText = await (await fetch(`${BASE}/admin/integrations`, { headers: { 'X-Admin-Key': ADMIN } })).text();
+  mocks.failing.delete('api.deepgram.com');
+  const fail = JSON.parse(text).data;
+  const leaked = Object.values(SECRETS).filter(v => v.length >= 6 && (text.includes(v) || listText.includes(v)));
+  check(n, 'a failing provider shows Failing with a safe error', fail?.ok === false && /^HTTP 401/.test(fail.error) && JSON.parse(listText).data.integrations.find(i => i.id === 'deepgram').status === 'fail', fail?.error);
+  check(n, 'no secret value appears in any integrations response', leaked.length === 0, leaked.length ? `${leaked.length} leaked` : 'none');
+  const again = await fetch(`${BASE}/admin/integrations/deepgram/check`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN } });
+  check(n, 'checks are rate limited', again.status === 429, `${again.status}`);
+
+  // npm run preflight against this Worker: a checklist, never a value.
+  const pf = spawnSync('node', ['scripts/preflight.mjs', '--no-wrangler', '--no-check'], { cwd: WORKER_DIR, encoding: 'utf8', env: { ...process.env, WORKER_URL: BASE, ADMIN_KEY: ADMIN } });
+  const out = pf.stdout + pf.stderr;
+  const pfLeaks = [ADMIN, ...Object.values(SECRETS)].filter(v => v.length >= 6 && out.includes(v));
+  check(n, 'preflight prints the go-live checklist with ✓ / ✗ and next actions, and no secret', /✓ Anthropic/.test(out) && /✗ Google Calendar/.test(out) && /wrangler secret put GOOGLE_CLIENT_ID/.test(out) && pfLeaks.length === 0, `exit ${pf.status}; ${pfLeaks.length} leaked`);
+}
+
 const SCENARIOS = [
   {
     name: 'US business over Twilio (English)', key: 'us_twilio', carrier: 'twilio', country: 'US',
@@ -638,6 +682,7 @@ try {
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
+  if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);
 } catch (e) {
   console.error('\n✗ e2e run failed:', e.stack || e);
   results.push({ scenario: 'run', name: 'harness', ok: false, detail: String(e.message || e) });

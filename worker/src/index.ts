@@ -22,6 +22,7 @@ import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
 import { installProviderMock } from './utils/provider-mock';
 import { privacyAdminRouter } from './routes/privacy';
+import { featuresRouter, integrationsAdminRouter } from './routes/integrations';
 import { applyRetention } from './services/retention.service';
 
 export { CallRelay } from './durable-objects/call-relay';
@@ -59,7 +60,9 @@ app.route('/plivo',    plivoRouter);
 app.route('/admin/calendar', calendarAdminRouter);
 app.route('/admin/privacy', privacyAdminRouter);
 app.route('/admin/billing', billingAdminRouter);
+app.route('/admin/integrations', integrationsAdminRouter);
 app.route('/admin',    adminRouter);
+app.route('/features', featuresRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
 app.route('/billing',  billingRouter);

@@ -64,6 +64,17 @@ export function Notice({ tone, children }: { tone?: 'success' | 'error' | 'warni
   return <div className={cx('notice', tone && `notice-${tone}`)} role={tone === 'error' ? 'alert' : 'status'}>{children}</div>;
 }
 
+// The one way owner pages say a feature depends on a service the Avery team
+// hasn't set up yet: calm, no setting names, nothing for the owner to do.
+export function NotAvailable({ feature, children }: { feature: ReactNode; children?: ReactNode }) {
+  return (
+    <Notice tone="info">
+      <span className="strong">{feature} isn't available yet.</span>{' '}
+      {children ?? "The Avery team is setting it up. You'll be able to use it here once it's ready."}
+    </Notice>
+  );
+}
+
 export function EmptyState({ title, children, action }: { title: ReactNode; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="empty">

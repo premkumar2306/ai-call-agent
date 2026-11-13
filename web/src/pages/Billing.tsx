@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Badge, Button, Card, Notice, Status, Table } from '../components/ui';
+import { Badge, Button, Card, Notice, Status, Table, NotAvailable } from '../components/ui';
 import CallCosts from '../components/CallCosts';
 
 // Billing tab: plan, minutes this month, GST-inclusive amounts, invoices and
@@ -233,7 +233,7 @@ export default function Billing({ sector, base, auth }: Props) {
         onChange={e => setDetails(d => ({ ...d, [k]: e.target.value }))} />
     </div>
   );
-  const checkoutBlocked = !data.razorpayConfigured ? 'Online payment isn\'t switched on for this service yet (Razorpay keys).' : plan && !plan.checkoutReady ? 'This plan hasn\'t been set up in Razorpay yet.' : '';
+  const checkoutBlocked = !data.razorpayConfigured ? 'Online payment isn\'t available yet.' : plan && !plan.checkoutReady ? 'This plan hasn\'t been set up in Razorpay yet.' : '';
   const pay = data.payment;
   const statusLine =
     data.state === 'trialing' && account?.trialEndsAt ? `Free trial: ${data.trialDaysLeft} day${data.trialDaysLeft === 1 ? '' : 's'} left (until ${day(account.trialEndsAt)}). Nothing is charged before then.`
@@ -271,7 +271,9 @@ export default function Billing({ sector, base, auth }: Props) {
               <dd>{pay?.lastStatus === 'failed' ? <Badge tone="danger">Failed</Badge> : pay?.lastStatus === 'captured' ? <Badge tone="success">Paid</Badge> : '—'}{pay?.lastAt ? ` ${day(pay.lastAt)}` : ''}</dd>
               {data.pendingPlan && <><dt>Plan change</dt><dd>Moves to {data.pendingPlan.name} at the end of this period</dd></>}
             </dl>
-            {action === 'subscribe' && checkoutBlocked && <p className="muted small">{checkoutBlocked}</p>}
+            {action === 'subscribe' && checkoutBlocked && (data.razorpayConfigured
+              ? <p className="muted small">{checkoutBlocked}</p>
+              : <NotAvailable feature="Online payment">The Avery team is setting it up. Your assistant keeps working in the meantime.</NotAvailable>)}
           </div>
         ) : (
           <p className="muted">Billing is off for this business: calls are not charged.</p>
