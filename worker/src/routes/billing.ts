@@ -7,10 +7,12 @@ import { getRole, roleAllows, verifyOwnerToken } from '../services/accounts';
 import { isPeriod, isValidGstin, normalizeGstin, billingPeriod } from '../services/billing/pricing';
 import { checkWebhook, RazorpayNotConfigured } from '../services/billing/razorpay';
 import {
-  applyWebhook, assignPlan, billingSummary, closePeriod, confirmCheckout, getAccount, listPlans,
+  assignPlan, billingSummary, closePeriod, confirmCheckout, getAccount, listPlans, allAccountsStatus,
   callCosts, startSubscription, syncPlanToRazorpay, updateBillingDetails, upsertPlan, usageRecordsFor, validatePlanInput,
-  type BillingDetails, type RazorpayWebhook, type Viewer,
+  type BillingDetails, type Viewer,
 } from '../services/billing/service';
+import { applyWebhook, cancelSubscription, changePlan, ownerPlans, runDunning, updatePaymentLink, type RazorpayWebhook } from '../services/billing/lifecycle';
+import { getTaxInvoice, renderInvoiceHtml } from '../services/billing/invoices';
 
 type BillingEnv = { Bindings: HonoEnv['Bindings']; Variables: HonoEnv['Variables'] & { viewer: Viewer } };
 
@@ -114,6 +116,40 @@ billingRouter.post('/:businessType/confirm', async (c) => {
   return ok ? c.json({ success: true }) : c.json({ success: false, error: 'Payment signature did not verify' }, 400);
 });
 
+// Plans the owner can switch to (no Razorpay ids, no cost).
+billingRouter.get('/:businessType/plans', async (c) => c.json({ success: true, data: await ownerPlans(c.env) }));
+
+// POST { planId } — upgrade now, downgrade at the cycle end.
+billingRouter.post('/:businessType/change-plan', async (c) => {
+  const b = await c.req.json().catch(() => null);
+  if (typeof b?.planId !== 'string' || !b.planId) return c.json({ success: false, error: 'planId is required' }, 400);
+  try { return c.json({ success: true, data: await changePlan(c.env, c.req.param('businessType'), b.planId) }); }
+  catch (e) { return errorResponse(c, e); }
+});
+
+// Cancel at the end of the paid-for period (at once if nothing was charged yet).
+billingRouter.post('/:businessType/cancel', async (c) => {
+  try { return c.json({ success: true, data: await cancelSubscription(c.env, c.req.param('businessType')) }); }
+  catch (e) { return errorResponse(c, e); }
+});
+
+// Razorpay's hosted page to pay a failed charge / change the mandate.
+billingRouter.post('/:businessType/update-payment', async (c) => {
+  try { return c.json({ success: true, data: await updatePaymentLink(c.env, c.req.param('businessType')) }); }
+  catch (e) { return errorResponse(c, e); }
+});
+
+// GET …/invoices/:id — the printable GST tax invoice (HTML; "Print / save as PDF").
+billingRouter.get('/:businessType/invoices/:id', async (c) => {
+  const inv = await getTaxInvoice(c.env, c.req.param('businessType'), c.req.param('id'));
+  if (!inv) return c.json({ success: false, error: 'Invoice not found' }, 404);
+  return c.body(renderInvoiceHtml(c.env, inv), 200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+    'Cache-Control': 'private, no-store',
+  });
+});
+
 // ── /admin/billing — operator only ──────────────────────────────────────────
 
 export const billingAdminRouter = new Hono<HonoEnv>();
@@ -151,6 +187,12 @@ billingAdminRouter.put('/accounts/:businessType', async (c) => {
     return c.json({ success: true, data: account });
   } catch (e) { return errorResponse(c, e); }
 });
+
+// GET /admin/billing/accounts — every business's billing status this month
+billingAdminRouter.get('/accounts', async (c) => c.json({ success: true, data: await allAccountsStatus(c.env) }));
+
+// POST /admin/billing/dunning — the daily notices, by hand
+billingAdminRouter.post('/dunning', async (c) => c.json({ success: true, data: await runDunning(c.env) }));
 
 billingAdminRouter.get('/accounts/:businessType', async (c) => {
   return c.json({ success: true, data: await getAccount(c.env, c.req.param('businessType')) });
@@ -194,8 +236,20 @@ razorpayRouter.post('/webhook', async (c) => {
   try { evt = JSON.parse(raw); } catch { return c.json({ success: false, error: 'Invalid JSON' }, 400); }
   if (typeof evt?.event !== 'string') return c.json({ success: false, error: 'Missing event' }, 400);
 
-  // A 5xx makes Razorpay retry; the event id is only stored once applied.
-  const result = await applyWebhook(c.env, c.req.header('x-razorpay-event-id') ?? null, evt);
-  console.log(`[razorpay] ${evt.event}: ${result}`);
-  return c.json({ success: true });
+  // A 5xx makes Razorpay retry; the event id is released if applying fails.
+  // Without an event id header (never from Razorpay), the body's hash dedupes.
+  const eventId = c.req.header('x-razorpay-event-id') || `body:${await sha256Hex(raw)}`;
+  try {
+    const result = await applyWebhook(c.env, eventId, evt);
+    console.log(`[razorpay] ${evt.event}: ${result}`);
+    return c.json({ success: true });
+  } catch (e: any) {
+    console.error(`[razorpay] ${evt.event} failed`, e?.message || e);
+    return c.json({ success: false, error: 'Webhook processing failed' }, 500);
+  }
 });
+
+async function sha256Hex(s: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  return Array.from(d, b => b.toString(16).padStart(2, '0')).join('');
+}

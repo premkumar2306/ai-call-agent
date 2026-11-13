@@ -19,7 +19,7 @@ import { customerHashSalt } from '../config';
 
 export type BookingEvent = 'booked' | 'rescheduled' | 'cancelled';
 
-export async function sendEmail(env: Env, to: string, subject: string, text: string): Promise<void> {
+export async function sendEmail(env: Env, to: string, subject: string, text: string, html?: string): Promise<void> {
   if (!env.RESEND_API_KEY || env.RESEND_API_KEY === 'CHANGE_ME') {
     console.log(`[notify] RESEND_API_KEY not set; skipping email "${subject}"`);
     return;
@@ -28,7 +28,7 @@ export async function sendEmail(env: Env, to: string, subject: string, text: str
     method: 'POST',
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: env.EMAIL_FROM ?? 'Mogi <mogi@mogi.ai>', to: [to], subject, text }),
+    body: JSON.stringify({ from: env.EMAIL_FROM ?? 'Mogi <mogi@mogi.ai>', to: [to], subject, text, ...(html ? { html } : {}) }),
   });
   if (!res.ok) throw new Error(`Resend ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
