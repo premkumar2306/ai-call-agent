@@ -8,6 +8,7 @@ import {
   excludeLedgerRecipients,
   graphRequest,
   hashEmail,
+  isAmbiguousSendError,
   isTransientGraphError,
   isBounce,
   listFolderMessages,
@@ -93,6 +94,12 @@ test('only transient Graph failures permit ledger-backed sending', () => {
   assert.equal(isTransientGraphError(new Error('Microsoft Graph mailbox read failed: Microsoft Graph request failed: 502 error')), true);
   assert.equal(isTransientGraphError(new Error('Microsoft Graph request failed: 429 throttled')), true);
   assert.equal(isTransientGraphError(new Error('Microsoft Graph request failed: 403 forbidden')), false);
+});
+
+test('ambiguous send failures are limited to throttling and server errors', () => {
+  assert.equal(isAmbiguousSendError(Object.assign(new Error('throttled'), { status: 429 })), true);
+  assert.equal(isAmbiguousSendError(Object.assign(new Error('unavailable'), { status: 502 })), true);
+  assert.equal(isAmbiguousSendError(Object.assign(new Error('forbidden'), { status: 403 })), false);
 });
 
 test('graphRequest retries transient Microsoft Graph failures', async () => {

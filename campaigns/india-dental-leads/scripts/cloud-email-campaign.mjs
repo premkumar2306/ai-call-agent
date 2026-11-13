@@ -209,6 +209,7 @@ async function main() {
     remainingToday,
     candidateCount: candidates.length,
     sentCount: 0,
+    ambiguousCount: 0,
     skippedValidationCount: 0,
     replyCount: replyReport.replies.length,
     bounceCount: replyReport.bounces.length,
@@ -222,6 +223,7 @@ async function main() {
       qualityScore: target.qualityScore
     })),
     sent: [],
+    deliveryErrors: [],
     rejectedByRecipientValidation: []
   };
 
@@ -229,7 +231,7 @@ async function main() {
     const domainValidationCache = new Map();
 
     for (const candidate of candidates) {
-      if (result.sentCount >= remainingToday) break;
+      if (result.sentCount + result.ambiguousCount >= remainingToday) break;
       const domain = candidate.email.slice(candidate.email.lastIndexOf('@') + 1);
       if (!domainValidationCache.has(domain)) {
         domainValidationCache.set(domain, validateRecipientDomain(candidate.email));
@@ -247,7 +249,22 @@ async function main() {
       }
 
       const message = buildMessage(candidate.target, city);
-      await sendMail(graphToken, sender, candidate.email, message);
+      try {
+        await sendMail(graphToken, sender, candidate.email, message);
+      } catch (error) {
+        if (!isAmbiguousSendError(error)) throw error;
+        recordCampaignSend(campaignState, candidate.email, today);
+        await writeCampaignState(statePath, campaignState);
+        result.ambiguousCount += 1;
+        result.deliveryErrors.push({
+          clinicId: candidate.target.id,
+          clinicName: candidate.target.clinicName,
+          email: maskEmail(candidate.email),
+          status: error.status,
+          message: error.message
+        });
+        break;
+      }
       recordCampaignSend(campaignState, candidate.email, today);
       await writeCampaignState(statePath, campaignState);
       result.sentCount += 1;
@@ -270,6 +287,9 @@ async function main() {
   writeGitHubOutput('bounce_count', result.bounceCount);
   writeGitHubOutput('report_path', markdownPath);
   console.log(renderMarkdown(result));
+  if (result.deliveryErrors.length) {
+    throw new Error(`Microsoft Graph returned an ambiguous delivery result for ${result.deliveryErrors[0].email}; the recipient was recorded to prevent duplicates`);
+  }
 }
 
 export function normalizeCampaignState(value = {}) {
@@ -303,6 +323,10 @@ export function excludeLedgerRecipients(candidates, recipientHashes) {
 
 export function isTransientGraphError(error) {
   return /Microsoft Graph request failed: (429|5\d\d)\b/.test(error.message);
+}
+
+export function isAmbiguousSendError(error) {
+  return error.status === 429 || error.status >= 500;
 }
 
 async function readCampaignState(path) {
@@ -440,7 +464,11 @@ async function sendMail(token, sender, recipient, message) {
       saveToSentItems: true
     })
   });
-  if (!response.ok) throw new Error(`Microsoft Graph sendMail failed for ${maskEmail(recipient)}: ${response.status} ${await response.text()}`);
+  if (!response.ok) {
+    const error = new Error(`Microsoft Graph sendMail failed for ${maskEmail(recipient)}: ${response.status} ${await response.text()}`);
+    error.status = response.status;
+    throw error;
+  }
 }
 
 export async function graphRequest(url, token, options = {}) {
@@ -478,6 +506,7 @@ function renderMarkdown(result) {
     `- Candidates after safety gates: ${result.candidateCount}`,
     `- Sent today before this run: ${result.alreadySentToday}`,
     `- Sent by this run: ${result.sentCount}`,
+    `- Ambiguous delivery attempts: ${result.ambiguousCount}`,
     `- Rejected by recipient validation: ${result.skippedValidationCount}`,
     `- Replies detected: ${result.replyCount}`,
     `- Bounces detected: ${result.bounceCount}`,
@@ -493,6 +522,10 @@ function renderMarkdown(result) {
   if (result.bounces.length) {
     lines.push('', '## Delivery failures', '');
     for (const bounce of result.bounces) lines.push(`- ${bounce.receivedAt}: ${bounce.subject}`);
+  }
+  if (result.deliveryErrors.length) {
+    lines.push('', '## Ambiguous delivery attempts', '');
+    for (const failure of result.deliveryErrors) lines.push(`- ${failure.clinicName} (${failure.email}) — Graph ${failure.status}; recorded to prevent duplicate retries`);
   }
   return `${lines.join('\n')}\n`;
 }
