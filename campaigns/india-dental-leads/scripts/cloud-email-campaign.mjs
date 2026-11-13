@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { appendFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,6 +153,7 @@ async function main() {
   const maxEmails = Math.min(10, Math.max(1, Number.parseInt(process.env.MAX_EMAILS ?? '10', 10)));
   const outputDirectory = process.env.CAMPAIGN_OUTPUT_DIR ?? join(campaignDirectory, 'runtime');
   const sender = process.env.OUTLOOK_SENDER ?? 'premkumar@deskzen.in';
+  const statePath = join(campaignDirectory, 'delivery-ledger.json');
 
   if (!['preview', 'monitor', 'send'].includes(action)) throw new Error(`Unsupported CAMPAIGN_ACTION: ${action}`);
   if (!allowedCities.has(city)) throw new Error(`Unsupported CAMPAIGN_CITY: ${city}`);
@@ -159,34 +161,49 @@ async function main() {
     throw new Error('Sending is blocked: confirm_send must be true or DENTAL_CAMPAIGN_ENABLED must be true');
   }
 
+  await mkdir(outputDirectory, { recursive: true });
   const payload = JSON.parse(await readFile(join(campaignDirectory, city, 'targets-1000.json'), 'utf8'));
+  const campaignState = await readCampaignState(statePath);
   let graphToken = null;
   let sentMessages = [];
   let inboxMessages = [];
+  let mailboxReadStatus = action === 'preview' ? 'not_requested' : 'available';
+  let mailboxReadError = null;
 
   if (action !== 'preview') {
     graphToken = await getGraphToken();
-    const mailboxMessages = await listMailboxMessages(graphToken, sender);
-    sentMessages = mailboxMessages;
-    inboxMessages = mailboxMessages;
+    try {
+      const mailboxMessages = await listMailboxMessages(graphToken, sender);
+      sentMessages = mailboxMessages;
+      inboxMessages = mailboxMessages;
+    } catch (error) {
+      if (action !== 'send' || !isTransientGraphError(error)) throw error;
+      mailboxReadStatus = 'degraded';
+      mailboxReadError = error.message;
+    }
   }
 
   const campaignSent = sentMessages.filter((message) => message.subject?.startsWith(campaignSubjectPrefix));
-  const sentRecipients = new Set(
-    campaignSent.flatMap((message) => message.toRecipients ?? [])
-      .map((recipient) => recipient.emailAddress?.address?.toLowerCase())
-      .filter(Boolean)
+  const sentRecipients = new Set(campaignSent.flatMap((message) => message.toRecipients ?? [])
+    .map((recipient) => recipient.emailAddress?.address?.toLowerCase())
+    .filter(Boolean));
+  const candidates = excludeLedgerRecipients(
+    selectCandidates(payload.targets, sentRecipients),
+    campaignState.recipientHashes
   );
-  const candidates = selectCandidates(payload.targets, sentRecipients);
   const replyReport = buildReplyReport(inboxMessages, sentRecipients);
   const today = dateKey(new Date());
-  const sentToday = campaignSent.filter((message) => dateKey(message.sentDateTime ?? message.receivedDateTime) === today).length;
+  const mailboxSentToday = campaignSent.filter((message) => dateKey(message.sentDateTime ?? message.receivedDateTime) === today).length;
+  const ledgerSentToday = campaignState.daily.date === today ? campaignState.daily.count : 0;
+  const sentToday = Math.max(mailboxSentToday, ledgerSentToday);
   const remainingToday = Math.max(0, maxEmails - sentToday);
   const result = {
     action,
     city,
     sender,
     generatedAt: new Date().toISOString(),
+    mailboxReadStatus,
+    mailboxReadError,
     maxEmailsPerDay: maxEmails,
     alreadySentToday: sentToday,
     remainingToday,
@@ -231,6 +248,8 @@ async function main() {
 
       const message = buildMessage(candidate.target, city);
       await sendMail(graphToken, sender, candidate.email, message);
+      recordCampaignSend(campaignState, candidate.email, today);
+      await writeCampaignState(statePath, campaignState);
       result.sentCount += 1;
       result.sent.push({
         clinicId: candidate.target.id,
@@ -242,7 +261,6 @@ async function main() {
     }
   }
 
-  await mkdir(outputDirectory, { recursive: true });
   const jsonPath = join(outputDirectory, 'campaign-report.json');
   const markdownPath = join(outputDirectory, 'campaign-report.md');
   await writeFile(jsonPath, `${JSON.stringify(result, null, 2)}\n`);
@@ -252,6 +270,52 @@ async function main() {
   writeGitHubOutput('bounce_count', result.bounceCount);
   writeGitHubOutput('report_path', markdownPath);
   console.log(renderMarkdown(result));
+}
+
+export function normalizeCampaignState(value = {}) {
+  const recipientHashes = [...new Set((value.recipientHashes ?? [])
+    .map((hash) => String(hash).trim().toLowerCase())
+    .filter((hash) => /^[a-f0-9]{64}$/.test(hash)))].sort();
+  const date = typeof value.daily?.date === 'string' ? value.daily.date : null;
+  const count = Number.isInteger(value.daily?.count) && value.daily.count >= 0 ? value.daily.count : 0;
+  return { version: 1, recipientHashes, daily: { date, count } };
+}
+
+export function recordCampaignSend(state, email, date) {
+  const recipientHash = hashEmail(email);
+  if (!state.recipientHashes.includes(recipientHash)) {
+    state.recipientHashes.push(recipientHash);
+    state.recipientHashes.sort();
+  }
+  if (state.daily.date !== date) state.daily = { date, count: 0 };
+  state.daily.count += 1;
+  return state;
+}
+
+export function hashEmail(email) {
+  return createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+}
+
+export function excludeLedgerRecipients(candidates, recipientHashes) {
+  const ledgerHashes = new Set(recipientHashes);
+  return candidates.filter(({ email }) => !ledgerHashes.has(hashEmail(email)));
+}
+
+export function isTransientGraphError(error) {
+  return /Microsoft Graph request failed: (429|5\d\d)\b/.test(error.message);
+}
+
+async function readCampaignState(path) {
+  try {
+    return normalizeCampaignState(JSON.parse(await readFile(path, 'utf8')));
+  } catch (error) {
+    if (error.code === 'ENOENT') return normalizeCampaignState();
+    throw error;
+  }
+}
+
+async function writeCampaignState(path, state) {
+  await writeFile(path, `${JSON.stringify(normalizeCampaignState(state), null, 2)}\n`);
 }
 
 async function getGraphToken() {
@@ -410,6 +474,7 @@ function renderMarkdown(result) {
     `- Action: ${result.action}`,
     `- City: ${result.city}`,
     `- Generated: ${result.generatedAt}`,
+    `- Mailbox read status: ${result.mailboxReadStatus}`,
     `- Candidates after safety gates: ${result.candidateCount}`,
     `- Sent today before this run: ${result.alreadySentToday}`,
     `- Sent by this run: ${result.sentCount}`,

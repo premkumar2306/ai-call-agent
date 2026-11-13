@@ -31,10 +31,17 @@ Items. Delivery failures are reported for review before increasing volume.
 `Send and monitor dental email campaign` runs entirely in GitHub Actions, so
 the laptop may be off. It supports `preview`, `monitor`, and `send` actions from
 the GitHub mobile app or website. Sending is capped at ten messages per day,
-deduplicates against campaign messages in Sent Items, performs a fresh live
-DNS/MX check immediately before sending, saves messages in Sent Items, and
-reports replies and delivery failures without copying reply bodies into GitHub
-artifacts. DNS validation cannot guarantee that a specific mailbox exists.
+deduplicates against campaign messages in Sent Items and a hashed delivery
+ledger, performs a fresh live DNS/MX check immediately before sending, saves
+messages in Sent Items, and reports replies and delivery failures without
+copying reply bodies into GitHub artifacts. DNS validation cannot guarantee
+that a specific mailbox exists.
+
+If Microsoft Graph message reads return a transient 429 or 5xx response, a send
+run can continue from `delivery-ledger.json`; authentication and permission
+errors still fail closed. Each accepted send updates the hashed ledger and the
+workflow commits it to `main`, allowing later cloud runs to enforce deduplication
+and the daily cap even while mailbox monitoring is degraded.
 
 The workflow fails closed until these repository secrets exist:
 

@@ -5,11 +5,16 @@ import {
   buildMessage,
   classifyReply,
   dateKey,
+  excludeLedgerRecipients,
   graphRequest,
+  hashEmail,
+  isTransientGraphError,
   isBounce,
   listFolderMessages,
   listMailboxMessages,
   maskEmail,
+  normalizeCampaignState,
+  recordCampaignSend,
   selectCandidates,
   validateRecipientDomain
 } from './cloud-email-campaign.mjs';
@@ -60,6 +65,34 @@ test('message contains city language and opt-out', () => {
 test('date and masking helpers produce stable output', () => {
   assert.equal(dateKey('2026-11-12T20:00:00Z'), '2026-11-13');
   assert.equal(maskEmail('hello@example.com'), 'he***@example.com');
+});
+
+test('campaign state normalizes recipients and tracks a daily send cap', () => {
+  const helloHash = hashEmail('hello@example.com');
+  const state = normalizeCampaignState({
+    recipientHashes: [helloHash, helloHash, 'invalid'],
+    daily: { date: '2026-11-12', count: 4 }
+  });
+
+  recordCampaignSend(state, 'New@Example.com', '2026-11-13');
+
+  assert.deepEqual(state, {
+    version: 1,
+    recipientHashes: [helloHash, hashEmail('new@example.com')].sort(),
+    daily: { date: '2026-11-13', count: 1 }
+  });
+});
+
+test('delivery ledger prevents selecting a previously attempted recipient', () => {
+  const candidates = [{ target: baseTarget, email: 'hello@example.com' }];
+
+  assert.deepEqual(excludeLedgerRecipients(candidates, [hashEmail('HELLO@example.com')]), []);
+});
+
+test('only transient Graph failures permit ledger-backed sending', () => {
+  assert.equal(isTransientGraphError(new Error('Microsoft Graph mailbox read failed: Microsoft Graph request failed: 502 error')), true);
+  assert.equal(isTransientGraphError(new Error('Microsoft Graph request failed: 429 throttled')), true);
+  assert.equal(isTransientGraphError(new Error('Microsoft Graph request failed: 403 forbidden')), false);
 });
 
 test('graphRequest retries transient Microsoft Graph failures', async () => {
