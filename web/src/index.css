@@ -436,3 +436,16 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .plan-option { border: 1px solid var(--border); border-radius: var(--radius, 10px); padding: var(--s3); display: flex; flex-direction: column; gap: 6px; align-items: flex-start; background: var(--surface); }
 .plan-option.current { border-color: var(--accent); }
 .plan-option .price { font-size: 20px; }
+
+/* Operator → Integrations */
+.readiness { display: flex; align-items: center; gap: var(--s3); }
+.readiness .progress { flex: 1; height: 10px; }
+.check.warn { border-color: var(--warning); color: var(--warning); }
+.integrations-grid { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); align-items: start; }
+.integration { gap: var(--s2); }
+.integration p { margin: 0; }
+.integration-title { font-size: 16px; margin: 0; }
+.integration-fail { border-color: var(--danger-border); }
+.integration-ok { border-color: var(--success-border); }
+.integration-error code { white-space: normal; word-break: break-word; color: var(--danger); }
+.integration .plain-list code { word-break: break-all; }

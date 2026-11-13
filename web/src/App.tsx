@@ -5,6 +5,8 @@ import Calls from './pages/Calls';
 import DefaultLine, { LocaleSettings } from './pages/Settings';
 import Appointments from './pages/Appointments';
 import WhatsAppSetup from './pages/WhatsAppSetup';
+import Integrations from './pages/Integrations';
+import WhatsAppNote from './components/WhatsAppNote';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
 import Business from './pages/Business';
@@ -161,6 +163,7 @@ export default function App() {
     { route: 'op/numbers', label: 'Phone numbers', icon: '☏' },
     { route: 'op/whatsapp', label: 'WhatsApp', icon: '✉' },
     { route: 'op/plans', label: 'Plans & billing', icon: '₹' },
+    { route: 'op/integrations', label: 'Integrations', icon: '◎' },
   ];
   const allowed = [...businessNav, ...(isOperator ? operatorNav : [])];
   const fallback = isOperator ? 'op/businesses' : 'home';
@@ -313,7 +316,10 @@ export default function App() {
                 <Dashboard sector={sector} base={BASE} auth={headers} canEdit={canEdit} operator={isOperator} />
                 <VoiceSettings base={BASE} auth={headers} sectors={one} />
               </>}
-              {settingsKey === 'phone' && <PhoneNumber sector={sector} base={BASE} auth={headers} canEdit={canEdit} onTry={() => go('try')} />}
+              {settingsKey === 'phone' && <>
+                <PhoneNumber sector={sector} base={BASE} auth={headers} canEdit={canEdit} onTry={() => go('try')} />
+                <WhatsAppNote base={BASE} auth={headers} />
+              </>}
               {settingsKey === 'privacy' && <PrivacySettings base={BASE} auth={headers} sectors={one} />}
               {settingsKey === 'billing' && <Billing sector={sector} base={BASE} auth={headers} />}
             </div>
@@ -343,6 +349,10 @@ export default function App() {
           {isOperator && current === 'op/whatsapp' && <>
             <PageHeader title="WhatsApp" description="Connect WhatsApp Business numbers and choose which business answers each one." />
             <WhatsAppSetup base={BASE} adminKey={adminKey} sectors={sectors} />
+          </>}
+          {isOperator && current === 'op/integrations' && <>
+            <PageHeader title="Integrations" description="Every outside service Avery uses: whether it's set up on this deployment and whether it works with the real keys. Values are never shown." />
+            <Integrations base={BASE} adminKey={adminKey} />
           </>}
           {isOperator && current === 'op/plans' && sector && <>
             <PageHeader title="Plans & billing" description={<>Plans, the plan new businesses start on, and costs. Usage and invoices below are for <span className="strong">{selected?.name}</span>.</>} />

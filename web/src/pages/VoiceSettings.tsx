@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Card, Notice, Status } from '../components/ui';
+import { Button, Card, Status, NotAvailable } from '../components/ui';
 
 interface Props {
   base: string;
@@ -117,7 +117,7 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
         {voice && <span className="help">{voiceHint}</span>}
       </div>
       {voice && !voice.sarvamConfigured && (voice.sttProvider === 'sarvam' || voice.ttsProvider === 'sarvam') && (
-        <Notice tone="warning">The Indian-language option isn't switched on for this service yet (SARVAM_API_KEY), so it can't be saved.</Notice>
+        <NotAvailable feature="Hindi and Hinglish calls">The Avery team is setting it up. Until then, your line stays in English.</NotAvailable>
       )}
       <div className="form-actions"><Button onClick={save} disabled={!voice} busy={saving}>Save</Button></div>
       <Status msg={msg} />
