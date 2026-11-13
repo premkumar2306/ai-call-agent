@@ -8,7 +8,9 @@
 //   Sarvam STT  WS   /speech-to-text/ws      events + data, driven by say()
 //   Cartesia    POST /tts/bytes              raw µ-law 8 kHz
 //   Sarvam TTS  POST /text-to-speech/stream  raw µ-law 8 kHz
-//   Razorpay    /v1/plans, /v1/subscriptions, /v1/subscriptions/:id
+//   Razorpay    /v1/plans, /v1/subscriptions[/:id[/cancel|/addons]], PATCH /v1/subscriptions/:id, /v1/invoices/:id
+//               (stateful: the e2e sets a subscription's status with razorpaySub(id))
+//   Resend      POST /emails                 logged with the body (log.email)
 //   WhatsApp    graph.facebook.com           messages / mark-as-read logged; media → voice-note bytes
 //   Deepgram    POST /v1/listen              voice-note transcription (the "audio" is the text)
 //   Resend / Twilio REST                     accepted and logged
@@ -17,7 +19,7 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 
 export async function startMocks({ port = 0 } = {}) {
-  const log = { tts: [], stt: [], anthropic: [], razorpay: [], whatsapp: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
+  const log = { tts: [], stt: [], anthropic: [], razorpay: [], email: [], whatsapp: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
 
   const server = http.createServer(async (req, res) => {
@@ -43,6 +45,11 @@ export async function startMocks({ port = 0 } = {}) {
         return json(res, 200, { results: { channels: [{ alternatives: [{ transcript: body, confidence: 0.97 }] }] } });
       }
       if (host === 'api.razorpay.com') return razorpay(req.method, path, body, req.headers.authorization, res, log);
+      if (host === 'api.resend.com' && path === '/emails') {
+        const b = JSON.parse(body);
+        log.email.push({ to: b.to?.[0], subject: b.subject, text: b.text, html: !!b.html, at: Date.now() });
+        return json(res, 200, { id: `email_${Date.now()}` });
+      }
       log.other.push({ host, path, method: req.method });
       return json(res, 200, { id: `mock_${Date.now()}`, sid: 'SMmock', messages: [{ id: 'wamid.mock' }] });
     } catch (e) {
@@ -108,6 +115,8 @@ export async function startMocks({ port = 0 } = {}) {
 
   return {
     url, log, say,
+    /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
+    razorpaySub: id => subs.get(id),
     sttKind: () => stt?.kind ?? null,
     close: () => new Promise(r => { wss.close(); server.close(r); server.closeAllConnections?.(); }),
   };
@@ -235,25 +244,37 @@ function graph(req, path, body, res, log) {
 // ── Razorpay ─────────────────────────────────────────────────────────────────
 
 const subs = new Map();
+let rzpSeq = 0;
 function razorpay(method, path, body, auth, res, log) {
-  log.razorpay.push({ method, path, auth: !!auth, body: body ? JSON.parse(body) : null });
+  const b = body ? JSON.parse(body) : null;
+  log.razorpay.push({ method, path, auth: !!auth, body: b });
   if (!auth?.startsWith('Basic ')) return json(res, 401, { error: { code: 'BAD_REQUEST_ERROR', description: 'Authentication failed' } });
-  if (method === 'POST' && path === '/v1/plans') return json(res, 200, { id: `plan_mock${Date.now()}`, entity: 'plan' });
+  const id = p => `${p}_mock${Date.now()}${++rzpSeq}`;
+  if (method === 'POST' && path === '/v1/plans') return json(res, 200, { id: id('plan'), entity: 'plan', item: b.item });
   if (method === 'POST' && path === '/v1/subscriptions') {
-    const b = JSON.parse(body);
-    const sub = { id: `sub_mock${Date.now()}`, entity: 'subscription', plan_id: b.plan_id, status: 'created', short_url: 'https://rzp.io/i/mock', customer_id: null, current_start: null, current_end: null };
+    const sub = { id: id('sub'), entity: 'subscription', plan_id: b.plan_id, status: 'created', short_url: 'https://rzp.io/i/mock', customer_id: null, current_start: null, current_end: null, start_at: b.start_at ?? null };
     subs.set(sub.id, sub);
     return json(res, 200, sub);
   }
-  const m = path.match(/^\/v1\/subscriptions\/([^/]+)$/);
-  if (method === 'GET' && m) {
-    const sub = subs.get(m[1]);
-    if (!sub) return json(res, 404, { error: { description: 'not found' } });
-    // The mock "customer paid": the next read shows it active.
-    Object.assign(sub, { status: 'active', customer_id: 'cust_mock', current_end: Math.floor(Date.now() / 1000) + 30 * 86400 });
+  const m = path.match(/^\/v1\/subscriptions\/([^/]+)(\/cancel|\/addons)?$/);
+  const sub = m && subs.get(m[1]);
+  if (m && !sub) return json(res, 400, { error: { code: 'BAD_REQUEST_ERROR', description: 'The id provided does not exist' } });
+  if (m && method === 'GET' && !m[2]) return json(res, 200, sub);
+  if (m && method === 'PATCH' && !m[2]) {
+    if (sub.status !== 'active') return json(res, 400, { error: { description: 'Subscription can be updated only when active' } });
+    if (b.schedule_change_at === 'now') sub.plan_id = b.plan_id; else sub.has_scheduled_changes = true;
     return json(res, 200, sub);
   }
-  if (method === 'POST' && /\/addons$/.test(path)) return json(res, 200, { id: `ao_mock${Date.now()}` });
+  if (m && method === 'POST' && m[2] === '/cancel') {
+    if (!b.cancel_at_cycle_end) sub.status = 'cancelled';
+    return json(res, 200, sub);
+  }
+  if (m && method === 'POST' && m[2] === '/addons') {
+    if (!['active', 'authenticated'].includes(sub.status)) return json(res, 400, { error: { description: 'Addon can be created only for active subscriptions' } });
+    return json(res, 200, { id: id('ao'), entity: 'addon', item: b.item, quantity: b.quantity });
+  }
+  const inv = path.match(/^\/v1\/invoices\/([^/]+)$/);
+  if (inv && method === 'GET') return json(res, 200, { id: inv[1], entity: 'invoice', subscription_id: [...subs.keys()].at(-1) ?? null });
   return json(res, 404, { error: { description: `mock has no ${method} ${path}` } });
 }
 
