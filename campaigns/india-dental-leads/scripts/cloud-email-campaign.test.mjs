@@ -5,6 +5,7 @@ import {
   buildMessage,
   classifyReply,
   dateKey,
+  graphRequest,
   isBounce,
   maskEmail,
   selectCandidates
@@ -58,3 +59,22 @@ test('date and masking helpers produce stable output', () => {
   assert.equal(maskEmail('hello@example.com'), 'he***@example.com');
 });
 
+test('graphRequest retries transient Microsoft Graph failures', async () => {
+  let attempts = 0;
+  const delays = [];
+  const fetchImpl = async () => {
+    attempts += 1;
+    if (attempts < 3) return new Response('temporarily unavailable', { status: 503 });
+    return Response.json({ value: ['message'] });
+  };
+
+  const result = await graphRequest('https://graph.microsoft.com/test', 'token', {
+    fetchImpl,
+    sleep: async (milliseconds) => delays.push(milliseconds),
+    maxAttempts: 3
+  });
+
+  assert.deepEqual(result, { value: ['message'] });
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [1000, 2000]);
+});
