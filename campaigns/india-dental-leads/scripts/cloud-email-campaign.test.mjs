@@ -88,14 +88,15 @@ test('listFolderMessages uses bounded small pages', async () => {
     if (requestedUrls.length === 1) {
       return { value: [{ id: 'one' }], '@odata.nextLink': 'https://graph.microsoft.com/next' };
     }
-    return { value: [{ id: 'two' }], '@odata.nextLink': 'https://graph.microsoft.com/ignored' };
+    return { value: [{ id: 'two' }] };
   };
 
   const messages = await listFolderMessages('token', 'sender@example.com', 'inbox', { graphRequestImpl });
 
   assert.deepEqual(messages, [{ id: 'one' }, { id: 'two' }]);
   assert.equal(requestedUrls.length, 2);
-  assert.match(requestedUrls[0], /\$top=50/);
+  assert.match(requestedUrls[0], /\$top=25/);
+  assert.doesNotMatch(requestedUrls[0], /bodyPreview/);
 });
 
 test('validateRecipientDomain accepts live MX and rejects malformed addresses', async () => {

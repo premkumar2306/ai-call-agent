@@ -291,9 +291,11 @@ async function getGraphToken() {
 }
 
 export async function listFolderMessages(token, sender, folder, options = {}) {
-  const select = 'subject,toRecipients,from,receivedDateTime,sentDateTime,bodyPreview,internetMessageId';
-  const pageSize = options.pageSize ?? 50;
-  const maxPages = options.maxPages ?? 2;
+  const select = folder === 'sentitems'
+    ? 'subject,toRecipients,sentDateTime'
+    : 'subject,from,receivedDateTime';
+  const pageSize = options.pageSize ?? 25;
+  const maxPages = options.maxPages ?? 4;
   const graphRequestImpl = options.graphRequestImpl ?? graphRequest;
   let url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(sender)}/mailFolders/${folder}/messages?$select=${select}&$top=${pageSize}`;
   const messages = [];
