@@ -24,7 +24,7 @@ different subject so replies are easy to tell apart, and don't change the campai
 >
 > I made a 1-minute demo set up for {name}: {demo_url}
 >
-> We're offering a free 14-day pilot. You keep your number; we only forward the calls you miss.
+> We're offering a free 14-day pilot, and for the first clinics, free setup and a free first month. You keep your number; we only forward the calls you miss.
 > If it doesn't catch 5 bookings you'd have lost, you pay nothing.
 >
 > Worth a 15-minute call this week?
@@ -34,8 +34,9 @@ different subject so replies are easy to tell apart, and don't change the campai
 
 ### Touch 2 (day 3). Same thread. Subject: `Re: {name}: missed calls after 7 pm?`
 
-> Hi again. One number that may help: most dental clinics we spoke to miss 1 in 5 calls at peak
-> hours. One recovered implant or aligner case pays for a year of Avery (₹2,999/month after the pilot).
+> Hi again. With one person at the front desk, calls during treatment, lunch and after 8 pm
+> usually go unanswered, and those patients ring the next clinic. One recovered implant or aligner case pays for months of Avery. If you use Practo, keep it: Practo answers
+> Practo's line, and Avery answers *your* clinic number, in Hindi or English, even at 11 pm.
 >
 > Try calling your demo receptionist yourself: {demo_url}
 >
@@ -109,7 +110,12 @@ the pitch changes: "you clearly answer fast, so this is about after-hours and lu
    - *"We have a receptionist."* "Avery doesn't replace her. It covers lunch, busy times and after hours."
    - *"Patients won't talk to a robot."* "Listen to the demo. It speaks Hindi and English, says it's an
      assistant, and hands over to your team for anything clinical."
-   - *"Price?"* "Free for 14 days, then ₹2,999 a month. That's less than one RCT."
+   - *"Price?"* "Free for 14 days. For the first clinics, setup and the first month are free too. After
+     that it's ₹4,999 a month for a clinic plan, or ₹2,999 for a single chair. That's less than one RCT."
+   - *"We use Practo."* "Keep it. Practo answers Practo's line; Avery answers your own number and puts the
+     booking in your calendar."
+   - *"We have a WhatsApp bot."* "WhatsApp tools don't pick up the phone. Avery answers the call, then
+     confirms on WhatsApp."
    - *"Send details."* "Sure. Email or WhatsApp?" Send the demo link within 5 minutes.
 6. **Close.** Book a 20-minute setup slot. Log the outcome in `pipeline.csv`.
    **If they say don't call, write `dnc` in `consent_status` and never call again.**
@@ -128,7 +134,7 @@ clinic band ho, tab patient ki call ka kya hota hai?"
 
 Follow-up after accepting (one message only):
 
-> Thanks for connecting, Dr {last_name}. We're giving 10 clinics in {city} a free 14-day pilot, and a
-> locked founding price if they stay. Happy to set yours up, or just hear what you think of the demo.
+> Thanks for connecting, Dr {last_name}. We're giving the first clinics in {city} a free 14-day pilot,
+> free setup and a free first month if they stay. Happy to set yours up, or just hear what you think of the demo.
 
 LinkedIn is manual only, with no automation tools. Stop if there's no reply.

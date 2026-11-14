@@ -6,7 +6,7 @@ untouched. Keep it running; this plan adds new leads and channels around it.
 
 | File | What |
 |---|---|
-| `offer.md` | ICP, 14-day free pilot → ₹2,999/mo + GST, founding price (draft), guarantee |
+| `offer.md` | ICP, 14-day free pilot → Clinic plan ₹4,999/mo + GST (Starter ₹2,999), founding offer, guarantee: all draft |
 | `leads.csv` | 399 new dental clinics (Bengaluru 288, Hyderabad 111), deduped against every list in `campaigns/` |
 | `sequences.md` | Email ×3, WhatsApp ×2, cold-call script, LinkedIn note, each in English + Hinglish, with opt-out wording |
 | `compliance-checklist.md` | DPDP, TRAI TCCCPR, WhatsApp Business policy and LinkedIn rules for each channel |
@@ -31,10 +31,11 @@ untouched. Keep it running; this plan adds new leads and channels around it.
   slugs (or read name/area from `leads.csv`). Open a link before sending it.
 
 ## Owner approval needed before anything goes out
-1. Offer and price: 14-day free pilot, ₹2,999/mo + GST, **founding price ₹1,999/mo for 12 months (draft)**,
-   guarantee (5 caught bookings or free; 30-day refund on the first paid month).
+1. Offer and price (draft, from competition analysis PR #100): 14-day free pilot → **Clinic plan ₹4,999/mo + GST**
+   (800 min, ₹6/min) or Starter ₹2,999; **founding offer for the first 25: free setup + first month free, price locked
+   12 months**; create the `in_clinic` plan before the first charge; guarantee (5 caught bookings or free; 30-day refund on the first paid month).
 2. Referral terms: one month free for both clinics; 20% recurring for 12 months for partners (draft).
-3. Copy in `sequences.md`, especially the subject line and the "1 in 5 calls" claim (replace it with real pilot data when you have it).
+3. Copy in `sequences.md`, especially the subject lines. Add real pilot numbers ("caught N calls in 14 days") once there are any; the copy makes no statistical claims yet.
 4. Channels: email from premkumar@deskzen.in by hand (or a separate approved run, not the existing workflow);
    WhatsApp only to clinic-published numbers, one by one; calls manual only.
 5. That the demo site renders for these slugs.
@@ -42,7 +43,7 @@ untouched. Keep it running; this plan adds new leads and channels around it.
 ## Today
 - [ ] Approve or edit `offer.md` and `sequences.md`.
 - [ ] Expodent Hyderabad is on **14–15 Nov at HITEX**. If someone can go on the 15th, meet distributors there (`channels.md` §2).
-- [ ] Pick 30 tier-B leads in ICP areas (HSR, Koramangala, Whitefield, Indiranagar, JP Nagar; Gachibowli, Kondapur, Madhapur, Kukatpally). Fill in rating and missed-call signal; check their demo links.
+- [ ] Pick 30 tier-B leads whose patients call in English or Hindi (no Tamil/Telugu/Kannada support yet), in ICP areas (HSR, Koramangala, Whitefield, Indiranagar, JP Nagar; Gachibowli, Kondapur, Madhapur, Kukatpally). Fill in rating and missed-call signal; check their demo links.
 - [ ] Send email touch 1 to 10 of them by hand. Log each in `pipeline.csv`.
 
 ## This week
