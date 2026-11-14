@@ -1,5 +1,7 @@
 # Competition analysis: Avery (DeskZen) for Indian dental clinics
 
+One-page brief (private Artifact): https://claude.ai/artifact/JTxNrWSjtKzphzohawEKkD
+
 Seen on 2026-11-14. The full dataset, with one row per competitor and a source URL for each, is in [`competitors.csv`](competitors.csv).
 
 > **Method and caveats.** This is desk research only. No vendor was contacted and no trial was started. Vendor pages could not be loaded directly from the research sandbox, so every figure comes from search-indexed pages: the vendor's own page where it was indexed, otherwise a third-party pricing guide. Each figure cites its source. Where sources conflict, the table gives the range or the most-cited figure. Anything that could not be verified is marked **unknown**. USD figures are converted at an **assumed ₹88/$**, which is a conversion and not a quoted price. Re-check the vendors' live pages before quoting any number to a customer.
