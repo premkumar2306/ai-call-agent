@@ -27,6 +27,10 @@ untouched. Keep it running; this plan adds new leads and channels around it.
 - Rebuild: `pip install pyarrow && python3 campaigns/acquisition/scripts/collect-leads.py`, then
   `NODE_USE_ENV_PROXY=1 node campaigns/acquisition/scripts/personalize.mjs`. The second step fetches each clinic's
   home page once, 2 s apart, after checking robots.txt.
+- **Done in this PR:** `demo_slug`/`demo_url` for all 399, plus first lines built from name and area. 40 mention
+  a specialty; the rest use a generic opener. Clinic websites couldn't be reached from the build sandbox (network
+  allowlist), so `whatsapp` is empty and first lines aren't website-based yet. Run `personalize.mjs --force` on
+  a normal connection to fill them from each clinic's home page.
 - Demo links use `https://demo.deskzen.in/?demo=<demo_slug>`. The demo-site workstream needs to accept these
   slugs (or read name/area from `leads.csv`). Open a link before sending it.
 
