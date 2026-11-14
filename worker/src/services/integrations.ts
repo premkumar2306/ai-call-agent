@@ -202,7 +202,7 @@ export const INTEGRATIONS: Integration[] = [
       { name: 'PLIVO_WEBHOOK_URL', required: true, purpose: 'Public base URL Plivo calls' },
       { name: 'PLIVO_AUTH_ID', checkOnly: true, purpose: 'Auth ID (live check only)' },
     ],
-    getFrom: 'https://console.plivo.com/dashboard/', doc: 'docs/production-readiness.md#plivo', cost: 'Per number per month and per minute',
+    getFrom: 'https://console.plivo.com/dashboard/', doc: 'docs/plivo-setup.md', cost: 'Per number per month and per minute',
     async check(env) {
       const id = v(env, 'PLIVO_AUTH_ID');
       if (!id) return skip('Add PLIVO_AUTH_ID to check the account');

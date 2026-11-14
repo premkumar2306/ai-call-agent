@@ -16,7 +16,8 @@
     "simulate-call": "node scripts/simulate-call.mjs",
     "e2e": "node e2e/run.mjs",
     "whatsapp-setup": "node scripts/whatsapp-setup.mjs",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "plivo:verify": "node scripts/plivo-verify.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
