@@ -6,7 +6,7 @@ import { normalizeE164 } from '../src/services/phone-numbers';
 import { signCompactStreamToken, verifyCompactStreamToken } from '../src/utils/stream-token';
 import { callerIdentity, hashId } from '../src/utils/identity';
 import { exotelSecretMatches } from '../src/routes/exotel';
-import { plivoV3BaseString, validatePlivoV3Signature } from '../src/routes/plivo';
+import { plivoRouter, plivoV3BaseString, validatePlivoV3Signature } from '../src/routes/plivo';
 import { streamConfig } from '../src/durable-objects/call-relay';
 import type { Env } from '../src/types';
 
@@ -245,7 +245,9 @@ describe('exotelSecretMatches', () => {
 describe('Plivo V3 signature', () => {
   it('builds the base string from the URL, sorted params and nonce', () => {
     expect(plivoV3BaseString('POST', 'https://w.dev/plivo/answer', { To: '918', From: '919', CallUUID: 'u' }, 'n1'))
-      .toBe('https://w.dev/plivo/answerCallUUIDuFrom919To918.n1');
+      .toBe('https://w.dev/plivo/answer?CallUUIDuFrom919To918.n1');
+    expect(plivoV3BaseString('POST', 'https://w.dev/plivo/hangup', {}, 'n1')).toBe('https://w.dev/plivo/hangup.n1');
+    expect(plivoV3BaseString('POST', 'https://w.dev/p?a=1', {}, 'n1')).toBe('https://w.dev/p?a=1.n1');
     expect(plivoV3BaseString('POST', 'https://w.dev/plivo/answer?b=2&a=1', { X: '1' }, 'n1'))
       .toBe('https://w.dev/plivo/answer?a=1&b=2.X1.n1');
     expect(plivoV3BaseString('GET', 'https://w.dev/p?b=2', { a: '1' }, 'n')).toBe('https://w.dev/p?a=1&b=2.n');
@@ -259,5 +261,62 @@ describe('Plivo V3 signature', () => {
     expect(await validatePlivoV3Signature('tok', `old,${sig}`, 'n1', 'POST', url, params)).toBe(true);
     expect(await validatePlivoV3Signature('tok', sig, 'n2', 'POST', url, params)).toBe(false);
     expect(await validatePlivoV3Signature('tok', sig, 'n1', 'POST', url, { ...params, From: '1' })).toBe(false);
+  });
+
+  it("matches a signature computed with Plivo's SDK algorithm (url?sortedParams.nonce)", async () => {
+    // HMAC-SHA256('tok', 'https://w.dev/plivo/answer?CallUUIDuFrom919To918.n1'), base64.
+    const sdk = 'qSkJ4jtgVLWjXIy7vHy8LfsnlABM3krBIA4sUGYUnF8=';
+    expect(await validatePlivoV3Signature('tok', sdk, 'n1', 'POST', 'https://w.dev/plivo/answer', { To: '918', From: '919', CallUUID: 'u' })).toBe(true);
+  });
+});
+
+describe('Plivo routes', () => {
+  const kv = () => { const m = new Map<string, string>(); return { m, get: async (k: string) => m.get(k) ?? null, put: async (k: string, v: string) => { m.set(k, v); }, delete: async (k: string) => { m.delete(k); } }; };
+  const TOKEN = 'pl-tok';
+  const BASE = 'https://w.dev';
+  async function signed(path: string, params: Record<string, string>, e: Env, sig?: string) {
+    const nonce = 'n' + Math.random().toString(36).slice(2);
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(TOKEN), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const good = Buffer.from(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(plivoV3BaseString('POST', BASE + path, params, nonce)))).toString('base64');
+    return plivoRouter.request(path, {
+      method: 'POST', body: new URLSearchParams(params).toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Plivo-Signature-V3': sig ?? good, 'X-Plivo-Signature-V3-Nonce': nonce },
+    }, e);
+  }
+  const penv = (cache = kv()) => env({ PLIVO_AUTH_TOKEN: TOKEN, PLIVO_WEBHOOK_URL: BASE, CACHE: cache as any });
+
+  it('rejects unsigned and badly signed webhooks, and fails closed in production without the token', async () => {
+    const p = { CallUUID: 'u1', From: '919812345678', To: '918047100001' };
+    expect((await signed('/answer', p, penv(), 'bad')).status).toBe(403);
+    expect((await plivoRouter.request('/answer', { method: 'POST', body: new URLSearchParams(p).toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, penv())).status).toBe(403);
+    expect((await plivoRouter.request('/hangup', { method: 'POST', body: '' }, env({ CACHE: kv() as any }))).status).toBe(403);
+  });
+
+  it('transfers with our own number as caller ID and a Dial action', async () => {
+    const cache = kv();
+    cache.m.set('transfer:u2', '+919876500001');
+    const res = await signed('/after-stream', { CallUUID: 'u2', To: '918047100001', From: '919812345678' }, penv(cache));
+    const body = await res.text();
+    expect(body).toContain('callerId="918047100001"');
+    expect(body).toContain('action="https://w.dev/plivo/after-dial"');
+    expect(body).toContain('<Number>919876500001</Number>');
+    expect(body).not.toContain('<Speak>');
+    expect(await (await signed('/after-stream', { CallUUID: 'u3' }, penv(cache))).text()).toContain('<Hangup/>');
+  });
+
+  it('only apologises when the staff leg was not answered', async () => {
+    expect(await (await signed('/after-dial', { CallUUID: 'u2', DialStatus: 'completed' }, penv())).text()).not.toContain('Speak');
+    expect(await (await signed('/after-dial', { CallUUID: 'u2', DialStatus: 'no-answer' }, penv())).text()).toContain('nobody was able to pick up');
+  });
+
+  it('acknowledges the hangup callback (also when it arrives at the Answer URL)', async () => {
+    const cache = kv();
+    cache.m.set('transfer:u4', '+919876500001');
+    const r = await signed('/hangup', { CallUUID: 'u4', CallStatus: 'completed', Event: 'Hangup', HangupCause: 'NORMAL_CLEARING', Duration: '42' }, penv(cache));
+    expect(r.status).toBe(200);
+    expect(cache.m.has('transfer:u4')).toBe(false);
+    const a = await signed('/answer', { CallUUID: 'u5', CallStatus: 'completed', Event: 'Hangup', To: '918047100001' }, penv());
+    expect(a.status).toBe(200);
+    expect(await a.text()).not.toContain('<Stream');
   });
 });

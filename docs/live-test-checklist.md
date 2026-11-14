@@ -21,8 +21,11 @@ set your own mobile as the staff phone.
    - [ ] Admin → Privacy → notices shows the call with `heard_fully = 1`.
 
 ## Plivo (alternative Indian number)
-Same as Exotel. The answer URL is `https://<worker>/plivo/answer`, and `PLIVO_WEBHOOK_URL` must
-be exactly the URL Plivo calls. A wrong value gives a 403, because the signature won't match.
+Follow [plivo-setup.md](plivo-setup.md). The Application's Answer URL is
+`https://<worker>/plivo/answer` and its Hangup URL is `/plivo/hangup`, both POST.
+`PLIVO_WEBHOOK_URL` must be exactly `https://<worker>`: a wrong value gives a 403, because the
+signature won't match. Run `npm run plivo:verify` first, then make the English and Hindi calls in
+plivo-setup.md §7: book, cancel, transfer, and hang up early.
 
 ## Sarvam (Hindi / Hinglish)
 1. Set `SARVAM_API_KEY`. In Settings → Voice, pick Hindi with Sarvam for speech recognition and voice.

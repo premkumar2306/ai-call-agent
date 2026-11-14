@@ -11,24 +11,31 @@ import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
 // Answer URL is POST https://<worker>/plivo/answer, which returns a
 // bidirectional <Stream> to /plivo/stream; when the stream closes Plivo
 // carries on to /plivo/after-stream (transfer to staff, or hang up).
+// The Application's Hangup URL is POST /plivo/hangup.
 // Webhooks are verified with X-Plivo-Signature-V3 (PLIVO_AUTH_TOKEN), and
 // fail closed in production without it.
 
 const plivoRouter = new Hono<HonoEnv>();
 
 // https://www.plivo.com/docs/voice/concepts/signature-validation
-// V3: base64(HMAC-SHA256(authToken, url[?sorted query] [.] sortedPostParams "." nonce))
+// V3: base64(HMAC-SHA256(authToken, baseUrl + "." + nonce)), where baseUrl
+// follows Plivo's SDKs (plivo-python/-node/-go construct_post_url):
+//   GET:  url[?sorted(query + params) as k=v&k=v]
+//   POST: url "?" [sorted query k=v&…] ["." if query and params] sorted params kv…
+// A POST with params always has the "?", even with no query string.
 export function plivoV3BaseString(method: string, url: string, params: Record<string, string>, nonce: string): string {
   const u = new URL(url);
-  const query = [...u.searchParams.entries()].sort(([a, av], [b, bv]) => (a === b ? av.localeCompare(bv) : a < b ? -1 : 1));
+  const byKey = ([a, av]: [string, string], [b, bv]: [string, string]) => (a === b ? (av < bv ? -1 : av > bv ? 1 : 0) : a < b ? -1 : 1);
+  const query = [...u.searchParams.entries()];
   let base = `${u.protocol}//${u.host}${u.pathname}`;
   if (method === 'GET') {
-    const all = [...query, ...Object.entries(params)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const all = [...query, ...Object.entries(params)].sort(byKey);
     if (all.length) base += '?' + all.map(([k, v]) => `${k}=${v}`).join('&');
   } else {
-    if (query.length) base += '?' + query.map(([k, v]) => `${k}=${v}`).join('&');
+    const q = query.sort(byKey).map(([k, v]) => `${k}=${v}`).join('&');
     const post = Object.keys(params).sort().map(k => k + params[k]).join('');
-    if (query.length && post) base += '.';
+    if (q || post) base += '?' + q;
+    if (q && post) base += '.';
     base += post;
   }
   return `${base}.${nonce}`;
@@ -82,6 +89,8 @@ const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 plivoRouter.post('/answer', requirePlivoSig, async (c) => {
   const p = await formParams(c);
+  // A Plivo Application with no Hangup URL sends the hangup callback here.
+  if (isHangup(p)) return hangupAck(c, p);
   const host = c.req.header('host');
   const businessType = (await businessForNumber(c.env, 'plivo', p.To)) ?? c.env.PLIVO_DEFAULT_BUSINESS_TYPE;
   if (!businessType) {
@@ -100,18 +109,54 @@ plivoRouter.post('/answer', requirePlivoSig, async (c) => {
 });
 
 // ── POST /plivo/after-stream ──────────────────────────────────────────────────
+// keepCallAlive="true" holds the call on <Stream> until the socket closes;
+// Plivo then runs the <Redirect> to here: transfer to staff, or hang up.
+// The staff leg's caller ID is our own Plivo number (the call's To): Indian
+// carriers reject a forwarded call that presents the original caller's number.
+// <Dial action> sends the outcome to /plivo/after-dial, so the "nobody picked
+// up" apology is only spoken when nobody did.
 
 plivoRouter.post('/after-stream', requirePlivoSig, async (c) => {
-  const callUuid = (await formParams(c)).CallUUID ?? '';
+  const p = await formParams(c);
+  const callUuid = p.CallUUID ?? '';
   const to = normalizeE164(callUuid ? await c.env.CACHE.get(transferKey(callUuid)) : null, '91');
   if (!to) return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>', 200, XML);
   console.log(`[call] ${callUuid.slice(-8)} transferring to staff (plivo)`);
+  const ours = normalizeE164(p.To, '91');
+  const base = (c.env.PLIVO_WEBHOOK_URL ?? `https://${c.req.header('host')}`).replace(/\/$/, '');
   return c.text(
-    `<?xml version="1.0" encoding="UTF-8"?><Response><Dial timeout="25"><Number>${xml(to.slice(1))}</Number></Dial>` +
-    '<Speak>Sorry, nobody was able to pick up. Please try again during business hours. Goodbye.</Speak></Response>',
+    `<?xml version="1.0" encoding="UTF-8"?><Response><Dial timeout="25"${ours ? ` callerId="${xml(ours.slice(1))}"` : ''}` +
+    ` action="${xml(`${base}/plivo/after-dial`)}" method="POST"><Number>${xml(to.slice(1))}</Number></Dial></Response>`,
     200, XML,
   );
 });
+
+// ── POST /plivo/after-dial ────────────────────────────────────────────────────
+
+plivoRouter.post('/after-dial', requirePlivoSig, async (c) => {
+  const p = await formParams(c);
+  if (p.DialStatus === 'completed') return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>', 200, XML);
+  return c.text(
+    '<?xml version="1.0" encoding="UTF-8"?><Response>' +
+    '<Speak>Sorry, nobody was able to pick up. Please try again during business hours. Goodbye.</Speak><Hangup/></Response>',
+    200, XML,
+  );
+});
+
+// ── POST /plivo/hangup ────────────────────────────────────────────────────────
+// The Application's Hangup URL. Usage and the transcript are written by
+// CallRelay when the stream closes; this only acknowledges and tidies up.
+
+const isHangup = (p: Record<string, string>) => p.Event === 'Hangup' || p.CallStatus === 'completed';
+
+async function hangupAck(c: Context<HonoEnv>, p: Record<string, string>) {
+  const callUuid = p.CallUUID ?? '';
+  if (callUuid) await c.env.CACHE.delete(transferKey(callUuid)).catch(() => {});
+  console.log(`[call] ${callUuid.slice(-8)} ended (plivo): ${String(p.HangupCause ?? p.CallStatus ?? '').slice(0, 40)}, ${Number(p.Duration) || 0}s`);
+  return c.text('ok', 200);
+}
+
+plivoRouter.post('/hangup', requirePlivoSig, async (c) => hangupAck(c, await formParams(c)));
 
 // ── GET /plivo/stream ─────────────────────────────────────────────────────────
 // Authenticated in CallRelay by the ?token= minted in /plivo/answer.
