@@ -22,9 +22,11 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 
 export async function startMocks({ port = 0 } = {}) {
-  const log = { tts: [], stt: [], anthropic: [], razorpay: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
+  const log = { tts: [], stt: [], anthropic: [], razorpay: [], plivo: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
   const failing = new Set();
+  // Plivo account contents for GET Number/ and Application/:id/ (set by the run).
+  const plivo = { numbers: [], apps: {} };
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://mock');
@@ -62,6 +64,14 @@ export async function startMocks({ port = 0 } = {}) {
         const b = JSON.parse(body);
         log.email.push({ to: b.to?.[0], subject: b.subject, text: b.text, html: !!b.html, at: Date.now() });
         return json(res, 200, { id: `email_${Date.now()}` });
+      }
+      if (host === 'api.plivo.com') {
+        log.plivo.push({ method: req.method, path, auth: !!req.headers.authorization });
+        if (req.method !== 'GET') return json(res, 405, { error: 'read-only mock' });
+        if (/^\/v1\/Account\/[^/]+\/Number\/$/.test(path)) return json(res, 200, { meta: { limit: 20, offset: 0 }, objects: plivo.numbers });
+        const app = path.match(/^\/v1\/Account\/[^/]+\/Application\/([^/]+)\/$/);
+        if (app) return plivo.apps[app[1]] ? json(res, 200, plivo.apps[app[1]]) : json(res, 404, { error: 'not found' });
+        if (/^\/v1\/Account\/[^/]+\/$/.test(path)) return json(res, 200, { account_type: 'standard', auth_id: 'mock' });
       }
       log.other.push({ host, path, method: req.method });
       return json(res, 200, { id: `mock_${Date.now()}`, sid: 'SMmock', messages: [{ id: 'wamid.mock' }] });
@@ -131,6 +141,7 @@ export async function startMocks({ port = 0 } = {}) {
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
     failing,
+    plivo,
     /** Meta's side of WhatsApp: stored templates and each number's health. */
     wa: waState,
     sttKind: () => stt?.kind ?? null,

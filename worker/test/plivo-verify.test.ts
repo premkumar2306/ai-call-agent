@@ -110,6 +110,8 @@ describe('plivo:verify checklist', () => {
     const r = renderPlivoVerify({ workerUrl: W, health: { ok: true, status: 200 }, unsigned: { status: 403 }, report: { ...report, account: { ok: false, error: 'HTTP 401: bad' }, numbers: [] } });
     expect(r.ok).toBe(false);
     expect(r.next.join('\n')).toContain('npx wrangler secret put PLIVO_AUTH_TOKEN');
+    const t = renderPlivoVerify({ workerUrl: W, health: { ok: true, status: 200 }, unsigned: { status: 403 }, report: { ...report, account: { ok: false, error: 'Timed out' }, numbers: [] } });
+    expect(t.next.join('\n')).toMatch(/did not answer/);
   });
   it('scrubs a value', () => expect(scrubAll('key abcdef123 here', ['abcdef123'])).toBe('key [redacted] here'));
 });

@@ -15,7 +15,11 @@
 // right; speech recognition gets the right audio format; a spoken booking
 // lands in the database; "speak to someone" ends the stream and the
 // after-stream webhook dials staff; the call is metered for billing; the
-// notice is in the consent audit trail. Plus WhatsApp: the Meta webhook
+// notice is in the consent audit trail. Plus Plivo beyond the happy path:
+// missing/forged signatures, an unknown number, a forged stream token, the
+// caller hanging up mid-call (usage and transcript still written), the
+// hangup callback, the transfer's caller ID and Dial outcome, and
+// `npm run plivo:verify` against a mock Plivo account. Plus WhatsApp: the Meta webhook
 // handshake, signatures, a chat booking, voice notes, retries, status
 // webhooks, unmapped numbers, Hindi, the DPDP notice and billing. Plus Razorpay billing end to
 // end: trial, Checkout signature (good and bad), activation, failed payment → dunning email,
@@ -110,6 +114,11 @@ function plivoSig(url, params, nonce, token = SECRETS.PLIVO_AUTH_TOKEN) {
   if (q && post) base += '.';
   base += post;
   return createHmac('sha256', token).update(`${base}.${nonce}`).digest('base64');
+}
+async function plivoPost(path, params, { sig, nonce = randomUUID().replace(/-/g, '') } = {}) {
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (sig !== null) { headers['X-Plivo-Signature-V3'] = sig ?? plivoSig(`${BASE}${path}`, params, nonce); headers['X-Plivo-Signature-V3-Nonce'] = nonce; }
+  return fetch(`${BASE}${path}`, { method: 'POST', body: form(params), headers });
 }
 const unxml = s => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 const toWs = url => url.replace(/^wss:\/\/[^/]+/, `ws://127.0.0.1:${PORT}`);
@@ -208,12 +217,9 @@ const CARRIERS = {
 
   plivo: {
     async open({ number, from, callSid }) {
-      const params = { CallUUID: callSid, From: from, To: number, Direction: 'inbound', CallStatus: 'in-progress' };
-      const nonce = randomUUID().replace(/-/g, '');
-      const res = await fetch(`${BASE}/plivo/answer`, {
-        method: 'POST', body: form(params),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Plivo-Signature-V3': plivoSig(`${BASE}/plivo/answer`, params, nonce), 'X-Plivo-Signature-V3-Nonce': nonce },
-      });
+      // Plivo sends numbers as digits with the country code, no '+'.
+      const params = { CallUUID: callSid, From: from.replace(/^\+/, ''), To: number.replace(/^\+/, ''), Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' };
+      const res = await plivoPost('/plivo/answer', params);
       const xml = await res.text();
       const url = unxml((xml.match(/<Stream[^>]*>([^<]+)<\/Stream>/) ?? [])[1] ?? '');
       return { ok: res.ok && !!url, wsUrl: toWs(url), start: {}, detail: `${res.status}` };
@@ -233,11 +239,10 @@ const CARRIERS = {
     },
     ack: ({ streamSid, name }) => ({ event: 'playedStream', streamId: streamSid, name }),
     stop: ({ streamSid }) => ({ event: 'stop', streamId: streamSid }),
-    async afterStream({ callSid }) {
-      const params = { CallUUID: callSid, CallStatus: 'in-progress' };
-      const nonce = randomUUID().replace(/-/g, '');
-      const res = await fetch(`${BASE}/plivo/after-stream`, { method: 'POST', body: form(params), headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Plivo-Signature-V3': plivoSig(`${BASE}/plivo/after-stream`, params, nonce), 'X-Plivo-Signature-V3-Nonce': nonce } });
+    async afterStream({ callSid, number, from, call }) {
+      const res = await plivoPost('/plivo/after-stream', { CallUUID: callSid, From: from.replace(/^\+/, ''), To: number.replace(/^\+/, ''), CallStatus: 'in-progress', Direction: 'inbound' });
       const xml = await res.text();
+      if (call) call.dialXml = xml;
       return (xml.match(/<Number>([^<]+)<\/Number>/) ?? [])[1] ?? null;
     },
   },
@@ -245,7 +250,7 @@ const CARRIERS = {
 
 // ── One simulated call ───────────────────────────────────────────────────────
 
-async function placeCall(mocks, { carrier, number, from, lines }) {
+async function placeCall(mocks, { carrier, number, from, lines, hangUpEarly = false }) {
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
@@ -310,11 +315,15 @@ async function placeCall(mocks, { carrier, number, from, lines }) {
   clearInterval(pump);
   if (ws.readyState === WebSocket.OPEN) {
     call.closingByUs = true;
-    ws.send(JSON.stringify(c.stop({ streamSid, callSid })));
-    ws.close();
+    if (hangUpEarly) {
+      ws.terminate();   // the caller hangs up: the socket just drops, no stop event
+    } else {
+      ws.send(JSON.stringify(c.stop({ streamSid, callSid })));
+      ws.close();
+    }
   }
   await Promise.race([closed, sleep(2000)]);
-  call.transferTo = await c.afterStream({ callSid });
+  if (!hangUpEarly) call.transferTo = await c.afterStream({ callSid, number, from, call });
   await sleep(1500);   // usage and transcripts are written after the call (waitUntil)
   return call;
 }
@@ -364,6 +373,14 @@ async function callScenario(mocks, s) {
   if (s.transfer) {
     check(n, '"speak to someone" ends the stream', call.closedByServer);
     check(n, 'after-stream webhook dials the staff phone', call.transferTo && call.transferTo.replace(/\D/g, '').endsWith(s.staffPhone.replace(/\D/g, '').slice(-10)), `dials ${call.transferTo}`);
+    if (s.carrier === 'plivo') {
+      const callerId = (call.dialXml?.match(/callerId="([^"]+)"/) ?? [])[1];
+      const action = unxml((call.dialXml?.match(/action="([^"]+)"/) ?? [])[1] ?? '');
+      check(n, 'Plivo transfer shows our own Plivo number as caller ID', callerId === s.number.replace(/^\+/, ''), `callerId=${callerId}`);
+      const answered = await (await plivoPost('/plivo/after-dial', { CallUUID: call.callSid, DialStatus: 'completed', DialAction: 'hangup' })).text();
+      const missed = await (await plivoPost('/plivo/after-dial', { CallUUID: call.callSid, DialStatus: 'no-answer', DialAction: 'hangup' })).text();
+      check(n, 'after the staff call: hang up if answered, apologise if not', action === `${BASE}/plivo/after-dial` && !/<Speak>/.test(answered) && /nobody was able to pick up/.test(missed), action);
+    }
   }
   const usage = await api('GET', `/admin/billing/usage/${s.key}`);
   const rec = (Array.isArray(usage) ? usage : usage?.records ?? []).find(r => (r.sourceId ?? r.source_id) === call.callSid);
@@ -373,6 +390,49 @@ async function callScenario(mocks, s) {
     const rows = (Array.isArray(notices) ? notices : []).filter(r => (r.call_sid ?? r.callSid) === call.callSid);
     check(n, 'notice is in the consent audit trail', rows.length === 1, rows[0] ? `heard_fully=${rows[0].heard_fully}` : 'missing');
   }
+}
+
+// Plivo beyond the happy path: signatures, an unknown number, a forged stream
+// token, the caller hanging up mid-call, and the hangup callback.
+async function plivoScenario(mocks) {
+  const n = 'plivo';
+  console.log('\n▶ Plivo: signatures, unknown number, hangup mid-call');
+  const p = { CallUUID: `pl-${randomUUID()}`, From: '919812345600', To: '918047100002', Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' };
+  const missing = await plivoPost('/plivo/answer', p, { sig: null });
+  const forged = await plivoPost('/plivo/answer', p, { sig: plivoSig(`${BASE}/plivo/answer`, p, 'n1', 'not-the-auth-token'), nonce: 'n1' });
+  const replayed = await plivoPost('/plivo/answer', { ...p, To: '918047100001' }, { sig: plivoSig(`${BASE}/plivo/answer`, p, 'n2'), nonce: 'n2' });
+  const hangupForged = await plivoPost('/plivo/hangup', { CallUUID: p.CallUUID, Event: 'Hangup' }, { sig: 'AAAA' });
+  check(n, 'missing, wrong-key and tampered signatures are rejected (403)', [missing, forged, replayed, hangupForged].every(r => r.status === 403), [missing, forged, replayed, hangupForged].map(r => r.status).join(','));
+
+  const unknown = await plivoPost('/plivo/answer', { ...p, To: '918047100077' });
+  const ux = await unknown.text();
+  check(n, 'an unknown number hears "not configured" and is hung up, with no stream', unknown.status === 200 && /not configured/.test(ux) && /<Hangup\/>/.test(ux) && !/<Stream/.test(ux), ux.slice(38, 140));
+
+  const answer = await (await plivoPost('/plivo/answer', p)).text();
+  const streamUrl = unxml((answer.match(/<Stream[^>]*>([^<]+)<\/Stream>/) ?? [])[1] ?? '');
+  check(n, '<Stream> is bidirectional µ-law 8 kHz, kept alive, then redirects to after-stream', /bidirectional="true"/.test(answer) && /keepCallAlive="true"/.test(answer) && /contentType="audio\/x-mulaw;rate=8000"/.test(answer) && /<Redirect method="POST">[^<]*\/plivo\/after-stream<\/Redirect>/.test(answer), answer.slice(38, 200));
+  const forgedWs = new WebSocket(toWs(streamUrl.replace(/token=[^&]+/, 'token=eyJhbGciOiJIUzI1NiJ9.e30.forged')));
+  const code = await new Promise(resolve => {
+    forgedWs.once('open', () => forgedWs.send(JSON.stringify({ event: 'start', sequenceNumber: 0, start: { callId: 'forged', streamId: 'forged', tracks: ['inbound'], mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000 } } })));
+    forgedWs.once('close', c => resolve(c));
+    forgedWs.once('error', () => resolve('error'));
+    setTimeout(() => resolve('timeout'), 8000);
+  });
+  check(n, 'a stream with a forged token is closed (1008)', code === 1008, `${code}`);
+
+  // The caller hangs up after one line: no stop event, the socket drops, then Plivo's hangup callback.
+  const call = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812345601', lines: ["Hi, I'd like to book an appointment."], hangUpEarly: true });
+  const hang = await plivoPost('/plivo/hangup', { CallUUID: call.callSid, Event: 'Hangup', CallStatus: 'completed', HangupCause: 'NORMAL_CLEARING', Duration: '9', BillDuration: '60', From: '919812345601', To: '918047100002' });
+  const hangAtAnswer = await plivoPost('/plivo/answer', { CallUUID: call.callSid, Event: 'Hangup', CallStatus: 'completed', To: '918047100002' });
+  const hx = await hangAtAnswer.text();
+  check(n, 'hangup callback is acknowledged (at /plivo/hangup, and at the Answer URL with no stream)', hang.status === 200 && hangAtAnswer.status === 200 && !/<Stream/.test(hx), `${hang.status}, ${hangAtAnswer.status}`);
+  await sleep(1500);
+  const usage = await api('GET', '/admin/billing/usage/in_plivo_en');
+  const rec = (Array.isArray(usage) ? usage : usage?.records ?? []).find(r => (r.sourceId ?? r.source_id) === call.callSid);
+  check(n, 'hangup mid-call: usage is written (provider plivo, with cost)', rec?.provider === 'plivo' && Number(rec.costUsdMicros ?? rec.cost_usd_micros) > 0, rec ? `${rec.provider}, ${rec.durationSeconds ?? rec.duration_seconds}s, ${rec.costUsdMicros ?? rec.cost_usd_micros}µ$` : 'no usage record');
+  const tr = sql(`SELECT turns FROM transcripts WHERE call_sid = '${call.callSid}'`);
+  const turns = tr[0] ? JSON.parse(tr[0].turns) : [];
+  check(n, 'hangup mid-call: the call record (transcript) is saved', turns.some(t => t.role === 'user'), `${tr.length} row(s), ${turns.length} turn(s)`);
 }
 
 async function rzpHook(event, payload, eventId = `evt_${randomUUID()}`, signature) {
@@ -754,9 +814,16 @@ async function integrationsScenario(mocks) {
   check(n, 'production readiness: 100% with every blocker Working', after.readiness.score === 100 && after.readiness.blockers.length === 0, JSON.stringify(after.readiness));
 
   mocks.failing.add('api.deepgram.com');
+  mocks.failing.add('api.plivo.com');
   await sleep(10_500);   // the per-service cooldown
   const res = await fetch(`${BASE}/admin/integrations/deepgram/check`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN } });
   const text = await res.text();
+  const plRes = await fetch(`${BASE}/admin/integrations/plivo/check`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN } });
+  const plText = await plRes.text();
+  mocks.failing.delete('api.plivo.com');
+  const plFail = JSON.parse(plText).data;
+  const plLeaks = Object.values(SECRETS).filter(v => v.length >= 6 && plText.includes(v));
+  check(n, 'Plivo with rejected keys shows Failing with a safe error (401, nothing leaked)', plFail?.ok === false && /^HTTP 401/.test(plFail.error) && plLeaks.length === 0, plFail?.error);
   const listText = await (await fetch(`${BASE}/admin/integrations`, { headers: { 'X-Admin-Key': ADMIN } })).text();
   mocks.failing.delete('api.deepgram.com');
   const fail = JSON.parse(text).data;
@@ -770,6 +837,36 @@ async function integrationsScenario(mocks) {
   const pf = spawnSync('node', ['scripts/preflight.mjs', '--no-wrangler', '--no-check'], { cwd: WORKER_DIR, encoding: 'utf8', env: { ...process.env, WORKER_URL: BASE, ADMIN_KEY: ADMIN } });
   const out = pf.stdout + pf.stderr;
   const pfLeaks = [ADMIN, ...Object.values(SECRETS)].filter(v => v.length >= 6 && out.includes(v));
+  // npm run plivo:verify against this Worker and the mock Plivo account.
+  mocks.plivo.numbers = [
+    { number: '918047100001', voice_enabled: true, application: '/v1/Account/MAMOCK0001/Application/101/' },
+    { number: '918047100002', voice_enabled: true, application: '/v1/Account/MAMOCK0001/Application/101/' },
+    { number: '918047100005', voice_enabled: true, application: '/v1/Account/MAMOCK0001/Application/202/' },
+  ];
+  mocks.plivo.apps = {
+    101: { app_id: '101', app_name: 'Avery', answer_url: `${BASE}/plivo/answer`, answer_method: 'POST', hangup_url: `${BASE}/plivo/hangup`, hangup_method: 'POST' },
+    202: { app_id: '202', app_name: 'Old IVR', answer_url: 'https://ivr.example.com/answer', answer_method: 'GET', hangup_url: '' },
+  };
+  const plBefore = mocks.log.plivo.length;
+  // Async: the mock Plivo API lives in this process, so it must keep serving.
+  const pv = await new Promise(resolve => {
+    const child = spawn('node', ['scripts/plivo-verify.mjs'], { cwd: WORKER_DIR, env: { ...process.env, WORKER_URL: BASE, ADMIN_KEY: ADMIN } });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stderr += d; });
+    child.on('close', status => resolve({ status, stdout, stderr }));
+  });
+  const pvOut = pv.stdout + pv.stderr;
+  // The webhook base URLs are public (they are WORKER_URL); every other value is a secret.
+  const pvLeaks = [ADMIN, ...Object.values(SECRETS)].filter(v => v !== BASE && v.length >= 6 && pvOut.includes(v));
+  const readOnly = mocks.log.plivo.slice(plBefore).every(r => r.method === 'GET');
+  check(n, 'plivo:verify: account Working, unsigned webhook rejected, mapped numbers ✓, wrong answer URL ✗ with the exact fix; read-only, no secret',
+    pv.status === 1 && /✓ Plivo account check.*Working/.test(pvOut) && /✓ Unsigned POST \/plivo\/answer is rejected \(→ 403\)/.test(pvOut)
+    && /✓ {3}\+918047100001 is mapped to a business \(in_plivo_hi\)/.test(pvOut) && /✓ {3}\+918047100002 answer URL points at/.test(pvOut)
+    && /✗ {3}\+918047100005 answer URL/.test(pvOut) && pvOut.includes(`"Old IVR": Answer URL = ${BASE}/plivo/answer, method POST`)
+    && /Settings → Phone numbers: add \+918047100005/.test(pvOut) && readOnly && pvLeaks.length === 0,
+    `exit ${pv.status}; ${pvLeaks.length} leaked; read-only ${readOnly}${process.env.E2E_VERBOSE ? `\n${pvOut}` : ''}`);
+
   check(n, 'preflight prints the go-live checklist with ✓ / ✗ and next actions, and no secret', /✓ Anthropic/.test(out) && /✗ Google Calendar/.test(out) && /wrangler secret put GOOGLE_CLIENT_ID/.test(out) && pfLeaks.length === 0, `exit ${pf.status}; ${pfLeaks.length} leaked`);
 }
 
@@ -783,6 +880,12 @@ const SCENARIOS = [
   {
     name: 'Indian business over Exotel (English)', key: 'in_exotel', carrier: 'exotel', country: 'IN',
     number: '+918047100000', from: '09876543210', staffPhone: '+919876500000', stt: 'deepgram', tts: 'cartesia',
+    expectNotice: true, noticeLang: 'en', transfer: true,
+    lines: ["Hello, I'd like to book an appointment.", 'The first one works.', 'Can I speak to someone please?'],
+  },
+  {
+    name: 'Indian business over Plivo (English)', key: 'in_plivo_en', carrier: 'plivo', country: 'IN',
+    number: '+918047100002', from: '+919812345679', staffPhone: '+919876500004', stt: 'deepgram', tts: 'cartesia',
     expectNotice: true, noticeLang: 'en', transfer: true,
     lines: ["Hello, I'd like to book an appointment.", 'The first one works.', 'Can I speak to someone please?'],
   },
@@ -813,6 +916,7 @@ try {
   }
   // The Razorpay scenario bills the Exotel business's call minutes, so `-- razorpay` places that call too.
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
+  if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);

@@ -40,7 +40,11 @@ export function renderPlivoVerify({ workerUrl, health, unsigned, report, reportE
   }
   const a = report.account;
   item(a.ok === true, `Plivo account check (GET Account with the real keys): ${a.ok === true ? 'Working' : a.ok === false ? `Failing — ${a.error ?? 'error'}` : `not checked — ${a.note ?? ''}`}`,
-    a.ok === false ? `Plivo refused the keys: re-copy Auth ID and Auth Token from console.plivo.com (${SECRET_FIX('PLIVO_AUTH_ID')}, ${SECRET_FIX('PLIVO_AUTH_TOKEN')}).` : null);
+    a.ok === false
+      ? (/^HTTP 40[13]/.test(a.error ?? '')
+        ? `Plivo refused the keys: re-copy Auth ID and Auth Token from console.plivo.com → Overview (${SECRET_FIX('PLIVO_AUTH_ID')}, ${SECRET_FIX('PLIVO_AUTH_TOKEN')}).`
+        : `Plivo did not answer (${a.error ?? 'error'}): retry in a minute; check status.plivo.com.`)
+      : `Set ${SECRET_FIX('PLIVO_AUTH_ID')} so the account can be checked.`);
   if (a.ok !== true) return { lines, ok, next };
 
   if (report.numbersError) item(false, report.numbersError, 'Retry in a minute; check the Plivo account status.');
