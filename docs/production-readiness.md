@@ -27,7 +27,7 @@ Set up in this order. **Required** services block go-live, and so does having no
 | 6 | <a id="cartesia"></a>Cartesia | The assistant's voice (English calls) | Required | `CARTESIA_API_KEY` | optional `CARTESIA_VOICE_ID`, `CARTESIA_MODEL_ID` | [play.cartesia.ai/keys](https://play.cartesia.ai/keys) | Per character spoken | `GET /voices` |
 | 7 | <a id="twilio"></a>Twilio | US numbers, booking texts | One carrier required | `TWILIO_AUTH_TOKEN`, `TWILIO_ACCOUNT_SID` | `TWILIO_WEBHOOK_URL`, `TWILIO_SMS_FROM` | [console.twilio.com](https://console.twilio.com/) | Number rental + per minute + per text | `GET /Accounts/{sid}` (needs `TWILIO_ACCOUNT_SID`) |
 | 7 | <a id="exotel"></a>Exotel | Indian numbers (ExoPhones) | One carrier required | `EXOTEL_WEBHOOK_SECRET`; for the check: `EXOTEL_ACCOUNT_SID`, `EXOTEL_API_KEY`, `EXOTEL_API_TOKEN` | optional `EXOTEL_SUBDOMAIN` (`api.in.exotel.com` for the Mumbai cluster) | [Exotel API settings](https://my.exotel.com/apisettings/site#api-credentials) | Number rental + per minute | `GET /v1/Accounts/{sid}/Calls.json?PageSize=1` |
-| 7 | <a id="plivo"></a>Plivo | Indian numbers | One carrier required | `PLIVO_AUTH_TOKEN`; for the check: `PLIVO_AUTH_ID` | `PLIVO_WEBHOOK_URL` | [console.plivo.com](https://console.plivo.com/dashboard/) | Number rental + per minute | `GET /v1/Account/{id}/` |
+| 7 | <a id="plivo"></a>[Plivo](plivo-setup.md) | Indian numbers | One carrier required | `PLIVO_AUTH_TOKEN`; for the check: `PLIVO_AUTH_ID` | `PLIVO_WEBHOOK_URL` | [console.plivo.com](https://console.plivo.com/dashboard/) | Number rental + per minute | `GET /v1/Account/{id}/` |
 | 8 | <a id="sarvam"></a>Sarvam | Hindi and Hinglish calls | Optional | `SARVAM_API_KEY` | optional `SARVAM_*` models | [dashboard.sarvam.ai](https://dashboard.sarvam.ai/) | Per audio minute and per character | An empty TTS request: a valid key gets a validation error, nothing is synthesised |
 | 9 | <a id="razorpay"></a>Razorpay | Billing: subscriptions, payments, GST invoices | Optional | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | `BILLING_SUPPLIER_GSTIN`, `BILLING_SUPPLIER_NAME`, `BILLING_SUPPLIER_ADDRESS`, `BILLING_SAC_CODE`, `APP_URL` | [Razorpay API keys](https://dashboard.razorpay.com/app/website-app-settings/api-keys) — see [razorpay-setup.md](razorpay-setup.md) | ~2% per payment | `GET /v1/plans?count=1` |
 | 10 | <a id="meta-whatsapp"></a>Meta WhatsApp | The assistant on WhatsApp | Optional | `WA_APP_SECRET`, `WA_VERIFY_TOKEN`, `WA_ACCESS_TOKEN`; optional `WA_PHONE_NUMBER_ID`, `WA_BUSINESS_ACCOUNT_ID` (templates) | optional `WA_CONFIRMATION_TEMPLATE` (legacy), `WA_TEMPLATE_LANGUAGE`, `WA_GRAPH_API_VERSION` | [WhatsApp Manager](https://business.facebook.com/wa/manage/) — see [whatsapp-setup.md](whatsapp-setup.md) | Per conversation (Meta pricing) | `GET /{phone-number-id}` |
@@ -55,7 +55,10 @@ yet" note instead.
 4. Open **Operator → Integrations** in the admin UI and confirm the score is 100%.
 5. Do the live tests in [live-test-checklist.md](live-test-checklist.md): one real call per
    carrier, WhatsApp, and a billing round trip.
-6. Set up [WhatsApp](whatsapp-setup.md) and [Razorpay](razorpay-setup.md) when you need them;
+6. On Plivo, follow [plivo-setup.md](plivo-setup.md) and run
+   `WORKER_URL=… ADMIN_KEY=… npm run plivo:verify`. It checks the account, each number's answer
+   URL and business mapping, and that unsigned webhooks are rejected.
+7. Set up [WhatsApp](whatsapp-setup.md) and [Razorpay](razorpay-setup.md) when you need them;
    they are optional for go-live.
 
 ## Scheduled jobs (Cron Triggers)

@@ -62,7 +62,7 @@ export function renderPlivoVerify({ workerUrl, health, unsigned, report, reportE
     item(n.hangupOk, `  ${n.number} hangup URL is acknowledged`, app
       ? `Plivo console → Voice → Applications → "${app.name ?? app.id}": Hangup URL = ${wantHangup}, method POST.` : null);
     item(!!n.businessType || n.reachesDefault, `  ${n.number} is mapped to a business${n.businessType ? ` (${n.businessType})` : n.reachesDefault ? ' (via PLIVO_DEFAULT_BUSINESS_TYPE)' : ''}`,
-      `Avery admin → Settings → Phone numbers: add ${n.number}, provider Plivo, and pick the business.`);
+      `Avery admin → Operator → Phone numbers: add ${n.number}, provider Plivo, and pick the business.`);
   }
   if (ok) next.push('Make the live test calls in docs/plivo-setup.md (English and Hindi: book, cancel, transfer, hang up early).');
   return { lines, ok, next };

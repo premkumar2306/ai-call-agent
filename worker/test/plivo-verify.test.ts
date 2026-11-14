@@ -103,7 +103,7 @@ describe('plivo:verify checklist', () => {
     const r = renderPlivoVerify({ workerUrl: W, health: { ok: true, status: 200 }, unsigned: { status: 200 }, report: bad });
     expect(r.ok).toBe(false);
     expect(r.next.join('\n')).toContain(`Answer URL = ${W}/plivo/answer, method POST`);
-    expect(r.next.join('\n')).toContain('Settings → Phone numbers: add +918047100001, provider Plivo');
+    expect(r.next.join('\n')).toContain('Operator → Phone numbers: add +918047100001, provider Plivo');
     expect(r.next.join('\n')).toMatch(/unsigned Plivo webhook/);
   });
   it('tells the owner which secret to set when Plivo refuses the keys', () => {

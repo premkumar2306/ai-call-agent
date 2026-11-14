@@ -864,7 +864,7 @@ async function integrationsScenario(mocks) {
     pv.status === 1 && /✓ Plivo account check.*Working/.test(pvOut) && /✓ Unsigned POST \/plivo\/answer is rejected \(→ 403\)/.test(pvOut)
     && /✓ {3}\+918047100001 is mapped to a business \(in_plivo_hi\)/.test(pvOut) && /✓ {3}\+918047100002 answer URL points at/.test(pvOut)
     && /✗ {3}\+918047100005 answer URL/.test(pvOut) && pvOut.includes(`"Old IVR": Answer URL = ${BASE}/plivo/answer, method POST`)
-    && /Settings → Phone numbers: add \+918047100005/.test(pvOut) && readOnly && pvLeaks.length === 0,
+    && /Operator → Phone numbers: add \+918047100005/.test(pvOut) && readOnly && pvLeaks.length === 0,
     `exit ${pv.status}; ${pvLeaks.length} leaked; read-only ${readOnly}${process.env.E2E_VERBOSE ? `\n${pvOut}` : ''}`);
 
   check(n, 'preflight prints the go-live checklist with ✓ / ✗ and next actions, and no secret', /✓ Anthropic/.test(out) && /✗ Google Calendar/.test(out) && /wrangler secret put GOOGLE_CLIENT_ID/.test(out) && pfLeaks.length === 0, `exit ${pf.status}; ${pfLeaks.length} leaked`);

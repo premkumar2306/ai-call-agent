@@ -246,7 +246,8 @@ signed webhook → stream token → media frames in the carrier's format → pla
 |---|---|
 | US business over **Twilio**, English | signed webhook, greeting, **no** AI notice, µ-law frames, Deepgram µ-law 8 kHz, Cartesia µ-law 8 kHz, spoken booking saved, transfer → `<Dial>` staff, call metered |
 | Indian business over **Exotel**, English | as above, plus the AI/recording notice **before** the greeting, Exotel PCM16 framing (multiples of 320 bytes, ≤100 000), Passthru → Connect applet dials staff, consent audit row |
-| Indian business over **Plivo**, Hindi on **Sarvam** | Hindi notice and greeting, Sarvam STT gets 16 kHz PCM `hi-IN`, Sarvam TTS asked for µ-law 8 kHz `hi-IN`, booking in Hindi, transfer → `<Dial><Number>` |
+| Indian business over **Plivo**, English and Hindi on **Sarvam** | signed with Plivo's V3 algorithm; notice and greeting in the line's language, Sarvam STT gets 16 kHz PCM `hi-IN`, Sarvam TTS asked for µ-law 8 kHz `hi-IN`, booking, transfer → `<Dial callerId=our number action=/plivo/after-dial><Number>` |
+| **Plivo** safety | missing/forged/tampered signatures → 403, unknown number → "not configured" with no stream, forged stream token → closed, caller hangs up mid-call → usage (plivo, with cost) and transcript saved, hangup callback acknowledged, Integrations Failing on 401, `npm run plivo:verify` against a mock account |
 | **Razorpay** billing | trial on the default plan; plan synced (fee incl. GST); Checkout prefilled, bad payment signature refused, good one → `authenticated`; badly signed webhook refused; `subscription.activated` → active (redelivery a no-op); `payment.failed` → past due, one dunning email via Resend, Update payment link; `subscription.halted` → overage paused; recovery; month-end overage → one add-on incl. GST, not repeated; `invoice.paid` → numbered GST tax invoice (CGST+SGST), downloadable and emailed; cancel at period end → `cancelled`; US business stays billing-off |
 | **WhatsApp** (Meta Cloud API) | verification handshake (right token → challenge, wrong → 403), badly signed POST refused, Indian business on a mapped `phone_number_id`: question → reply from that number to the customer, DPDP notice first and only once, mark-as-read, chat booking saved with the WhatsApp number as callback, voice note → Deepgram → answer, retried webhook answered once, status-only webhook → no reply, unmapped number → no reply, Hindi business → Hindi notice and reply, one billed conversation with tokens, one consent row |
 
@@ -473,6 +474,8 @@ Create a Plivo application with Answer URL `POST https://<worker>/plivo/answer`,
 number, set `PLIVO_AUTH_TOKEN` and `PLIVO_WEBHOOK_URL` (`https://<worker>`), and map the number in
 **Operator → Phone numbers** (or set `PLIVO_DEFAULT_BUSINESS_TYPE`). `/plivo/answer` returns a
 bidirectional `<Stream>` and, after it, a `<Redirect>` to `/plivo/after-stream` (transfer or hang up).
+Set the Hangup URL to `POST https://<worker>/plivo/hangup`. Full steps, settings and the live check
+(`npm run plivo:verify`): [docs/plivo-setup.md](docs/plivo-setup.md).
 
 **Not yet tested on a live call:** the Exotel and Plivo protocol details come from the carriers' docs
 and reference bots, and are covered by unit tests and the simulator, but no real Exotel/Plivo call has
