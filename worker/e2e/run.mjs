@@ -99,12 +99,17 @@ async function api(method, path, body, headers = {}) {
 const form = params => new URLSearchParams(params).toString();
 const twilioSig = (url, params) => createHmac('sha1', SECRETS.TWILIO_AUTH_TOKEN)
   .update(Object.keys(params).sort().reduce((s, k) => s + k + params[k], url)).digest('base64');
-function plivoSig(url, params, nonce) {
+// Plivo's own algorithm (plivo-node v3Security.js construct_post_url),
+// written independently of the Worker's: url "?" sorted query ["."] k+v…
+function plivoSig(url, params, nonce, token = SECRETS.PLIVO_AUTH_TOKEN) {
   const u = new URL(url);
-  let base = `${u.protocol}//${u.host}${u.pathname}`;
+  const q = [...u.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join('&');
   const post = Object.keys(params).sort().map(k => k + params[k]).join('');
+  let base = `${u.protocol}//${u.host}${u.pathname}`;
+  if (q || post) base += `?${q}`;
+  if (q && post) base += '.';
   base += post;
-  return createHmac('sha256', SECRETS.PLIVO_AUTH_TOKEN).update(`${base}.${nonce}`).digest('base64');
+  return createHmac('sha256', token).update(`${base}.${nonce}`).digest('base64');
 }
 const unxml = s => s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 const toWs = url => url.replace(/^wss:\/\/[^/]+/, `ws://127.0.0.1:${PORT}`);
