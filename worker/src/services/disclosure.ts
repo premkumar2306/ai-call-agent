@@ -10,7 +10,9 @@ import type { Env, SectorMeta } from '../types';
 // Off for existing businesses unless switched on: sectors.ai_disclosure NULL
 // means "automatic", which is on only for businesses in India.
 
-export type NoticeLanguage = 'en' | 'hi' | 'hi-en';
+import { DISCLOSURE, WHATSAPP_NOTICE, isDravidian } from './indic-languages';
+
+export type NoticeLanguage = 'en' | 'hi' | 'hi-en' | 'kn' | 'te' | 'ta';
 
 // Built-in wording per phone-line language, so a Hindi voice doesn't read
 // English words. A business's own disclosure_text always wins.
@@ -21,6 +23,7 @@ export const DEFAULT_DISCLOSURE_TEXTS: Record<NoticeLanguage, string> = {
     'हमारी गोपनीयता सूचना का लिंक हमारे भेजे हर मैसेज में है।',
   'hi-en': 'Aapki jaankari ke liye, aap ek AI assistant se baat kar rahe hain, aur aapki help ke liye yeh call transcribe ki ja rahi hai. ' +
     'Hamari privacy notice ka link hamare har message mein hai.',
+  ...DISCLOSURE,
 };
 export const DEFAULT_DISCLOSURE_TEXT = DEFAULT_DISCLOSURE_TEXTS.en;
 
@@ -28,6 +31,7 @@ const WHATSAPP_NOTICE_TEXTS: Record<NoticeLanguage, string> = {
   en: "You're chatting with an AI assistant. Messages are stored so we can help you.",
   hi: 'आप एक AI सहायक से चैट कर रहे हैं। आपकी मदद के लिए मैसेज सहेजे जाते हैं।',
   'hi-en': 'Aap ek AI assistant se chat kar rahe hain. Aapki help ke liye messages save kiye jaate hain.',
+  ...WHATSAPP_NOTICE,
 };
 
 /**
@@ -36,7 +40,7 @@ const WHATSAPP_NOTICE_TEXTS: Record<NoticeLanguage, string> = {
  */
 export function noticeLanguage(meta: object | null | undefined): NoticeLanguage {
   const lang = (meta as { voice?: { language?: string } | null } | null | undefined)?.voice?.language;
-  return lang === 'hi' || lang === 'hi-en' ? lang : 'en';
+  return lang === 'hi' || lang === 'hi-en' || isDravidian(lang) ? lang as NoticeLanguage : 'en';
 }
 
 export function defaultDisclosureText(meta: SectorMeta | null | undefined): string {

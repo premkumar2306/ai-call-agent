@@ -15,11 +15,12 @@
 //   Latin script and Meta has no code for it, so it is <family>_hinglish in en.
 
 import type { Env } from '../types';
+import { TEMPLATE_BODIES as INDIC_BODIES } from './indic-languages';
 import { graphFetch, type ReplyLanguage } from './whatsapp-api';
 
 export const EVENTS = ['confirmation', 'reminder', 'cancellation', 'missed_call', 'recall', 'no_show', 'review_request'] as const;
 export type WaEvent = typeof EVENTS[number];
-export const VARIANTS: ReplyLanguage[] = ['en', 'hi', 'hi-en'];
+export const VARIANTS: ReplyLanguage[] = ['en', 'hi', 'hi-en', 'kn', 'te', 'ta'];
 
 export const isEvent = (x: unknown): x is WaEvent => typeof x === 'string' && (EVENTS as readonly string[]).includes(x);
 
@@ -36,8 +37,10 @@ export interface TemplateDef {
   body: Record<ReplyLanguage, string>;
 }
 
+type BaseDef = Omit<TemplateDef, 'body'> & { body: Record<'en' | 'hi' | 'hi-en', string> };
+
 // {{1}} business name; {{2}} service; {{3}} date and time.
-export const DEFAULT_TEMPLATES: TemplateDef[] = [
+const BASE_TEMPLATES: BaseDef[] = [
   {
     event: 'confirmation', family: 'avery_booking_confirmation',
     example: ['Sharma Dental Clinic', 'Dental check-up', 'Mon, 18 Nov, 10:30 am'],
@@ -105,6 +108,9 @@ export const DEFAULT_TEMPLATES: TemplateDef[] = [
   },
 ];
 
+// Kannada, Telugu and Tamil bodies (launch 5) come from indic-languages.ts.
+export const DEFAULT_TEMPLATES: TemplateDef[] = BASE_TEMPLATES.map(t => ({ ...t, body: { ...t.body, ...INDIC_BODIES[t.event] } }));
+
 export const defaultFor = (event: WaEvent) => DEFAULT_TEMPLATES.find(t => t.event === event)!;
 
 /** Fills {{n}} placeholders (for previews and the free-form text inside the 24-hour window). */
@@ -155,7 +161,8 @@ function classify(name: string, language: string): { purpose: WaEvent | null; va
   const hinglish = name.endsWith('_hinglish');
   const family = hinglish ? name.slice(0, -'_hinglish'.length) : name;
   const def = DEFAULT_TEMPLATES.find(d => d.family === family);
-  const variant: ReplyLanguage | null = hinglish ? 'hi-en' : language.startsWith('hi') ? 'hi' : language.startsWith('en') ? 'en' : null;
+  const base = language.slice(0, 2);
+  const variant: ReplyLanguage | null = hinglish ? 'hi-en' : (['hi', 'en', 'kn', 'te', 'ta'] as const).find(l => l === base) ?? null;
   return { purpose: def?.event ?? null, variant };
 }
 
@@ -228,7 +235,7 @@ export async function createTemplate(env: Env, t: { name: string; variant: Reply
   if (problem) throw new TemplateError(problem);
   const params = paramCount(t.body);
   if (t.example.length < params || t.example.slice(0, params).some(e => !e?.trim())) throw new TemplateError(`Give an example for each of the ${params} parameter(s)`);
-  const { name, language } = t.variant === 'hi-en' && !t.name.endsWith('_hinglish') ? variantName(t.name, 'hi-en') : { name: t.name, language: t.variant === 'hi' ? 'hi' : 'en' };
+  const { name, language } = t.variant === 'hi-en' && !t.name.endsWith('_hinglish') ? variantName(t.name, 'hi-en') : { name: t.name, language: t.variant === 'hi-en' ? 'en' : t.variant };
   const r = await graphFetch<any>(env, `${waba}/message_templates`, {
     body: {
       name, language, category: 'UTILITY',

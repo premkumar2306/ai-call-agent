@@ -8,7 +8,10 @@
 // ('hi') and Hinglish ('hi-en') are opt-in per business (sectors.voice_*,
 // migration 0012).
 
-export const VOICE_LANGUAGES = ['en', 'hi', 'hi-en'] as const;
+import { BACKCHANNEL, DANGLING, DISCOURSE, LINES, chatRules, isDravidian, phoneRules } from './indic-languages';
+
+// 'kn', 'te', 'ta' (Kannada, Telugu, Tamil; launch 5) need Sarvam for speech in and out.
+export const VOICE_LANGUAGES = ['en', 'hi', 'hi-en', 'kn', 'te', 'ta'] as const;
 export type VoiceLanguage = typeof VOICE_LANGUAGES[number];
 export const STT_PROVIDERS = ['deepgram', 'sarvam'] as const;
 export type SttProviderName = typeof STT_PROVIDERS[number];
@@ -84,6 +87,10 @@ export function parseVoiceInput(
   if ('voiceId' in out && out.voiceId === undefined) delete merged.voiceId;
   if (usesSarvam(merged) && !hasSarvamKey) {
     return { ok: false, error: 'Sarvam needs the SARVAM_API_KEY secret (wrangler secret put SARVAM_API_KEY)' };
+  }
+  // Kannada, Telugu and Tamil: Sarvam for both directions (kn-IN, te-IN, ta-IN).
+  if (isDravidian(merged.language) && (merged.sttProvider !== 'sarvam' || merged.ttsProvider !== 'sarvam')) {
+    return { ok: false, error: 'Kannada, Telugu and Tamil need Sarvam for both speech recognition and voice (stt_provider and tts_provider = sarvam)' };
   }
   // Cartesia's default voice is English; a Hindi reply needs a Hindi-native voice.
   if (merged.ttsProvider === 'cartesia' && merged.language !== 'en' && !merged.voiceId) {
@@ -178,9 +185,24 @@ const HI_LINES: VoiceLines = {
     : 'हम सर्विस और दाम के बारे में बता सकते हैं, या आपकी बुकिंग कर सकते हैं — बताइए, क्या मदद करें?',
 };
 
+function dravidianLines(lang: 'kn' | 'te' | 'ta'): VoiceLines {
+  const L = LINES[lang];
+  return {
+    opener: L.opener, fillers: L.fillers, stillWorking: L.stillWorking, stillThere: L.stillThere, goodbye: L.goodbye,
+    greeting: L.greeting, customGreeting: L.customGreeting,
+    capabilityHint: (_bt, vertical) => (vertical === 'legal' ? L.hintLegal : L.hint),
+  };
+}
+
 export function voiceLines(lang: VoiceLanguage): VoiceLines {
+  if (isDravidian(lang)) return dravidianLines(lang);
   return lang === 'en' ? EN_LINES : HI_LINES;
 }
+
+/** Turn-taking word lists for Kannada / Telugu / Tamil (empty for other languages). */
+export const DRAVIDIAN_BACKCHANNEL_WORDS = new Set(Object.values(BACKCHANNEL).flat());
+export const DRAVIDIAN_DISCOURSE_WORDS = new Set(Object.values(DISCOURSE).flat());
+export const DRAVIDIAN_DANGLING_WORDS = new Set(Object.values(DANGLING).flat());
 
 // ── Prompt rules ────────────────────────────────────────────────────────────
 
@@ -190,6 +212,7 @@ export function voiceLines(lang: VoiceLanguage): VoiceLines {
  */
 export function chatLanguageRules(lang: VoiceLanguage): string {
   if (lang === 'en') return '';
+  if (isDravidian(lang)) return chatRules(lang);
   const lead = lang === 'hi'
     ? '- Customers here mostly write Hindi. Reply in Hindi, in Devanagari (मैं, आपका, कल), unless the customer writes in English — then reply in English.'
     : '- Customers here mix Hindi and English (Hinglish). Reply the way the customer writes: romanised Hinglish if they write Hinglish ("Aapka appointment book ho gaya hai"), Hindi in Devanagari if they write Devanagari, English if they write English.';
@@ -206,6 +229,7 @@ ${lead}
  */
 export function languageRules(lang: VoiceLanguage): string {
   if (lang === 'en') return '';
+  if (isDravidian(lang)) return phoneRules(lang);
   const lead = lang === 'hi'
     ? '- Callers here mostly speak Hindi. Reply in Hindi unless the caller speaks English — then reply in English.'
     : '- Callers here mix Hindi and English (Hinglish). Reply in the language the caller is using right now: Hinglish if they mix, English if they speak English, Hindi if they speak Hindi. Switch when they switch.';

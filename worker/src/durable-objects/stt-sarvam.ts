@@ -54,6 +54,7 @@ export interface SarvamSttOptions {
 export function sarvamSttLanguage(lang: VoiceLanguage): { languageCode: string; mode: string } {
   if (lang === 'hi') return { languageCode: 'hi-IN', mode: 'transcribe' };
   if (lang === 'hi-en') return { languageCode: 'hi-IN', mode: 'codemix' };
+  if (lang === 'kn' || lang === 'te' || lang === 'ta') return { languageCode: `${lang}-IN`, mode: 'transcribe' };
   return { languageCode: 'en-IN', mode: 'transcribe' };
 }
 
