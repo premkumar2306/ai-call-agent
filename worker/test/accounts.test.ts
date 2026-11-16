@@ -7,6 +7,7 @@ import {
 } from '../src/services/accounts';
 import { signStreamToken } from '../src/utils/stream-token';
 import { createD1, createKV, executionCtx } from './stubs/d1';
+import { createTestRateLimiter } from './helpers/rate-limiter.mjs';
 import type { Env } from '../src/types';
 
 const ADMIN = 'admin-secret-for-tests-0123456789';
@@ -105,6 +106,7 @@ function makeEnv(over: Partial<Env> = {}): Env {
     DB: createD1() as unknown as D1Database,
     CACHE: createKV() as unknown as KVNamespace,
     CART: createKV() as unknown as KVNamespace,
+    RATE_LIMITER: createTestRateLimiter(),
     TOKEN_SECRET, ADMIN_SECRET: ADMIN, NODE_ENV: 'production', RESEND_API_KEY: 're_test',
     CUSTOMER_HASH_SALT: 'salt',
     ...over,

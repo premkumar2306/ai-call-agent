@@ -1,0 +1,50 @@
+name = "__STAGING_WORKER_NAME__"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
+upload_source_maps = true
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[[d1_databases]]
+binding = "DB"
+database_name = "__STAGING_D1_DATABASE_NAME__"
+database_id = "__STAGING_D1_DATABASE_ID__"
+migrations_dir = "drizzle"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "__STAGING_CACHE_KV_ID__"
+
+[[kv_namespaces]]
+binding = "CART"
+id = "__STAGING_CART_KV_ID__"
+
+[durable_objects]
+bindings = [
+  { name = "RELAY_DO", class_name = "CallRelay" },
+  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CallRelay"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RateLimiter"]
+
+# Staging intentionally has no scheduled triggers. Exercise scheduled handlers
+# manually so staging cannot send reminders, bill, or retain data unattended.
+[vars]
+# Keep fail-closed behavior identical to production while resources and secrets
+# remain isolated by the staging deployment configuration.
+NODE_ENV = "production"
+TOKEN_TTL_SECONDS = "900"
+TWILIO_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
+TWILIO_DEFAULT_CUSTOMER_HASH = "staging-caller"
+WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"

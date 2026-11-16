@@ -9,7 +9,10 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const campaignDirectory = resolve(scriptDirectory, '..');
-const campaignSubjectPrefix = '[Avery dental pilot]';
+const citiesDirectory = join(campaignDirectory, 'data', 'cities');
+const campaignSubjectPrefix = '[Avery clinic operations]';
+const campaignSubjectPrefixes = [campaignSubjectPrefix, '[Avery dental pilot]'];
+const campaignWhatsAppUrl = 'https://api.whatsapp.com/send/?phone=919944707799&text&type=phone_number&app_absent=0';
 const allowedCities = new Set(['bengaluru', 'hyderabad', 'chennai']);
 const blockedMailboxPrefixes = new Set([
   'abuse',
@@ -27,14 +30,18 @@ const blockedMailboxPrefixes = new Set([
   'webmaster'
 ]);
 
-export function selectCandidates(targets, sentRecipients = new Set()) {
+export function selectCandidates(targets, sentRecipients = new Set(), sentOrganizations = new Set()) {
   const selected = [];
   const seenEmails = new Set();
+  const seenOrganizations = new Set();
 
   for (const target of targets) {
-    if (!['A', 'B'].includes(target.qualityTier)) continue;
+    if (!['A', 'B'].includes(target.organizationTier ?? target.qualityTier)) continue;
     if (target.status !== 'research_ready') continue;
+    if (target.humanReviewStatus !== 'approved') continue;
+    if (target.sendEligible !== true) continue;
     if (target.consentStatus !== 'not_contacted') continue;
+    if (sentOrganizations.has(target.organizationKey) || seenOrganizations.has(target.organizationKey)) continue;
 
     const validationByEmail = new Map(
       (target.emailDomainValidations ?? []).map((validation) => [validation.email.toLowerCase(), validation.status])
@@ -47,6 +54,7 @@ export function selectCandidates(targets, sentRecipients = new Set()) {
       if (blockedMailboxPrefixes.has(prefix)) continue;
       if (sentRecipients.has(email) || seenEmails.has(email)) continue;
       seenEmails.add(email);
+      seenOrganizations.add(target.organizationKey);
       selected.push({ target, email });
       break;
     }
@@ -119,23 +127,32 @@ export async function validateRecipientDomain(email, options = {}) {
   };
 }
 
-export function buildMessage(target, city) {
+export function buildMessage(target, city, targeting = {}) {
   const languages = {
-    bengaluru: 'English, Hindi, or Kannada',
+    bengaluru: 'English or Hindi',
     hyderabad: 'English, Hindi, or Telugu',
     chennai: 'English or Tamil'
   };
-  const greeting = target.clinicName ? `Hi ${target.clinicName} team,` : 'Hi there,';
+  const organizationName = target.organizationName ?? target.clinicName;
+  const locationCount = target.locationCountInCity ?? 1;
+  const greeting = organizationName ? `Hi ${organizationName} operations team,` : 'Hi there,';
+  const treatmentFocus = Array.isArray(targeting.treatmentFocus) ? targeting.treatmentFocus.filter(Boolean) : [];
+  const inquiryFocus = treatmentFocus.length > 0
+    ? `${treatmentFocus.join(', ')} enquiries`
+    : 'high-value service enquiries';
   return {
-    subject: `${campaignSubjectPrefix} quick question for ${target.clinicName}`,
+    subject: `${campaignSubjectPrefix} appointment-call overflow for ${organizationName}`,
     body: [
       greeting,
       '',
-      `If a patient calls after hours, Avery can answer in ${languages[city]}, capture the appointment request, and send a WhatsApp confirmation.`,
+      `${organizationName} has ${locationCount} ${locationCount === 1 ? 'location' : 'locations'} in ${target.city}. We help teams cover overflow and after-hours ${inquiryFocus} in ${languages[city]}, then send the customer a WhatsApp confirmation.`,
       '',
-      'We can set up a free 14-day pilot using call forwarding, without replacing your existing number or receptionist.',
+      'The pilot starts with one branch using call forwarding and setup is free. It does not replace the existing number, reception team, or call centre.',
       '',
-      'Would a short example for your clinic be useful?',
+      'Would the person managing appointment operations be open to reviewing a short branch-level demo?',
+      '',
+      'WhatsApp Prem:',
+      campaignWhatsAppUrl,
       '',
       'Regards,',
       'Prem',
@@ -147,22 +164,31 @@ export function buildMessage(target, city) {
   };
 }
 
+export function assertSendAllowed(action, campaignPolicy) {
+  if (action !== 'send') return;
+  if (campaignPolicy.mode !== 'approved' || campaignPolicy.approval?.approvedByPrem !== true || campaignPolicy.approval?.sendActionAllowed !== true) {
+    throw new Error('Campaign is held in monitoring-only mode until Prem approves an exact batch.');
+  }
+}
+
 async function main() {
   const action = process.env.CAMPAIGN_ACTION ?? 'preview';
   const city = process.env.CAMPAIGN_CITY ?? 'bengaluru';
-  const maxEmails = Math.min(10, Math.max(1, Number.parseInt(process.env.MAX_EMAILS ?? '10', 10)));
+  const maxEmails = Math.min(15, Math.max(1, Number.parseInt(process.env.MAX_EMAILS ?? '15', 10)));
   const outputDirectory = process.env.CAMPAIGN_OUTPUT_DIR ?? join(campaignDirectory, 'runtime');
   const sender = process.env.OUTLOOK_SENDER ?? 'premkumar@deskzen.in';
   const statePath = join(campaignDirectory, 'delivery-ledger.json');
+  const campaignPolicy = JSON.parse(await readFile(join(campaignDirectory, 'automation-policy.json'), 'utf8'));
 
   if (!['preview', 'monitor', 'send'].includes(action)) throw new Error(`Unsupported CAMPAIGN_ACTION: ${action}`);
+  assertSendAllowed(action, campaignPolicy);
   if (!allowedCities.has(city)) throw new Error(`Unsupported CAMPAIGN_CITY: ${city}`);
   if (action === 'send' && process.env.CONFIRM_SEND !== 'true' && process.env.AUTOMATION_ENABLED !== 'true') {
     throw new Error('Sending is blocked: confirm_send must be true or DENTAL_CAMPAIGN_ENABLED must be true');
   }
 
   await mkdir(outputDirectory, { recursive: true });
-  const payload = JSON.parse(await readFile(join(campaignDirectory, city, 'targets-1000.json'), 'utf8'));
+  const payload = JSON.parse(await readFile(join(citiesDirectory, city, 'organization-targets.json'), 'utf8'));
   const campaignState = await readCampaignState(statePath);
   let graphToken = null;
   let sentMessages = [];
@@ -183,13 +209,14 @@ async function main() {
     }
   }
 
-  const campaignSent = sentMessages.filter((message) => message.subject?.startsWith(campaignSubjectPrefix));
+  const campaignSent = sentMessages.filter((message) => campaignSubjectPrefixes.some((prefix) => message.subject?.startsWith(prefix)));
   const sentRecipients = new Set(campaignSent.flatMap((message) => message.toRecipients ?? [])
     .map((recipient) => recipient.emailAddress?.address?.toLowerCase())
     .filter(Boolean));
   const candidates = excludeLedgerRecipients(
-    selectCandidates(payload.targets, sentRecipients),
-    campaignState.recipientHashes
+    selectCandidates(payload.organizations, sentRecipients, new Set()),
+    campaignState.recipientHashes,
+    campaignState.organizationHashes
   );
   const replyReport = buildReplyReport(inboxMessages, sentRecipients);
   const today = dateKey(new Date());
@@ -216,11 +243,13 @@ async function main() {
     replies: replyReport.replies,
     bounces: replyReport.bounces,
     preview: candidates.slice(0, maxEmails).map(({ target, email }) => ({
-      clinicId: target.id,
-      clinicName: target.clinicName,
+      organizationId: target.id,
+      organizationName: target.organizationName,
       email: maskEmail(email),
-      qualityTier: target.qualityTier,
-      qualityScore: target.qualityScore
+      segment: target.segment,
+      locationCountInCity: target.locationCountInCity,
+      organizationTier: target.organizationTier,
+      organizationScore: target.organizationScore
     })),
     sent: [],
     deliveryErrors: [],
@@ -240,7 +269,7 @@ async function main() {
       if (!['mx_valid', 'implicit_mx'].includes(validation.status)) {
         result.skippedValidationCount += 1;
         result.rejectedByRecipientValidation.push({
-          clinicId: candidate.target.id,
+          organizationId: candidate.target.id,
           email: maskEmail(candidate.email),
           status: validation.status,
           domain: validation.domain
@@ -248,29 +277,29 @@ async function main() {
         continue;
       }
 
-      const message = buildMessage(candidate.target, city);
+      const message = buildMessage(candidate.target, city, campaignPolicy.targeting);
       try {
         await sendMail(graphToken, sender, candidate.email, message);
       } catch (error) {
         if (!isAmbiguousSendError(error)) throw error;
-        recordCampaignSend(campaignState, candidate.email, today);
+        recordCampaignSend(campaignState, candidate.email, today, candidate.target.organizationKey);
         await writeCampaignState(statePath, campaignState);
         result.ambiguousCount += 1;
         result.deliveryErrors.push({
-          clinicId: candidate.target.id,
-          clinicName: candidate.target.clinicName,
+          organizationId: candidate.target.id,
+          organizationName: candidate.target.organizationName,
           email: maskEmail(candidate.email),
           status: error.status,
           message: error.message
         });
         break;
       }
-      recordCampaignSend(campaignState, candidate.email, today);
+      recordCampaignSend(campaignState, candidate.email, today, candidate.target.organizationKey);
       await writeCampaignState(statePath, campaignState);
       result.sentCount += 1;
       result.sent.push({
-        clinicId: candidate.target.id,
-        clinicName: candidate.target.clinicName,
+        organizationId: candidate.target.id,
+        organizationName: candidate.target.organizationName,
         email: maskEmail(candidate.email),
         subject: message.subject
       });
@@ -296,16 +325,26 @@ export function normalizeCampaignState(value = {}) {
   const recipientHashes = [...new Set((value.recipientHashes ?? [])
     .map((hash) => String(hash).trim().toLowerCase())
     .filter((hash) => /^[a-f0-9]{64}$/.test(hash)))].sort();
+  const organizationHashes = [...new Set((value.organizationHashes ?? [])
+    .map((hash) => String(hash).trim().toLowerCase())
+    .filter((hash) => /^[a-f0-9]{64}$/.test(hash)))].sort();
   const date = typeof value.daily?.date === 'string' ? value.daily.date : null;
   const count = Number.isInteger(value.daily?.count) && value.daily.count >= 0 ? value.daily.count : 0;
-  return { version: 1, recipientHashes, daily: { date, count } };
+  return { version: 2, recipientHashes, organizationHashes, daily: { date, count } };
 }
 
-export function recordCampaignSend(state, email, date) {
+export function recordCampaignSend(state, email, date, organizationKey) {
   const recipientHash = hashEmail(email);
   if (!state.recipientHashes.includes(recipientHash)) {
     state.recipientHashes.push(recipientHash);
     state.recipientHashes.sort();
+  }
+  if (organizationKey) {
+    const organizationHash = hashOrganization(organizationKey);
+    if (!state.organizationHashes.includes(organizationHash)) {
+      state.organizationHashes.push(organizationHash);
+      state.organizationHashes.sort();
+    }
   }
   if (state.daily.date !== date) state.daily = { date, count: 0 };
   state.daily.count += 1;
@@ -316,9 +355,15 @@ export function hashEmail(email) {
   return createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
 }
 
-export function excludeLedgerRecipients(candidates, recipientHashes) {
+export function hashOrganization(organizationKey) {
+  return createHash('sha256').update(organizationKey.trim().toLowerCase()).digest('hex');
+}
+
+export function excludeLedgerRecipients(candidates, recipientHashes, organizationHashes = []) {
   const ledgerHashes = new Set(recipientHashes);
-  return candidates.filter(({ email }) => !ledgerHashes.has(hashEmail(email)));
+  const ledgerOrganizationHashes = new Set(organizationHashes);
+  return candidates.filter(({ email, target }) => !ledgerHashes.has(hashEmail(email))
+    && !ledgerOrganizationHashes.has(hashOrganization(target.organizationKey)));
 }
 
 export function isTransientGraphError(error) {
@@ -430,7 +475,7 @@ function buildReplyReport(inboxMessages, sentRecipients) {
   for (const message of inboxMessages) {
     if (isBounce(message)) {
       const content = `${message.subject ?? ''} ${message.bodyPreview ?? ''}`.toLowerCase();
-      const campaignRelated = message.subject?.includes(campaignSubjectPrefix)
+      const campaignRelated = campaignSubjectPrefixes.some((prefix) => message.subject?.includes(prefix))
         || [...sentRecipients].some((recipient) => content.includes(recipient));
       if (campaignRelated) bounces.push({ receivedAt: message.receivedDateTime, subject: message.subject ?? 'Delivery failure' });
       continue;
@@ -514,7 +559,7 @@ function renderMarkdown(result) {
     '## Candidate preview',
     ''
   ];
-  for (const candidate of result.preview) lines.push(`- ${candidate.clinicName} (${candidate.email}) — tier ${candidate.qualityTier}, score ${candidate.qualityScore}`);
+  for (const candidate of result.preview) lines.push(`- ${candidate.organizationName} (${candidate.email}) — ${candidate.segment}, ${candidate.locationCountInCity} city locations, score ${candidate.organizationScore}`);
   if (result.replies.length) {
     lines.push('', '## Replies', '');
     for (const reply of result.replies) lines.push(`- ${reply.receivedAt}: ${reply.sender} — ${reply.classification} — ${reply.subject}`);
@@ -525,7 +570,7 @@ function renderMarkdown(result) {
   }
   if (result.deliveryErrors.length) {
     lines.push('', '## Ambiguous delivery attempts', '');
-    for (const failure of result.deliveryErrors) lines.push(`- ${failure.clinicName} (${failure.email}) — Graph ${failure.status}; recorded to prevent duplicate retries`);
+    for (const failure of result.deliveryErrors) lines.push(`- ${failure.organizationName} (${failure.email}) — Graph ${failure.status}; recorded to prevent duplicate retries`);
   }
   return `${lines.join('\n')}\n`;
 }

@@ -1,7 +1,7 @@
 // Who the dashboard is acting as, and the headers that prove it.
 //
 // - Business owners and staff sign in with an emailed code. The Worker hands
-//   back a signed token that is kept in localStorage (it's sent as a Bearer
+//   back a signed token that is kept in sessionStorage (it's sent as a Bearer
 //   header; a cookie would be third-party here, since the UI and the Worker
 //   live on different sites). Logging out revokes it server-side.
 // - The operator can still use ADMIN_SECRET (adminKey.ts, sessionStorage).
@@ -14,13 +14,13 @@ export type Auth =
   | null;
 
 export function loadOwnerToken(): string {
-  try { return localStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
+  try { return sessionStorage.getItem(TOKEN_KEY) ?? ''; } catch { return ''; }
 }
 
 export function saveOwnerToken(token: string): void {
   try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
   } catch { /* storage unavailable — token lives in memory only */ }
 }
 

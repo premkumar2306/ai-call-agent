@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assertSendAllowed,
   buildMessage,
   classifyReply,
   dateKey,
   excludeLedgerRecipients,
   graphRequest,
   hashEmail,
+  hashOrganization,
   isAmbiguousSendError,
   isTransientGraphError,
   isBounce,
@@ -21,15 +23,35 @@ import {
 } from './cloud-email-campaign.mjs';
 
 const baseTarget = {
-  id: 'blr-dental-0001',
-  clinicName: 'Example Dental',
+  id: 'blr-dental-org-0001',
+  organizationKey: 'domain:example.com',
+  organizationName: 'Example Dental Group',
+  clinicName: 'Example Dental Group',
+  city: 'Bengaluru',
+  segment: 'regional_chain',
+  locationCountInCity: 5,
   status: 'research_ready',
+  humanReviewStatus: 'approved',
   consentStatus: 'not_contacted',
+  sendEligible: true,
+  organizationTier: 'A',
   qualityTier: 'A',
   qualityScore: 95,
   publicEmails: ['hello@example.com'],
   emailDomainValidations: [{ email: 'hello@example.com', status: 'mx_valid' }]
 };
+
+test('send action fails closed while campaign is held', () => {
+  assert.doesNotThrow(() => assertSendAllowed('monitor', { mode: 'held_monitoring_only' }));
+  assert.throws(
+    () => assertSendAllowed('send', { mode: 'held_monitoring_only', approval: { approvedByPrem: false, sendActionAllowed: false } }),
+    /held in monitoring-only mode/
+  );
+  assert.doesNotThrow(() => assertSendAllowed('send', {
+    mode: 'approved',
+    approval: { approvedByPrem: true, sendActionAllowed: true }
+  }));
+});
 
 test('selectCandidates requires a valid mail domain and removes duplicates', () => {
   const targets = [
@@ -37,7 +59,7 @@ test('selectCandidates requires a valid mail domain and removes duplicates', () 
     { ...baseTarget, id: 'blr-dental-0002' },
     { ...baseTarget, id: 'blr-dental-0003', publicEmails: ['bad@example.net'], emailDomainValidations: [{ email: 'bad@example.net', status: 'domain_invalid' }] }
   ];
-  assert.deepEqual(selectCandidates(targets).map((candidate) => candidate.target.id), ['blr-dental-0001']);
+  assert.deepEqual(selectCandidates(targets).map((candidate) => candidate.target.id), ['blr-dental-org-0001']);
 });
 
 test('selectCandidates excludes already-sent and blocked mailboxes', () => {
@@ -48,6 +70,11 @@ test('selectCandidates excludes already-sent and blocked mailboxes', () => {
   assert.equal(selectCandidates(targets, new Set(['hello@example.com'])).length, 0);
 });
 
+test('selectCandidates fails closed until organization review is approved', () => {
+  const pending = { ...baseTarget, humanReviewStatus: 'pending', sendEligible: false };
+  assert.equal(selectCandidates([pending]).length, 0);
+});
+
 test('reply and bounce classification is conservative', () => {
   assert.equal(classifyReply({ bodyPreview: 'Yes, please send a demo' }), 'positive');
   assert.equal(classifyReply({ bodyPreview: 'Please remove me' }), 'opt_out');
@@ -56,11 +83,18 @@ test('reply and bounce classification is conservative', () => {
   assert.equal(isBounce({ subject: 'Undeliverable: test' }), true);
 });
 
-test('message contains city language and opt-out', () => {
-  const message = buildMessage(baseTarget, 'bengaluru');
-  assert.match(message.body, /Kannada/);
+test('message uses configurable campaign focus and includes opt-out', () => {
+  const message = buildMessage(baseTarget, 'bengaluru', {
+    treatmentFocus: ['dental implants', 'root canal treatment', 'braces', 'cosmetic dentistry']
+  });
+  assert.match(message.body, /English or Hindi/);
+  assert.match(message.body, /operations team/);
+  assert.match(message.body, /5 locations/);
+  assert.match(message.body, /dental implants, root canal treatment, braces, cosmetic dentistry enquiries/);
+  assert.match(message.body, /setup is free/);
   assert.match(message.body, /reply no/i);
-  assert.match(message.subject, /^\[Avery dental pilot\]/);
+  assert.match(message.body, /^https:\/\/api\.whatsapp\.com\/send\/\?phone=919944707799&text&type=phone_number&app_absent=0$/m);
+  assert.match(message.subject, /^\[Avery clinic operations\]/);
 });
 
 test('date and masking helpers produce stable output', () => {
@@ -75,11 +109,12 @@ test('campaign state normalizes recipients and tracks a daily send cap', () => {
     daily: { date: '2026-11-12', count: 4 }
   });
 
-  recordCampaignSend(state, 'New@Example.com', '2026-11-13');
+  recordCampaignSend(state, 'New@Example.com', '2026-11-13', 'domain:new.example');
 
   assert.deepEqual(state, {
-    version: 1,
+    version: 2,
     recipientHashes: [helloHash, hashEmail('new@example.com')].sort(),
+    organizationHashes: [hashOrganization('domain:new.example')],
     daily: { date: '2026-11-13', count: 1 }
   });
 });
@@ -88,6 +123,12 @@ test('delivery ledger prevents selecting a previously attempted recipient', () =
   const candidates = [{ target: baseTarget, email: 'hello@example.com' }];
 
   assert.deepEqual(excludeLedgerRecipients(candidates, [hashEmail('HELLO@example.com')]), []);
+});
+
+test('delivery ledger prevents contacting the same organization through another email', () => {
+  const candidates = [{ target: baseTarget, email: 'other@example.com' }];
+
+  assert.deepEqual(excludeLedgerRecipients(candidates, [], [hashOrganization(baseTarget.organizationKey)]), []);
 });
 
 test('only transient Graph failures permit ledger-backed sending', () => {

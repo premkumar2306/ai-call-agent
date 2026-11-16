@@ -7,10 +7,12 @@ import { resolve4, resolve6, resolveMx } from 'node:dns/promises';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const campaignDirectory = resolve(scriptDirectory, '..');
+const dataDirectory = join(campaignDirectory, 'data');
+const citiesDirectory = join(dataDirectory, 'cities');
 const cities = ['bengaluru', 'hyderabad', 'chennai'];
 const domainCache = new Map();
 const cityPayloads = await Promise.all(cities.map(async (city) => {
-  const filePath = join(campaignDirectory, city, 'targets-1000.json');
+  const filePath = join(citiesDirectory, city, 'targets-1000.json');
   return { city, filePath, payload: JSON.parse(await readFile(filePath, 'utf8')) };
 }));
 
@@ -32,7 +34,7 @@ for (const { city, filePath, payload } of cityPayloads) {
   console.log(`${city}: ${summarizeCity(payload.targets)}`);
 }
 
-const summaryPath = join(campaignDirectory, 'quality-summary.json');
+const summaryPath = join(dataDirectory, 'quality-summary.json');
 const qualitySummary = JSON.parse(await readFile(summaryPath, 'utf8'));
 for (const { city, payload } of cityPayloads) {
   qualitySummary[city].emailDomainStatuses = countStatuses(payload.targets);

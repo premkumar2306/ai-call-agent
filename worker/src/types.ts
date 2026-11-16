@@ -150,6 +150,7 @@ export interface Env {
   SARVAM_TTS_CODEC?: string;         // 'mulaw' (default) | 'linear16'
   SARVAM_HIGH_VAD_SENSITIVITY?: string; // '1' for Sarvam's high-sensitivity VAD
   RELAY_DO: DurableObjectNamespace;
+  RATE_LIMITER: DurableObjectNamespace;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   /** Optional: where owners' phone-number requests are emailed (needs RESEND_API_KEY). */

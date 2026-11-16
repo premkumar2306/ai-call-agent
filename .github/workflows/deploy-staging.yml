@@ -1,0 +1,172 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never interrupt a deployment after its forward-only D1 migration starts.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+  STAGING_WORKER_URL: ${{ vars.STAGING_WORKER_URL }}
+  STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
+  STAGING_PAGES_PROJECT: ${{ vars.STAGING_PAGES_PROJECT }}
+  STAGING_WORKER_NAME: ${{ vars.STAGING_WORKER_NAME }}
+  STAGING_D1_DATABASE_NAME: ${{ vars.STAGING_D1_DATABASE_NAME }}
+  STAGING_D1_DATABASE_ID: ${{ vars.STAGING_D1_DATABASE_ID }}
+  STAGING_CACHE_KV_ID: ${{ vars.STAGING_CACHE_KV_ID }}
+  STAGING_CART_KV_ID: ${{ vars.STAGING_CART_KV_ID }}
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Migrate, deploy, and verify staging
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging
+      url: ${{ env.STAGING_WEB_URL }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
+      STAGING_WORKER_SECRETS_JSON: ${{ secrets.STAGING_WORKER_SECRETS_JSON }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            worker/package-lock.json
+            web/package-lock.json
+
+      - name: Validate staging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID STAGING_WORKER_URL
+            STAGING_WEB_URL STAGING_PAGES_PROJECT STAGING_WORKER_NAME
+            STAGING_D1_DATABASE_NAME STAGING_D1_DATABASE_ID
+            STAGING_CACHE_KV_ID STAGING_CART_KV_ID STAGING_WORKER_SECRETS_JSON
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing staging GitHub variable or secret: $name"
+              exit 1
+            fi
+          done
+          [[ "$STAGING_WORKER_NAME" =~ ^[a-z0-9-]+$ ]] || { echo "::error::Invalid STAGING_WORKER_NAME"; exit 1; }
+          [[ "$STAGING_PAGES_PROJECT" =~ ^[a-z0-9-]+$ ]] || { echo "::error::Invalid STAGING_PAGES_PROJECT"; exit 1; }
+          [[ "$STAGING_D1_DATABASE_NAME" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::Invalid STAGING_D1_DATABASE_NAME"; exit 1; }
+          [[ "$STAGING_D1_DATABASE_ID" =~ ^[0-9a-f-]{36}$ ]] || { echo "::error::Invalid STAGING_D1_DATABASE_ID"; exit 1; }
+          [[ "$STAGING_CACHE_KV_ID" =~ ^[0-9a-f]{32}$ ]] || { echo "::error::Invalid STAGING_CACHE_KV_ID"; exit 1; }
+          [[ "$STAGING_CART_KV_ID" =~ ^[0-9a-f]{32}$ ]] || { echo "::error::Invalid STAGING_CART_KV_ID"; exit 1; }
+          [[ "$STAGING_WORKER_URL" == https://* && "$STAGING_WEB_URL" == https://* ]] || {
+            echo "::error::Staging URLs must use HTTPS"
+            exit 1
+          }
+          if [[ "$STAGING_WORKER_NAME" == "mogi-platform" || "$STAGING_D1_DATABASE_NAME" == "mogi-platform" || "$STAGING_PAGES_PROJECT" == "avery-admin" ]]; then
+            echo "::error::Staging resource names must not match production defaults"
+            exit 1
+          fi
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Validate migrations locally
+        working-directory: worker
+        run: npm run db:validate
+
+      - name: Render isolated staging config
+        working-directory: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp wrangler.staging.toml wrangler.staging.generated.toml
+          sed -i \
+            -e "s/__STAGING_WORKER_NAME__/$STAGING_WORKER_NAME/g" \
+            -e "s/__STAGING_D1_DATABASE_NAME__/$STAGING_D1_DATABASE_NAME/g" \
+            -e "s/__STAGING_D1_DATABASE_ID__/$STAGING_D1_DATABASE_ID/g" \
+            -e "s/__STAGING_CACHE_KV_ID__/$STAGING_CACHE_KV_ID/g" \
+            -e "s/__STAGING_CART_KV_ID__/$STAGING_CART_KV_ID/g" \
+            wrangler.staging.generated.toml
+          if grep -q '__STAGING_' wrangler.staging.generated.toml; then
+            echo "::error::Unresolved staging config placeholder"
+            exit 1
+          fi
+
+      - name: Apply staging D1 migrations
+        working-directory: worker
+        run: npx wrangler d1 migrations apply DB --remote --config wrangler.staging.generated.toml
+
+      - name: Deploy staging Worker
+        working-directory: worker
+        run: npx wrangler deploy --config wrangler.staging.generated.toml --message "staging:${{ github.sha }}"
+
+      # A new Worker script must exist before Wrangler can attach bulk secrets.
+      # This creates a secret-only version after the schema-compatible code upload.
+      - name: Upload staging Worker secrets
+        working-directory: worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$STAGING_WORKER_SECRETS_JSON" > "$RUNNER_TEMP/staging-worker-secrets.json"
+          npx wrangler secret bulk "$RUNNER_TEMP/staging-worker-secrets.json" --config wrangler.staging.generated.toml
+
+      - name: Smoke test staging Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 10); do
+            body=$(curl --fail --silent --show-error --max-time 10 "$STAGING_WORKER_URL/health?deep=1" || true)
+            echo "attempt $attempt: $body"
+            if grep -q '"db":"ok"' <<<"$body" && grep -q '"kv":"ok"' <<<"$body"; then
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "::error::Staging Worker never reported db+kv healthy"
+          exit 1
+
+      - name: Install Web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build staging Web
+        working-directory: web
+        run: npm run build
+        env:
+          VITE_API_URL: ${{ env.STAGING_WORKER_URL }}
+
+      - name: Deploy staging Pages
+        working-directory: web
+        run: npx wrangler pages deploy dist --project-name "$STAGING_PAGES_PROJECT" --branch staging --commit-hash "${{ github.sha }}"
+
+      - name: Smoke test staging Pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 10); do
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "$STAGING_WEB_URL" || true)
+            echo "attempt $attempt: HTTP $status"
+            if [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "::error::Staging Pages did not return a successful response"
+          exit 1

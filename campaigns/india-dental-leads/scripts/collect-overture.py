@@ -12,7 +12,9 @@ from urllib.parse import urlparse
 import duckdb
 
 
-ROOT = Path(__file__).resolve().parents[1]
+CAMPAIGN_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = CAMPAIGN_ROOT / "data"
+CITIES_ROOT = DATA_ROOT / "cities"
 DEFAULT_RELEASE = "2026-10-21.0"
 TARGET_COUNT = 1000
 MIN_CONFIDENCE = 0.55
@@ -80,7 +82,7 @@ def main():
 
     for city_key in city_keys:
         targets, summary = collect_city(connection, city_key, CITIES[city_key], args.release)
-        output_directory = ROOT / city_key
+        output_directory = CITIES_ROOT / city_key
         output_directory.mkdir(parents=True, exist_ok=True)
         output_path = output_directory / "targets-1000.json"
         payload = {
@@ -110,7 +112,7 @@ def main():
         summaries.append(summary)
         print(f"{CITIES[city_key]['name']}: wrote {len(targets)} targets to {output_path}")
 
-    summary_path = ROOT / "quality-summary.json"
+    summary_path = DATA_ROOT / "quality-summary.json"
     existing = {}
     if summary_path.exists() and args.city != "all":
         existing = json.loads(summary_path.read_text())

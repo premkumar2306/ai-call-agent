@@ -1,0 +1,10 @@
+title = "Mogi secret-scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Campaign source and generated data are scanned by their data-handling workflows, not the application secret gate"
+paths = [
+  '''^campaigns/''',
+]

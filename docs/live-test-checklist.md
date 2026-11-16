@@ -67,7 +67,9 @@ Setup is in [razorpay-setup.md](razorpay-setup.md). Use **test** keys until ever
   check the code arrives within a minute.
 
 ## WhatsApp (Meta Cloud API)
-Follow [`docs/whatsapp-setup.md`](whatsapp-setup.md) first. `npm run whatsapp-setup -- --dry-run` should end with no ✗.
+Follow [WhatsApp setup](whatsapp-setup.md) first. `npm run whatsapp-setup -- --dry-run`
+should end with no ✗.
+
 1. `npm run whatsapp-setup -- --test-to <your WhatsApp number>`, then reply to the hello_world message.
    - [ ] For an Indian business, the first reply is the AI/privacy notice, then the answer. Your
      next message gets no second notice.

@@ -28,8 +28,10 @@ import { applyRetention } from './services/retention.service';
 import { whatsappAdminRouter } from './routes/whatsapp-admin';
 import { runReminders } from './services/whatsapp-outbound';
 import { refreshHealth } from './services/whatsapp-health';
+import { logEvent } from './utils/telemetry';
 
 export { CallRelay } from './durable-objects/call-relay';
+export { RateLimiter } from './durable-objects/rate-limiter';
 
 type AppEnv = HonoEnv & { Variables: { requestId: string } };
 const app = new Hono<AppEnv>();
@@ -104,10 +106,12 @@ app.get('/sectors', async (c) => {
 // ── Global error handler ───────────────────────────────────────────────────
 app.onError((err, c) => {
   const id = c.get('requestId');
-  console.error(JSON.stringify({
-    level: 'error', msg: 'unhandled', requestId: id, method: c.req.method, path: c.req.path,
-    error: err.message, stack: err.stack,
-  }));
+  logEvent('error', 'request.unhandled', {
+    requestId: id,
+    method: c.req.method,
+    path: c.req.path,
+    errorType: err.name || 'Error',
+  });
   return c.json({ success: false, error: 'Internal server error', requestId: id }, 500);
 });
 

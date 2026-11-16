@@ -1,0 +1,75 @@
+{
+  "bengaluru": {
+    "cityKey": "bengaluru",
+    "city": "Bengaluru",
+    "candidateCountBeforeCleaning": 1378,
+    "qualifiedCountBeforeLimit": 1309,
+    "selectedCount": 1000,
+    "qualityTiers": {
+      "A": 631,
+      "B": 369
+    },
+    "withPublicEmail": 719,
+    "withPublicWebsite": 825,
+    "withPublicPhone": 797,
+    "sendEligible": 0,
+    "duplicateIdentityCount": 69,
+    "emailDomainStatuses": {
+      "domain_valid_mailbox_unverified": 691,
+      "domain_invalid": 28,
+      "missing": 281
+    },
+    "duplicatePublicEmails": 40,
+    "duplicatePublicPhones": 36
+  },
+  "hyderabad": {
+    "cityKey": "hyderabad",
+    "city": "Hyderabad",
+    "candidateCountBeforeCleaning": 1128,
+    "qualifiedCountBeforeLimit": 1047,
+    "selectedCount": 1000,
+    "qualityTiers": {
+      "A": 498,
+      "B": 439,
+      "C": 63
+    },
+    "withPublicEmail": 591,
+    "withPublicWebsite": 777,
+    "withPublicPhone": 745,
+    "sendEligible": 0,
+    "duplicateIdentityCount": 81,
+    "emailDomainStatuses": {
+      "domain_valid_mailbox_unverified": 571,
+      "domain_unknown": 2,
+      "domain_invalid": 18,
+      "missing": 409
+    },
+    "duplicatePublicEmails": 27,
+    "duplicatePublicPhones": 33
+  },
+  "chennai": {
+    "cityKey": "chennai",
+    "city": "Chennai",
+    "candidateCountBeforeCleaning": 1136,
+    "qualifiedCountBeforeLimit": 1064,
+    "selectedCount": 1000,
+    "qualityTiers": {
+      "A": 558,
+      "B": 382,
+      "C": 60
+    },
+    "withPublicEmail": 692,
+    "withPublicWebsite": 693,
+    "withPublicPhone": 828,
+    "sendEligible": 0,
+    "duplicateIdentityCount": 72,
+    "emailDomainStatuses": {
+      "domain_valid_mailbox_unverified": 679,
+      "domain_unknown": 2,
+      "domain_invalid": 11,
+      "missing": 308
+    },
+    "duplicatePublicEmails": 29,
+    "duplicatePublicPhones": 29
+  }
+}

@@ -27,6 +27,7 @@ import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/
 import { UsageMeter } from '../services/billing/meter';
 import { recordUsage } from '../services/billing/service';
 import { installProviderMock } from '../utils/provider-mock';
+import { logEvent } from '../utils/telemetry';
 
 // One CallRelay instance per phone call: carrier media stream → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
@@ -768,7 +769,10 @@ export class CallRelay extends DurableObject<Env> {
       this.streamStartedAt = this.callStartedAt;
       this.callSid = ev.start.callSid;
       this.cache.callSid = this.callSid;
-      console.log(`[call] ${this.callSid.slice(-8)}${this.telephony.provider === 'twilio' ? '' : ` (${this.telephony.provider})`}`);
+      logEvent('info', 'call.stream_started', {
+        callId: this.callSid.slice(-8),
+        provider: this.telephony.provider,
+      });
 
       const auth = await this.authenticate(ev.start);
       if ('rejected' in auth) { this.reject(auth.rejected); return; }
@@ -873,7 +877,11 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   private reject(reason: string) {
-    console.warn(`[call] ${this.callSid.slice(-8)} rejected: ${reason}`);
+    logEvent('warn', 'call.rejected', {
+      callId: this.callSid.slice(-8),
+      provider: this.telephony.provider,
+      reason,
+    });
     this.stt.close();
     if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1008, 'Unauthorized');
   }
@@ -887,7 +895,11 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {
-    console.error(`[${this.telephony.provider} ws]`, (error as any)?.message || error);
+    logEvent('error', 'call.websocket_error', {
+      callId: this.callSid.slice(-8),
+      provider: this.telephony.provider,
+      errorType: error instanceof Error ? error.name : 'UnknownError',
+    });
   }
 }
 

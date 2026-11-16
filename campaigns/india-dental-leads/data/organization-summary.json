@@ -1,0 +1,41 @@
+{
+  "bengaluru": {
+    "city": "Bengaluru",
+    "sourceLocationCount": 1000,
+    "organizationCount": 808,
+    "multiLocationOrganizationCount": 56,
+    "segments": {
+      "enterprise_chain": 5,
+      "regional_chain": 1,
+      "city_chain": 1,
+      "growing_group": 49,
+      "premium_single_location": 752
+    }
+  },
+  "chennai": {
+    "city": "Chennai",
+    "sourceLocationCount": 1000,
+    "organizationCount": 880,
+    "multiLocationOrganizationCount": 54,
+    "segments": {
+      "enterprise_chain": 5,
+      "regional_chain": 2,
+      "city_chain": 4,
+      "growing_group": 43,
+      "premium_single_location": 826
+    }
+  },
+  "hyderabad": {
+    "city": "Hyderabad",
+    "sourceLocationCount": 1000,
+    "organizationCount": 809,
+    "multiLocationOrganizationCount": 56,
+    "segments": {
+      "enterprise_chain": 5,
+      "regional_chain": 2,
+      "city_chain": 6,
+      "growing_group": 43,
+      "premium_single_location": 753
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/index';
 import { INTEGRATIONS, readiness, redact } from '../src/services/integrations';
+import { createTestRateLimiter } from './helpers/rate-limiter.mjs';
 
 function kv() {
   const m = new Map<string, string>();
@@ -19,7 +20,7 @@ const SECRETS = {
   GOOGLE_CLIENT_ID: '123.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'g-SECRET-client', CALENDAR_TOKEN_KEY: 'cal-SECRET-key-value',
 };
 const VALUES = Object.entries(SECRETS).filter(([k]) => k !== 'EMAIL_FROM' && k !== 'GOOGLE_CLIENT_ID').map(([, v]) => v);
-const makeEnv = () => ({ DB: db, CACHE: kv(), CART: kv(), ...SECRETS }) as any;
+const makeEnv = () => ({ DB: db, CACHE: kv(), CART: kv(), RATE_LIMITER: createTestRateLimiter(), ...SECRETS }) as any;
 const H = { 'X-Admin-Key': SECRETS.ADMIN_SECRET };
 
 let logs: string[] = [];

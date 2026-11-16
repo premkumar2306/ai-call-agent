@@ -1,13 +1,35 @@
 # India dental lead lists
 
-This campaign dataset contains 1,000 review-ready dental clinic locations for
-each of Bengaluru, Hyderabad, and Chennai. Records come from the public
-Overture Maps Places dataset and are ranked by source confidence, contact-field
-coverage, and address completeness.
+This campaign contains two layers for Bengaluru, Hyderabad, and Chennai:
+
+- 1,000 public dental location records per city from Overture Maps Places.
+- A deduplicated organization target list per city, ranked by multi-location
+  footprint, city coverage, contact availability, and source quality.
+
+Outreach uses the organization lists so a chain with many branches is treated
+as one account instead of receiving repeated branch-level messages. Premium
+single-location clinics remain in the list at lower priority.
 
 These are research leads, not an automatic send list. Every record starts with
 `sendEligible: false`. An address must pass syntax, live MX-domain,
 duplicate-recipient, opt-out, and human relevance checks before outreach.
+
+## Directory layout
+
+- `automation-policy.json`: campaign rules, limits, and path manifest.
+- `approved-organizations.json`: reviewed outreach queue and delivery status.
+- `delivery-ledger.json`: hashed deduplication and daily send counts.
+- `data/cities/<city>/`: raw location and organization target lists.
+- `data/*.json`: cross-city quality and organization summaries.
+- `assets/demos/<city>/`: clinic-specific copy and MP3 attachments.
+- `scripts/`: collection, validation, generation, and delivery tools.
+
+This campaign prioritizes clinics offering high-value treatments and prefers
+verified demand signals such as active Google Ads or strong Google review
+volume. Those signals must be verified before they affect send order; they are
+never inferred from clinic size alone. The pilot includes free setup without a
+permanent discount. After a successful pilot, request one testimonial,
+permission to publish anonymized metrics, and two dentist referrals.
 
 ## Refresh all cities
 
@@ -15,6 +37,7 @@ duplicate-recipient, opt-out, and human relevance checks before outreach.
 python3 -m pip install duckdb==2.0.0
 python3 campaigns/india-dental-leads/scripts/collect-overture.py
 node campaigns/india-dental-leads/scripts/validate-email-domains.mjs
+node campaigns/india-dental-leads/scripts/build-organization-targets.mjs
 ```
 
 The collector refuses to write a city file unless it can produce exactly 1,000
@@ -26,11 +49,29 @@ specific mailbox exists, so the campaign starts with a one-message test,
 uses a low daily cap, and suppresses every address already present in Sent
 Items. Delivery failures are reported for review before increasing volume.
 
+## Organization review
+
+Every organization starts with `humanReviewStatus: pending` and
+`sendEligible: false`. Before outreach, confirm the organization identity,
+select one public business address for the appropriate operations contact, and
+set both fields to `approved` and `true`. The email workflow fails closed for
+unreviewed records and records an organization hash after an attempt so the
+same chain is not contacted through another city list.
+
+Target segments are ordered as:
+
+1. `enterprise_chain`
+2. `regional_chain`
+3. `city_chain`
+4. `growing_group`
+5. `premium_single_location`
+
 ## Cloud email workflow
 
-`Send and monitor dental email campaign` runs entirely in GitHub Actions, so
+`Send and monitor dental organization campaign` runs entirely in GitHub Actions, so
 the laptop may be off. It supports `preview`, `monitor`, and `send` actions from
-the GitHub mobile app or website. Sending is capped at ten messages per day,
+the GitHub mobile app or website. Sending is capped at 15 reviewed organizations per day,
+processed in batches of no more than five,
 deduplicates against campaign messages in Sent Items and a hashed delivery
 ledger, performs a fresh live DNS/MX check immediately before sending, saves
 messages in Sent Items, and reports replies and delivery failures without
@@ -65,7 +106,25 @@ prevents later runs from sending beyond the configured cap.
 
 ## Outputs
 
-- `bengaluru/targets-1000.json`
-- `hyderabad/targets-1000.json`
-- `chennai/targets-1000.json`
-- `quality-summary.json`
+- `data/cities/bengaluru/targets-1000.json`
+- `data/cities/hyderabad/targets-1000.json`
+- `data/cities/chennai/targets-1000.json`
+- `data/cities/bengaluru/organization-targets.json`
+- `data/cities/hyderabad/organization-targets.json`
+- `data/cities/chennai/organization-targets.json`
+- `data/quality-summary.json`
+- `data/organization-summary.json`
+
+## Demo assets
+
+Use **Prepare dental organization campaign assets** in GitHub Actions, or run:
+
+```bash
+node campaigns/india-dental-leads/scripts/generate-organization-demo.mjs \
+  --city bengaluru \
+  --target clove-dental-bengaluru
+```
+
+Bengaluru demos use Hindi and English, Chennai uses Tamil and English, and
+Hyderabad supports Hindi, Telugu, and English. Audio generation uses Sarvam
+when `--audio --engine sarvam` is supplied.

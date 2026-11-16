@@ -31,6 +31,7 @@ Cloudflare Worker. There's no separate media-relay service to deploy or keep run
 |--------|-----------|
 | `worker/` | Cloudflare Worker — API, AI logic, Twilio webhooks, call-audio Durable Object |
 | `web/` | Cloudflare Pages — React admin dashboard |
+| [`docs/`](docs/README.md) | Setup, operations, compliance, and design-review documentation |
 | `.claude/commands/` | `/add-vertical` skill for Claude Code |
 
 ---

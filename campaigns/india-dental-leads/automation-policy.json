@@ -1,0 +1,81 @@
+{
+  "campaignId": "india-dental-organizations",
+  "sender": "premkumar@deskzen.in",
+  "timezone": "Asia/Kolkata",
+  "mode": "held_monitoring_only",
+  "approval": {
+    "approvedByPrem": false,
+    "approvedAt": null,
+    "approvedTargetIds": [],
+    "sendActionAllowed": false
+  },
+  "targeting": {
+    "treatmentFocus": [
+      "dental implants",
+      "root canal treatment",
+      "braces and aligners",
+      "cosmetic dentistry"
+    ],
+    "preferredDemandSignals": [
+      "active Google Ads",
+      "high Google review count"
+    ],
+    "verificationRequiredBeforePrioritizing": true
+  },
+  "offer": {
+    "setup": "free for the pilot",
+    "permanentDiscounting": false
+  },
+  "postSuccessAsk": {
+    "testimonial": 1,
+    "anonymizedMetricsPermission": true,
+    "dentistReferrals": 2
+  },
+  "outlookMcp": {
+    "whatsAppUrl": "https://api.whatsapp.com/send/?phone=919944707799&text&type=phone_number&app_absent=0",
+    "draftInputUrl": "https://api.whatsapp.com/send/?phone=919944707799&amp;text&amp;type=phone_number&amp;app_absent=0",
+    "verifySentItemsUrlPrefix": "https://api.whatsapp.com/send/?phone=919944707799"
+  },
+  "paths": {
+    "cityData": "data/cities",
+    "demoAssets": "assets/demos",
+    "approvedOrganizations": "approved-organizations.json",
+    "deliveryLedger": "delivery-ledger.json"
+  },
+  "cities": [
+    "bengaluru",
+    "chennai",
+    "hyderabad"
+  ],
+  "targetSegments": [
+    "enterprise_chain",
+    "regional_chain",
+    "city_chain",
+    "growing_group"
+  ],
+  "limits": {
+    "maxMessagesPerDay": 0,
+    "maxMessagesPerRun": 0,
+    "maxContactsPerOrganization": 1
+  },
+  "requirements": {
+    "humanReviewApproved": true,
+    "sendEligible": false,
+    "publicBusinessEmailOnly": true,
+    "liveDomainCheck": true,
+    "includeOptOut": true,
+    "verifySentItems": true,
+    "recordDeliveryFailures": true,
+    "deduplicateAcrossCities": true,
+    "coldAttachmentsAllowed": false,
+    "automatedColdWhatsAppAllowed": false,
+    "premBatchApprovalRequired": true
+  },
+  "skipStatuses": [
+    "bounced",
+    "replied",
+    "positive_reply",
+    "opted_out",
+    "do_not_contact"
+  ]
+}

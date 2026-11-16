@@ -172,20 +172,21 @@ export async function withOwner(c: Context<HonoEnv>, next: Next) {
   await next();
 }
 
-// ── Rate limiting (KV fixed-window counter) ────────────────────────────────
+// ── Rate limiting (atomic Durable Object fixed-window counter) ─────────────
 //
 // ipRateLimit     — identify by CF-Connecting-IP; use before auth is established
 // sessionRateLimit— identify by JWT sub; apply after withSession
 
-// KV has no atomic increment, so concurrent requests can slightly overshoot
-// `max`. That's acceptable: the goal is capping third-party spend, not exact
-// quotas.
 export async function hitLimit(env: Env, kvKey: string, max: number, windowSeconds: number): Promise<boolean> {
-  const raw = await env.CACHE.get(kvKey);
-  const count = raw ? parseInt(raw, 10) : 0;
-  if (count >= max) return true;
-  await env.CACHE.put(kvKey, String(count + 1), { expirationTtl: Math.max(60, windowSeconds) });
-  return false;
+  const id = env.RATE_LIMITER.idFromName(kvKey);
+  const response = await env.RATE_LIMITER.get(id).fetch('https://rate-limiter.internal/hit', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ max, windowSeconds }),
+  });
+  if (!response.ok) throw new Error(`Rate limiter failed with status ${response.status}`);
+  const result = await response.json<{ limited: boolean }>();
+  return result.limited;
 }
 
 const tooMany = (c: Context<HonoEnv>) =>

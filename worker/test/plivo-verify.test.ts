@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/index';
 import { createTestD1, createTestKV } from './helpers/d1.mjs';
+import { createTestRateLimiter } from './helpers/rate-limiter.mjs';
 import { upsertPhoneNumber } from '../src/services/phone-numbers';
 import { renderPlivoVerify, scrubAll } from '../scripts/plivo-verify-lib.mjs';
 
@@ -10,7 +11,7 @@ const H = { 'X-Admin-Key': SECRETS.ADMIN_SECRET };
 const ACC = `https://api.plivo.com/v1/Account/${SECRETS.PLIVO_AUTH_ID}`;
 
 function makeEnv() {
-  return { DB: createTestD1().d1, CACHE: createTestKV(), CART: createTestKV(), TOKEN_SECRET: 'x'.repeat(40), NODE_ENV: 'production', PLIVO_WEBHOOK_URL: W, ...SECRETS } as any;
+  return { DB: createTestD1().d1, CACHE: createTestKV(), CART: createTestKV(), RATE_LIMITER: createTestRateLimiter(), TOKEN_SECRET: 'x'.repeat(40), NODE_ENV: 'production', PLIVO_WEBHOOK_URL: W, ...SECRETS } as any;
 }
 let calls: { url: string; method: string; auth: string | null }[] = [];
 let respond: (url: string) => Response;

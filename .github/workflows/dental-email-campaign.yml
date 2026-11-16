@@ -1,4 +1,4 @@
-name: Send and monitor dental email campaign
+name: Send and monitor dental organization campaign
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ on:
           - monitor
           - send
       city:
-        description: City list to use
+        description: City organization list to use
         required: true
         default: bengaluru
         type: choice
@@ -22,14 +22,16 @@ on:
           - hyderabad
           - chennai
       max_emails:
-        description: Daily limit; values above 10 are capped
+        description: Daily organization limit; values above 15 are capped
         required: true
-        default: '10'
+        default: '15'
         type: choice
         options:
           - '1'
+          - '3'
           - '5'
           - '10'
+          - '15'
       confirm_send:
         description: Required only when action is send
         required: true
@@ -43,7 +45,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: dental-email-campaign
+  group: dental-organization-email-campaign
   cancel-in-progress: false
 
 jobs:
@@ -57,7 +59,7 @@ jobs:
     env:
       CAMPAIGN_ACTION: ${{ github.event_name == 'schedule' && vars.DENTAL_CAMPAIGN_ENABLED == 'true' && 'send' || github.event_name == 'schedule' && 'monitor' || inputs.action }}
       CAMPAIGN_CITY: ${{ github.event_name == 'schedule' && (vars.DENTAL_CAMPAIGN_CITY || 'bengaluru') || inputs.city }}
-      MAX_EMAILS: ${{ github.event_name == 'schedule' && (vars.DENTAL_CAMPAIGN_DAILY_LIMIT || '10') || inputs.max_emails }}
+      MAX_EMAILS: ${{ github.event_name == 'schedule' && (vars.DENTAL_CAMPAIGN_DAILY_LIMIT || '15') || inputs.max_emails }}
       CONFIRM_SEND: ${{ inputs.confirm_send }}
       AUTOMATION_ENABLED: ${{ vars.DENTAL_CAMPAIGN_ENABLED }}
       OUTLOOK_SENDER: premkumar@deskzen.in

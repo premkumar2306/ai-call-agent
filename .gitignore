@@ -5,6 +5,8 @@ node_modules/
 
 # Build outputs
 dist/
+/campaigns/sites/dental-demo-site/
+/reference/kovai/
 build/
 coverage/
 *.tsbuildinfo
@@ -16,6 +18,7 @@ __pycache__/
 .wrangler/
 .dev.vars
 .dev.vars.*
+worker/wrangler.staging.generated.toml
 
 # Environment
 .env
@@ -47,5 +50,6 @@ worker/e2e/.state/
 # Campaign runtime artifacts may contain recipient addresses, message IDs,
 # delivery failures, and generated audio. Keep them out of source control.
 campaigns/**/generated/
+campaigns/**/assets/demos/
 campaigns/**/outreach/
 campaigns/**/campaign-*.json

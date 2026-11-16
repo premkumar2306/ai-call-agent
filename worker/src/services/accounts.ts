@@ -142,7 +142,8 @@ export async function getUser(env: Env, id: string): Promise<UserRow | null> {
 // ── Owner session tokens ───────────────────────────────────────────────────
 // Sent as `Authorization: Bearer`. A cookie would be third-party here (the
 // admin UI on pages.dev calls the Worker on workers.dev) and browsers block
-// those, so the UI keeps the token in localStorage instead.
+// those, so the UI keeps the token in per-tab sessionStorage instead. The
+// token is short-lived and logout increments sessionVersion to revoke it.
 
 export async function signOwnerToken(env: Env, user: Pick<UserRow, 'id' | 'sessionVersion'>): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
