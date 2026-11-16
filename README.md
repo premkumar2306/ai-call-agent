@@ -602,8 +602,12 @@ characters and Anthropic tokens; and an estimated provider cost in micro-USD
 separately (not billed by the plans). Usage rolls up by calendar month in India time.
 `svt/` synthetic callers are costed but never billed.
 
-**Plans are data** (`billing_plans`, migration 0016 seeds `in_starter`: ₹2,999/month
-excl. GST, 300 minutes, ₹7/minute after, 14-day trial):
+**Plans are data** (`billing_plans`). Migration 0022 seeds the headline **Clinic** plan
+`in_clinic` (₹4,999/month excl. GST, 800 minutes, ₹6/minute after, 14-day trial) and 0016 seeds
+**Starter** `in_starter` (₹2,999/month, 300 minutes, ₹7/minute, for single-chair clinics). Offers
+such as `FOUNDING25` (first 25 clinics: free setup, first month free) are codes in
+`billing_offers`, never a price change. Public pricing copy and the margin estimate:
+[docs/pricing.md](docs/pricing.md); syncing plans to Razorpay: [docs/razorpay-setup.md §6](docs/razorpay-setup.md#6-plans-and-offers).
 
 ```bash
 H='X-Admin-Key: <admin key>'; W=https://<worker-host>

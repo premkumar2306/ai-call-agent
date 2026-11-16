@@ -29,7 +29,9 @@ interface Summary {
   plan: null | {
     id: string; name: string; currency: string; includedMinutes: number; overagePaisePerMinute: number;
     trialDays: number; gstRateBps: number; monthly: Gst; checkoutReady: boolean;
+    isFeatured?: boolean; audience?: string | null; setupFee?: null | (Gst & { waived: boolean });
   };
+  offer?: null | { code: string; name: string; description: string | null; freeDays: number; waiveSetupFee: boolean; appliedAt: number | null };
   account: null | {
     trialEndsAt: number | null; subscriptionId: string | null; subscriptionStatus: string | null; currentPeriodEnd: number | null;
     legalName: string | null; gstin: string | null; billingEmail: string | null; addressLine1: string | null; addressLine2: string | null;
@@ -38,6 +40,7 @@ interface Summary {
   supplierGstin: string | null;
   usage: {
     period: string; minutes: number; calls: number; whatsappConversations: number; includedMinutes: number | null;
+    includedMinutesUsed?: number | null; includedMinutesLeft?: number | null;
     alertLevel: 0 | 80 | 100; overageSoFar: null | (Gst & { minutes: number });
   };
   invoices: Array<Gst & { period: string; status: string; minutesUsed: number; includedMinutes: number; overageMinutes: number }>;
@@ -107,6 +110,7 @@ export default function Billing({ sector, base, auth }: Props) {
   const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<Record<string, string>>({});
   const [ownerPlans, setOwnerPlans] = useState<OwnerPlan[]>([]);
+  const [offerCode, setOfferCode] = useState('');
 
   const headers = { ...auth, 'Content-Type': 'application/json' };
   const signedIn = Object.keys(auth).length > 0;
@@ -264,6 +268,16 @@ export default function Billing({ sector, base, auth }: Props) {
             <p className="muted small">{inr(plan.monthly.amountPaise)} + {plan.gstRateBps / 100}% GST ({inr(plan.monthly.gstPaise)})</p>
             <GstLines g={plan.monthly} rateBps={plan.gstRateBps} />
             <p className="muted small">{plan.includedMinutes} minutes included, then {inr(plan.overagePaisePerMinute)}/minute + GST. UPI AutoPay or card.</p>
+            {plan.audience && <p className="muted small">{plan.audience}</p>}
+            {plan.setupFee && <p className="muted small">One-off setup: {plan.setupFee.waived ? <><s>{inr(plan.setupFee.totalPaise)}</s> free with your offer</> : `${inr(plan.setupFee.totalPaise)} incl. GST, with the first payment`}</p>}
+            {data.offer ? (
+              <p className="small"><Badge tone="success">{data.offer.name}</Badge> {data.offer.description ?? ''}{data.offer.freeDays ? ` Free until ${data.account?.trialEndsAt ? day(data.account.trialEndsAt) : '—'}.` : ''}</p>
+            ) : ['trialing', 'unpaid'].includes(data.state) && (
+              <form className="row" onSubmit={e => { e.preventDefault(); run(() => call(`/billing/${encodeURIComponent(sector)}/offer`, { method: 'POST', body: JSON.stringify({ code: offerCode }) }), 'Offer applied.'); }}>
+                <label className="small">Offer code <input value={offerCode} onChange={e => setOfferCode(e.target.value)} placeholder="e.g. FOUNDING25" maxLength={32} /></label>
+                <Button type="submit" disabled={busy || !offerCode.trim()}>Apply</Button>
+              </form>
+            )}
             <dl className="kv">
               <dt>Next charge</dt>
               <dd>{data.nextCharge ? `${inr(data.nextCharge.amountPaise)} on ${day(data.nextCharge.at)}${data.pendingPlan ? ` (${data.pendingPlan.name})` : ''}, plus any extra minutes` : '—'}</dd>
@@ -291,8 +305,11 @@ export default function Billing({ sector, base, auth }: Props) {
             <div className={`progress usage-${usage.alertLevel}`} aria-label={`${Math.round(pct)}% of included minutes used`} role="img">
               <div style={{ width: `${pct}%` }} />
             </div>
+            <p><strong>Included minutes used: {usage.includedMinutesUsed ?? Math.min(usage.minutes, plan.includedMinutes)} of {plan.includedMinutes}</strong>
+              <span className="muted"> ({usage.includedMinutesLeft ?? Math.max(0, plan.includedMinutes - usage.minutes)} left this month)</span></p>
             <p className="muted small">
-              Calls are never cut off. The owner is emailed at 80% and 100% of the included minutes.
+              Calls are never cut off. After the included minutes, each extra minute is {inr(plan.overagePaisePerMinute)} + GST.
+              The owner is emailed at 80% and 100% of the included minutes.
               {usage.overageSoFar && usage.overageSoFar.minutes > 0 &&
                 ` Extra so far: ${usage.overageSoFar.minutes} min = ${inr(usage.overageSoFar.amountPaise)} + GST ${inr(usage.overageSoFar.gstPaise)} = ${inr(usage.overageSoFar.totalPaise)}, billed at month end.`}
             </p>

@@ -299,6 +299,10 @@ export const billingPlans = sqliteTable('billing_plans', {
   razorpayPlanId:        text('razorpay_plan_id'),
   isActive:              integer('is_active', { mode: 'boolean' }).notNull().default(true),
   isDefault:             integer('is_default', { mode: 'boolean' }).notNull().default(false), // 0018: given to new businesses
+  // 0022: headline plan, one-off setup fee, who it's for
+  setupFeePaise:         integer('setup_fee_paise').notNull().default(0),
+  isFeatured:            integer('is_featured', { mode: 'boolean' }).notNull().default(false),
+  audience:              text('audience'),
   createdAt:             integer('created_at').notNull(),
   updatedAt:             integer('updated_at').notNull(),
 });
@@ -330,6 +334,9 @@ export const billingAccounts = sqliteTable('billing_accounts', {
   cancelAtPeriodEnd:      integer('cancel_at_period_end', { mode: 'boolean' }).notNull().default(false),
   pendingPlanId:          text('pending_plan_id'),
   lastNotice:             text('last_notice'),
+  // 0022: offer (coupon) applied before subscribing
+  offerCode:              text('offer_code'),
+  offerAppliedAt:         integer('offer_applied_at'),
   createdAt:              integer('created_at').notNull(),
   updatedAt:              integer('updated_at').notNull(),
 }, (t) => [
@@ -422,4 +429,20 @@ export const razorpayEvents = sqliteTable('razorpay_events', {
   id:         text('id').primaryKey(),
   event:      text('event').notNull(),
   receivedAt: integer('received_at').notNull(),
+});
+
+// 0022: offers (coupons), e.g. the founding offer for the first 25 clinics.
+export const billingOffers = sqliteTable('billing_offers', {
+  code:           text('code').primaryKey(),
+  name:           text('name').notNull(),
+  description:    text('description'),
+  freeDays:       integer('free_days').notNull().default(0),
+  waiveSetupFee:  integer('waive_setup_fee', { mode: 'boolean' }).notNull().default(false),
+  planIds:        text('plan_ids'),
+  maxRedemptions: integer('max_redemptions'),
+  redeemed:       integer('redeemed').notNull().default(0),
+  expiresAt:      integer('expires_at'),
+  isActive:       integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  createdAt:      integer('created_at').notNull(),
+  updatedAt:      integer('updated_at').notNull(),
 });
