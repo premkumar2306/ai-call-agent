@@ -19,6 +19,7 @@ import BillingAccounts from './components/BillingAccounts';
 import Practitioners from './pages/Practitioners';
 import PrivacySettings from './pages/PrivacySettings';
 import VoiceSettings from './pages/VoiceSettings';
+import PilotSettings from './pages/PilotSettings';
 import PhoneNumbers from './pages/PhoneNumbers';
 import PhoneNumber from './pages/PhoneNumber';
 import Home from './pages/Home';
@@ -322,6 +323,7 @@ export default function App() {
               {settingsKey === 'phone' && <>
                 <PhoneNumber sector={sector} base={BASE} auth={headers} canEdit={canEdit} onTry={() => go('try')} />
                 <WhatsAppNote base={BASE} auth={headers} />
+                <PilotSettings base={BASE} auth={headers} sector={sector} />
               </>}
               {settingsKey === 'whatsapp' && <WhatsAppSettings base={BASE} auth={headers} sector={sector} name={selected?.name ?? ''} />}
               {settingsKey === 'privacy' && <PrivacySettings base={BASE} auth={headers} sectors={one} />}

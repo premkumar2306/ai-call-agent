@@ -89,3 +89,9 @@ the clock.
   2–24 h window allows catch-up). Meta's own daily limit per number is shown as the tier in
   number health; a new number starts at 250 business-initiated conversations a day.
 - Alerts: set `ADMIN_NOTIFY_EMAIL` to be emailed when a number's quality drops to yellow or red.
+
+## Overflow pilots
+
+A clinic can keep its own number and forward only busy, no-answer and unreachable calls to Avery.
+See [overflow-pilot.md](overflow-pilot.md) for the per-business pilot switch, the overflow tag,
+"test your forwarding", and the carrier codes (with sources and the codes still to verify).

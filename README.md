@@ -468,6 +468,12 @@ voice and WhatsApp. Withheld numbers get a per-call identity.
 it, which keeps the secret out of request logs. In production every `/exotel/*` request without the
 secret is rejected (and all of them are rejected if `EXOTEL_WEBHOOK_SECRET` isn't set).
 
+#### Overflow pilot on the clinic's own number
+
+Per business, off by default: the clinic forwards busy / no-answer / unreachable calls to its
+Avery number, calls are tagged overflow (`call_routing`, migration 0023), and Settings → Phone has
+a "test your forwarding" check. Guide and carrier codes: [docs/overflow-pilot.md](docs/overflow-pilot.md).
+
 #### Plivo setup
 
 Create a Plivo application with Answer URL `POST https://<worker>/plivo/answer`, attach your Indian
