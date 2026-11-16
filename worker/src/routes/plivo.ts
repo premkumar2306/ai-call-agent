@@ -113,6 +113,28 @@ plivoRouter.post('/answer', requirePlivoSig, async (c) => {
   );
 });
 
+// ── POST /plivo/fallback?to=<staff E.164> ─────────────────────────────────────
+// The Plivo Application's Fallback Answer URL. Plivo requests it only when the
+// Answer URL fails (error or timeout), so it is deliberately trivial: no D1,
+// no KV, no AI. It apologises and rings the clinic's staff phone given in the
+// URL (signed by Plivo with the rest of the URL, so it can't be changed by a
+// caller). Without `to` it apologises and hangs up.
+
+plivoRouter.post('/fallback', requirePlivoSig, async (c) => {
+  const p = await formParams(c);
+  const to = normalizeE164(c.req.query('to'), '91');
+  const ours = normalizeE164(p.To, '91');
+  console.warn(`[plivo] fallback answer used for ${p.CallUUID ?? 'unknown call'}${to ? ', ringing staff' : ''}`);
+  if (!to) {
+    return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Speak>Sorry, we cannot take your call right now. Please try again shortly.</Speak><Hangup/></Response>', 200, XML);
+  }
+  return c.text(
+    '<?xml version="1.0" encoding="UTF-8"?><Response><Speak>Please hold while we connect you.</Speak>' +
+    `<Dial timeout="30"${ours ? ` callerId="${xml(ours.slice(1))}"` : ''}><Number>${xml(to.slice(1))}</Number></Dial></Response>`,
+    200, XML,
+  );
+});
+
 // ── POST /plivo/after-stream ──────────────────────────────────────────────────
 // keepCallAlive="true" holds the call on <Stream> until the socket closes;
 // Plivo then runs the <Redirect> to here: transfer to staff, or hang up.

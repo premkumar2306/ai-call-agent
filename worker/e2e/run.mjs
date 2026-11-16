@@ -1120,6 +1120,11 @@ try {
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
   if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);
+  // E2E_HOLD=1: keep the Worker running on its seeded data (for screenshots) until Ctrl-C.
+  if (process.env.E2E_HOLD) {
+    console.log(`\nHOLDING: Worker on ${BASE} (admin key ${ADMIN}); Ctrl-C to stop`);
+    await new Promise(r => { process.on('SIGINT', r); process.on('SIGTERM', r); });
+  }
 } catch (e) {
   console.error('\n✗ e2e run failed:', e.stack || e);
   results.push({ scenario: 'run', name: 'harness', ok: false, detail: String(e.message || e) });
