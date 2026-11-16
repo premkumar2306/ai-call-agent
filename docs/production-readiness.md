@@ -69,7 +69,7 @@ by the cron string.
 | Cron (UTC) | Jobs | Safe to re-run? |
 |---|---|---|
 | `47 20 * * *` (daily, 02:17 IST) | data-retention sweep, month-end overage billing, dunning notices, weekly pilot summary (Mondays, opt-in) | Yes: each is idempotent |
-| `17 * * * *` (hourly) | WhatsApp appointment reminders (2–24 h ahead, for businesses that turned them on), WhatsApp number health and quality alerts | Yes: each booking is claimed before its reminder is sent; alerts go once per drop |
+| `17 * * * *` (hourly) | clinic follow-ups (recalls, no-show recovery, review requests; per-business switches), WhatsApp appointment reminders (2–24 h ahead, for businesses that turned them on), WhatsApp number health and quality alerts | Yes: each booking is claimed before its reminder is sent; alerts go once per drop |
 
 The hourly trigger exists because reminders have to go out about 24 hours before each
 appointment, and appointments start at any hour. With nothing turned on it does one D1 query and,

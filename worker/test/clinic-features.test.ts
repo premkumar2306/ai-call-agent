@@ -46,6 +46,9 @@ describe('duration booking', () => {
     expect(overlappingPatients(iv, '2030-01-10T11:00', '2030-01-10T11:30')).toBe(1);
     expect(overlappingPatients(iv, '2030-01-10T11:30', '2030-01-10T12:00')).toBe(0);
     expect(overlappingPatients(iv, '2030-01-10T10:45', '2030-01-10T11:15', 'a')).toBe(1);
+    // Asking from a later time still sees a visit that started earlier and runs on.
+    const later = await getBookedIntervals(env, 'in_d', '2030-01-10T11:00');
+    expect(overlappingPatients(later, '2030-01-10T11:00', '2030-01-10T11:30')).toBe(1);
   });
   it('booking refuses a slot when all chairs are taken for any part of the procedure', async () => {
     await order('o1', 'a', 'rct', '2030-01-10T10:00');

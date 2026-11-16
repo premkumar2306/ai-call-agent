@@ -109,8 +109,9 @@ export async function getBookedIntervals(env: Env, businessType: string, fromLoc
         o.customer_id_hashed AS customer
       FROM orders o LEFT JOIN products p ON p.id = o.product_id
       WHERE o.business_type = ? AND o.status != 'CANCELLED' AND o.scheduled_at IS NOT NULL AND o.resource_id IS NULL
-        AND substr(o.scheduled_at, 1, 16) >= ?`)
-    .bind(businessType, fromLocal.slice(0, 16)).all<Interval>();
+        AND substr(o.scheduled_at, 1, 10) >= date(?, '-1 day')`)
+    // From the day before: a long visit that started earlier can still overlap the first slot.
+    .bind(businessType, fromLocal.slice(0, 10)).all<Interval>();
   return results ?? [];
 }
 
@@ -187,8 +188,10 @@ export async function runClinicFollowUps(env: Env, now = new Date()): Promise<Cl
 
     // Review requests: every completed visit, no rating gate (Google policy).
     if (f.review_requests && f.review_url) {
-      for (const o of await rows(`o.visit_status = 'completed' AND o.review_sent_at IS NULL AND o.visit_marked_at <= ? AND o.visit_marked_at >= ?`,
-        nowS - REVIEW_DELAY_SECONDS, nowS - MAX_AGE_SECONDS)) {
+      // Only recent visits (scheduled in the last week): an old visit marked late gets no review request.
+      const weekAgo = wallClock(new Date(now.getTime() - MAX_AGE_SECONDS * 1000), tz);
+      for (const o of await rows(`o.visit_status = 'completed' AND o.review_sent_at IS NULL AND o.visit_marked_at <= ? AND o.visit_marked_at >= ?
+          AND substr(o.scheduled_at, 1, 16) >= ?`, nowS - REVIEW_DELAY_SECONDS, nowS - MAX_AGE_SECONDS, weekAgo)) {
         if (!(await claim(env, 'review_sent_at', o.id))) continue;
         await send('review', o, () => sendEventMessage(env, {
           event: 'review_request', businessType, phone: o.callback_phone!, lang, params: [meta.name, f.review_url],

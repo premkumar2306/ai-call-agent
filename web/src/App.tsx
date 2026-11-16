@@ -20,6 +20,7 @@ import Practitioners from './pages/Practitioners';
 import PrivacySettings from './pages/PrivacySettings';
 import VoiceSettings from './pages/VoiceSettings';
 import PilotSettings from './pages/PilotSettings';
+import ClinicFeatures from './components/ClinicFeatures';
 import PhoneNumbers from './pages/PhoneNumbers';
 import PhoneNumber from './pages/PhoneNumber';
 import Home from './pages/Home';
@@ -325,7 +326,10 @@ export default function App() {
                 <WhatsAppNote base={BASE} auth={headers} />
                 <PilotSettings base={BASE} auth={headers} sector={sector} />
               </>}
-              {settingsKey === 'whatsapp' && <WhatsAppSettings base={BASE} auth={headers} sector={sector} name={selected?.name ?? ''} />}
+              {settingsKey === 'whatsapp' && <>
+                <WhatsAppSettings base={BASE} auth={headers} sector={sector} name={selected?.name ?? ''} />
+                {bizMeta?.countryCode === 'IN' && <ClinicFeatures base={BASE} auth={headers} sector={sector} />}
+              </>}
               {settingsKey === 'privacy' && <PrivacySettings base={BASE} auth={headers} sectors={one} />}
               {settingsKey === 'billing' && <Billing sector={sector} base={BASE} auth={headers} />}
             </div>

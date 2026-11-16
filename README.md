@@ -545,6 +545,12 @@ Every call starts on the default English pipeline and switches once the business
 (during the greeting's first words), so English businesses pay no extra lookup. Providers are
 adapters behind one interface (`worker/src/durable-objects/voice-providers.ts`).
 
+### Clinic follow-ups (optional, per business)
+
+Procedure-length booking with chair capacity, recalls, no-show recovery and review requests
+(no review gating). Each is off until switched on; messages use the WhatsApp templates and STOP
+opt-out and run from the hourly cron. See [docs/clinic-features.md](docs/clinic-features.md).
+
 ### Calendar integration (optional)
 
 Each business can connect its own calendar from the admin UI's **Calendar** page.

@@ -452,6 +452,73 @@ async function metricsScenario(mocks) {
   await api('PUT', `/pilot/${B}`, { enabled: false, startsOn: null, endsOn: null, clinicNumber: null });
 }
 
+// Clinic features (launch item 4): procedure-duration slots, no-show recovery,
+// review requests and recalls — all off by default, run by the hourly job.
+async function clinicScenario(mocks) {
+  const n = 'Clinic features';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en';
+  const off = await api('GET', `/clinic/${B}`);
+  check(n, 'every clinic feature is off by default', !off.durationBooking && !off.recalls && !off.noShowRecovery && !off.reviewRequests, JSON.stringify(off));
+  const tpl = await api('GET', '/admin/whatsapp/templates');
+  const fams = ['avery_recall', 'avery_missed_appointment', 'avery_review_request'];
+  check(n, 'recall, no-show and review templates exist in en, hi and Hinglish (opt-out line in each)',
+    fams.every(f => { const d = tpl.defaults.find(x => x.family === f); return d && ['en', 'hi', 'hi-en'].every(v => /STOP/.test(d.body[v])); }), tpl.defaults.map(d => d.family).join(', '));
+
+  // Duration booking: the second caller is never offered a time inside the first visit.
+  await api('PUT', `/clinic/${B}`, { durationBooking: true });
+  const first = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300101', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(800);
+  const b1 = sql(`SELECT o.id, o.scheduled_at, o.ends_at, p.duration_minutes FROM orders o JOIN products p ON p.id = o.product_id WHERE o.business_type = '${B}' AND o.callback_phone = '+919812300101' ORDER BY o.created_at DESC LIMIT 1`)[0];
+  // Make the first visit a 2-hour procedure: under the old rule (same start time only) the next
+  // caller would be offered the very next half hour, inside this visit.
+  const longEnd = new Date(Date.parse(`${b1?.scheduled_at?.slice(0, 16)}:00Z`) + 120 * 60e3).toISOString().slice(0, 16);
+  sql(`UPDATE orders SET ends_at = '${longEnd}' WHERE id = '${b1?.id}'`);
+  await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300102', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(800);
+  const b2 = sql(`SELECT scheduled_at, ends_at FROM orders WHERE business_type = '${B}' AND callback_phone = '+919812300102' ORDER BY created_at DESC LIMIT 1`)[0];
+  check(n, 'duration booking: a visit stores its end, and the next patient is booked after a 2-hour visit, not inside it', first.webhook?.ok && !!b1?.ends_at && !!b2?.scheduled_at
+    && b2.scheduled_at.slice(0, 16) >= longEnd && !!b2.ends_at,
+    `first ${b1?.scheduled_at?.slice(0, 16)}–${longEnd}, next ${b2?.scheduled_at?.slice(0, 16)}–${b2?.ends_at}`);
+  await api('PUT', `/clinic/${B}`, { durationBooking: false });
+
+  // Follow-ups: seed visits (no WhatsApp number on this business → SMS fallback).
+  const pid = sql(`SELECT id FROM products WHERE business_type = '${B}' LIMIT 1`)[0]?.id;
+  const ins = (id, phone, at) => sql(`INSERT INTO orders (id, customer_id_hashed, business_type, product_id, vendor_name, product_name, status, price_cents, payment_method, scheduled_at, callback_phone, created_at, updated_at)
+    VALUES ('${id}', 'h-${id}', '${B}', '${pid}', 'x', 'Check-up', 'CONFIRMED', 50000, 'cash', '${at}', '${phone}', 0, 0)`);
+  const now = new Date();
+  const ymd = d => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+  const sixAgo = new Date(now); sixAgo.setMonth(sixAgo.getMonth() - 6);
+  ins('e2e-noshow', '+919812300201', `${ymd(new Date(now - 86400e3))}T10:00`);
+  ins('e2e-done', '+919812300202', `${ymd(new Date(now - 86400e3))}T11:00`);
+  ins('e2e-recall', '+919812300203', `${ymd(sixAgo)}T10:00`);
+  const quiet = (await api('POST', '/admin/clinic/run')).filter(r => r.businessType === B);
+  await post(`/clinic/${B}/visits/e2e-noshow`, { status: 'no_show' });
+  await post(`/clinic/${B}/visits/e2e-done`, { status: 'completed' });
+  await post(`/clinic/${B}/visits/e2e-recall`, { status: 'completed' });
+  const stillQuiet = (await api('POST', '/admin/clinic/run')).filter(r => r.businessType === B);
+  check(n, 'nothing is sent while the switches are off, even for marked visits', quiet.length === 0 && stillQuiet.length === 0, `${quiet.length + stillQuiet.length} sends`);
+
+  const badLink = await fetch(`${BASE}/clinic/${B}`, { method: 'PUT', headers: { 'X-Admin-Key': ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewRequests: true }) });
+  await api('PUT', `/clinic/${B}`, { noShowRecovery: true, reviewRequests: true, reviewUrl: 'https://g.page/r/e2e-clinic/review', recalls: true, recallMonths: 6 });
+  const t = Date.now();
+  const r1 = (await api('POST', '/admin/clinic/run', { now: new Date(now.getTime() + 3 * 3600e3).toISOString() })).filter(r => r.businessType === B);
+  const smsTo = num => mocks.log.sms.filter(m => m.at >= t && m.to === num);
+  const smsLike = (num, re) => smsTo(num).find(m => re.test(m.body))?.body ?? '';
+  const task = sql(`SELECT message FROM call_messages WHERE business_type = '${B}' AND callback_phone = '+919812300201'`)[0];
+  check(n, 'review requests need the Google link', badLink.status === 400, `${badLink.status}`);
+  check(n, 'no-show: rebook message (SMS fallback, STOP line) + a call-back task for staff',
+    r1.some(r => r.orderId === 'e2e-noshow' && r.job === 'no_show' && r.outcome === 'sms') && /missed you/.test(smsTo('+919812300201')[0]?.body ?? '') && /STOP/.test(smsTo('+919812300201')[0]?.body ?? '') && /call to rebook/.test(task?.message ?? ''),
+    `${JSON.stringify(r1.map(r => `${r.orderId}:${r.job}:${r.outcome}`))}; task "${task?.message}"`);
+  check(n, 'review: completed visit gets the Google link, no rating gate', r1.some(r => r.orderId === 'e2e-done' && r.job === 'review') && (smsTo('+919812300202')[0]?.body ?? '').includes('https://g.page/r/e2e-clinic/review'), smsTo('+919812300202')[0]?.body?.slice(0, 90));
+  check(n, 'recall: 6 months after a completed visit, with no later booking', r1.some(r => r.orderId === 'e2e-recall' && r.job === 'recall') && !r1.some(r => r.orderId === 'e2e-recall' && r.job === 'review') && !!smsLike('+919812300203', /6 months since your last/), smsLike('+919812300203', /months/).slice(0, 90));
+  const r2 = (await api('POST', '/admin/clinic/run', { now: new Date(now.getTime() + 4 * 3600e3).toISOString() })).filter(r => r.businessType === B);
+  check(n, 'each follow-up is sent once', r2.length === 0, `${r2.length} repeats`);
+  const ns = (await api('GET', `/metrics/${B}?days=7`))?.metrics?.noShow;
+  check(n, 'no-show rate now shows in pilot metrics (from marked visits)', ns?.status === 'ok' && ns.after > 0, JSON.stringify(ns));
+  await api('PUT', `/clinic/${B}`, { noShowRecovery: false, reviewRequests: false, recalls: false });
+}
+
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
 // token, the caller hanging up mid-call, and the hangup callback.
 async function plivoScenario(mocks) {
@@ -744,7 +811,7 @@ async function whatsappProdScenario(mocks) {
 
   // Templates: create Avery's defaults on Meta, then approval arrives by webhook / sync.
   const t0 = await api('GET', '/admin/whatsapp/templates');
-  check(n, 'templates page: WABA configured, no event has an approved template yet', t0.wabaConfigured && t0.events.every(e => !e.ready) && t0.defaults.length === 4, JSON.stringify(t0.events.map(e => e.event)));
+  check(n, 'templates page: WABA configured, no event has an approved template yet', t0.wabaConfigured && t0.events.every(e => !e.ready) && t0.defaults.length === 7, JSON.stringify(t0.events.map(e => e.event)));
   const created = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
   await api('POST', '/admin/whatsapp/templates', { event: 'missed_call' });
   const again = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
@@ -979,6 +1046,7 @@ try {
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();
   if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
+  if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
