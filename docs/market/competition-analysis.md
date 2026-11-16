@@ -14,17 +14,17 @@ Research date: **2026-11-15**
 
 **Positioning:** Avery should not present itself as a cheaper voice model. It should sell a finished Indian dental front desk: the clinic's own number is answered, the appointment is booked, the patient is followed up on WhatsApp, and the owner receives one INR/GST bill.
 
-**Market conclusion:** the competitive opening still exists, but it is narrower than the earlier analysis suggested. Sarvam, Bolna and Ringg make India-native voice inexpensive; WATI now publicly includes multilingual Voice AI on its Business tier; and clinic systems already own the appointment diary. Avery's advantage is therefore the managed dental workflow and local operating layer, not exclusive access to Hindi voice.
+**Market conclusion:** the competitive opening still exists, but Avery is not alone in it. Pluxo now publishes a directly comparable Indian clinic receptionist with 11 languages, WhatsApp and a ₹2,999 entry plan. Sarvam, Bolna and Ringg also make India-native voice inexpensive, WATI includes multilingual Voice AI on its Business tier, and clinic systems own the appointment diary. Avery's advantage must be dependable deployment, dental workflow, interoperability, privacy evidence and measured outcomes—not exclusive access to Hindi voice.
 
 ### Top findings
 
 1. **Raw Indian voice is already a commodity.** At 600 minutes, Sarvam's public PAYG agent plus Vobiz telephony and one number is about **₹2,399 before GST**; Ringg is **₹4,099**; Bolna's standard bundled price is about **₹3,312 at the vendor-displayed ₹5.52/minute**. Avery must justify its premium through onboarding, clinic logic, QA, WhatsApp, compliance and support.
-2. **Clinic software is the strongest workflow incumbent.** Practo, Clinicia and Eka own the diary, records and staff habits. They are complements unless they add autonomous call answering. Lack of a named connector is the most likely product gap to lose a serious clinic.
-3. **WATI is now a credible adjacent threat.** Its Business plan is ₹16,799/month and publicly includes multilingual Astra Voice AI. The voice-minute allowance and dental booking depth are not public, so a 600-minute price cannot be verified, but the earlier conclusion that WATI has no voice product is no longer correct.
-4. **Global turnkey receptionists validate the product but are poor India substitutes.** Rosie costs $149 for the first direct-booking tier that covers 600 minutes; My AI Front Desk is about $189 at 600 minutes; Smith.ai is $500 for 300 calls. None combines Indian numbers, Hindi/Hinglish, WhatsApp operations and INR/GST billing in a public clinic package.
-5. **Builder platforms are the agency threat.** Retell, Vapi, Bland, Bolna and Sarvam let an agency assemble a cheaper demo. The sales answer must be a go-live promise, acceptance tests, predictable ownership and a dental operating playbook—not a feature checklist.
-6. **Dental depth is the strategic benchmark.** Arini's focus on US dental PMS integrations shows what sophisticated dental buyers value. Avery should copy the depth, not pursue US DSOs head-on.
-7. **Public evidence is still weak across Indian clinic voice startups.** Pluxo and Awaaz Desk have directly overlapping messages but no verified public prices or large customer proof. Avery can create separation quickly with five measured Indian dental references.
+2. **Pluxo is the direct benchmark.** It publishes ₹2,999/month for 250 AI-call minutes, unlimited WhatsApp, real-slot booking, recalls and 11 Indian languages. At 600 minutes it costs **₹4,924–₹5,624**, almost exactly Avery's proposed and current bills. Avery cannot claim category exclusivity.
+3. **Clinic software is the strongest workflow incumbent.** Practo, Clinicia and Eka own the diary, records and staff habits. They are complements unless they add autonomous call answering. Lack of a named connector is the most likely product gap to lose a serious clinic.
+4. **WATI is now a credible adjacent threat.** Its Business plan is ₹16,799/month and publicly includes multilingual Astra Voice AI. The voice-minute allowance and dental booking depth are not public, so a 600-minute price cannot be verified.
+5. **Global turnkey receptionists validate the product but are poor India substitutes.** Rosie costs $149 for the first direct-booking tier that covers 600 minutes; My AI Front Desk is about $189 at 600 minutes; Smith.ai is $500 for 300 calls. None combines Indian numbers, Hindi/Hinglish, WhatsApp operations and INR/GST billing in a public clinic package.
+6. **Builder platforms are the agency threat.** Retell, Vapi, Bland, Bolna and Sarvam let an agency assemble a cheaper demo. The sales answer must be a go-live promise, acceptance tests, predictable ownership and a dental operating playbook—not a feature checklist.
+7. **Dental depth and proof decide the category.** Arini shows the value of PMS depth; Pluxo shows the value of broad Indian-language coverage. Avery should answer with connectors, measured Indian dental outcomes and operational reliability.
 
 ## Market map and competitive posture
 
@@ -32,7 +32,7 @@ Research date: **2026-11-15**
 |---|---|---|---|---|
 | Indian voice infrastructure | Sarvam, Bolna, Ringg, Gnani, Exotel | Build/operate internally or through an agency | Show the finished clinic workflow and total operating responsibility | **No** on raw per-minute price |
 | Indian clinic software | Practo, Clinicia, Eka | Keep the current diary/EMR and staff workflow | Coexist, export bookings now, then add named connectors | **No**; integrate |
-| Indian clinic AI startups | Pluxo, Awaaz Desk | Similar local receptionist promise | Win with proof, onboarding SLA, pricing clarity and reliability | **Yes** |
+| Indian clinic AI startups | Pluxo, Awaaz Desk | Similar local receptionist promise; Pluxo has public pricing and 11 languages | Win with connectors, proof, onboarding SLA and reliability | **Yes** |
 | WhatsApp automation | AiSensy, Interakt, WATI | Messaging and campaigns; WATI can now extend into voice | Lead with missed calls and completed bookings, not broadcasts | Selectively |
 | Global turnkey receptionists | Smith.ai, Rosie, Goodcall, My AI Front Desk | Finished receptionist with US integrations | Win on India language, number, WhatsApp and billing | **Yes** for India clinics |
 | Dental/medical AI suites | Arini, Sully | Deep US PMS/EHR workflow | Learn from product depth; stay focused on India SMB clinics | **No** outside India |
@@ -45,12 +45,12 @@ Legend: **Yes** = directly evidenced; **Partial** = available through configurat
 | Competitor | Category | India presence | Hindi | Hinglish / code-switch | Channels | Booking | Clinic / dental depth | Self-serve | Public price |
 |---|---|---:|---:|---:|---|---|---|---:|---:|
 | **Avery** | Turnkey Indian receptionist | Yes | Yes | Yes | Voice + WhatsApp | Google Calendar + internal bookings | Dental template | Partial | Yes |
-| Ringg | Indian voice platform | Yes | Yes | Unknown | Voice | Custom/API | Practo proof; no clinic package | Partial | Yes |
+| Ringg | Indian voice platform | Yes | Yes | Yes claimed | Voice + WhatsApp | Custom/API | Practo proof; no clinic package | Partial | Yes |
 | Bolna | Indian voice platform | Yes | Yes | Yes | Voice | Cal.com + tools | No | Partial | Yes |
 | Sarvam | Indian voice platform | Yes | Yes | Yes | Voice | Custom tools | No | Partial | Yes |
 | Gnani Inya | Enterprise agent suite | Yes | Yes | Yes | Voice + chat + SMS + email + WhatsApp | Calendar actions | Healthcare logos; no clinic package | No | No |
 | Exotel | CPaaS / carrier | Yes | Partial | Unknown | Voice + SMS + WhatsApp | API/partners | No | No | No AI quote |
-| Pluxo | Indian clinic receptionist | Yes | Unknown | Unknown | Voice + WhatsApp | Google Calendar | Yes | Unknown | No |
+| Pluxo | Indian clinic receptionist | Yes | Yes; 11 Indian languages total | Yes claimed | Voice + WhatsApp | Own real-slot booking | Yes | Managed; 48-hour claim | Yes |
 | Awaaz Desk | Indian clinic receptionist | Yes | Yes | Yes | Voice | Slot booking; system unnamed | Yes | Unknown | No |
 | Practo Ray | Clinic software | Yes | No voice | No | Software + reminders | Native diary | Deep | Yes | Yes |
 | Clinicia | Clinic/dental software | Yes | No voice | No | Software + SMS; WhatsApp on Premium | Native diary | Deep | Yes | Conflicting |
@@ -81,6 +81,7 @@ Scenario: **300 calls/month × 2 connected minutes = 600 minutes.** Taxes, imple
 | Bolna standard | $0.06/min; displayed equivalent ₹5.52/min | **₹3,312** | Build, local operations and clinic workflow | No |
 | Retell | $0.07–$0.31/min | **$42–$186** / ₹3,696–₹16,368 | Phone, build, agency margin and India operations | No |
 | Ringg | ₹6/connected min + ₹499 number | **₹4,099** | Implementation and clinic operating layer | No |
+| Pluxo Core | ₹2,999 incl. 250 min + ₹5.50–₹7.50/min top-ups | **₹4,924–₹5,624** | Exact top-up band depends on package; external calendar/PMS depth unclear | **Yes** |
 | **Avery current Starter** | ₹2,999 incl. 300 min + ₹7/min overage | **₹5,099** | Finished product; excludes GST | **Yes** |
 | **Avery proposed Founding Clinic** | ₹4,999 incl. 800 min | **₹4,999** | Proposed, not the live plan | **Yes** |
 | Vapi example stack | $0.1289/min in vendor calculator | **$77.34** / ₹6,806 | Phone number, implementation and support | No |
@@ -100,7 +101,7 @@ Scenario: **300 calls/month × 2 connected minutes = 600 minutes.** Taxes, imple
 | Practo Ray | ₹999–₹1,499/month depending on commitment in indexed official plan | Clinic software and marketplace, not AI call answering. |
 | Clinicia | Public pages conflict between ₹7,000/year and ₹7,000/month Standard | Clinic software, not AI call answering; price must be confirmed before quoting. |
 | Eka Care | ₹16,999–₹100,000/year in annual offers | Clinic software, not AI call answering. |
-| Gnani, Exotel, Pluxo, Awaaz Desk, Arini, Sully, Synthflow | Unknown / contact sales | No exact public rate that supports the requested calculation. |
+| Gnani, Exotel, Awaaz Desk, Arini, Sully, Synthflow | Unknown / contact sales | No exact public rate that supports the requested calculation. |
 
 ## Avery differentiators and gaps
 
@@ -116,6 +117,7 @@ These are product capabilities in the repository. They still require real accoun
 ### Where competitors are stronger
 
 - **Practo, Clinicia and Eka:** installed diary, EMR and staff habit.
+- **Pluxo:** directly comparable clinic packaging, 11-language coverage, recall/no-show positioning and a public rate card.
 - **Arini:** deeper dental PMS integrations and US dental specialization.
 - **Ringg, Gnani and WATI:** enterprise credibility, channel breadth and public customer evidence.
 - **Sarvam, Bolna and Retell:** lower visible infrastructure cost and broader builder flexibility.
@@ -143,6 +145,7 @@ These are product capabilities in the repository. They still require real accoun
 
 - The 600-minute clinic fits with 200 minutes of headroom, so the bill feels fixed.
 - It is only ₹900 above Ringg's public 600-minute infrastructure bill and about ₹2,600 above a Sarvam/Vobiz stack. That premium is credible for a finished clinic workflow, onboarding and support.
+- It sits inside Pluxo's calculated ₹4,924–₹5,624 range at 600 minutes while including 200 minutes of unused headroom. The sales advantage is predictability and evidence, not a dramatic price gap.
 - It is far below WATI Business and all calculable global turnkey products.
 - It gives sales a simple bridge from the existing ₹2,999 Starter without removing the entry plan.
 - A visible ₹5,999 list price protects the long-run price. The ₹4,999 founding offer buys reference customers and measured proof rather than becoming the permanent anchor.
@@ -163,6 +166,7 @@ These are product capabilities in the repository. They still require real accoun
 | “We already use Practo / Clinicia / Eka.” | “Good—we are not asking you to replace it. Start with overflow and after-hours calls; Avery can send a structured booking to the front desk while the connector is completed.” | Missed-call baseline, booking export and no-double-booking workflow |
 | “Our receptionist already answers.” | “Avery covers simultaneous calls, lunch, after-hours and no-answer overflow. Start as backup, not replacement.” | Conditional forwarding test and recovered-booking report |
 | “Ringg / Sarvam / Bolna is cheaper.” | “Those are excellent components. The clinic would still own the build, prompts, phone routing, WhatsApp, monitoring and fixes. Compare the total operated outcome.” | Go-live checklist, acceptance tests and support SLA |
+| “Pluxo offers more languages at the same price.” | “That is the closest comparison. Choose on diary fit, call quality, privacy evidence, onboarding and measured booking outcomes—not the headline minute price.” | Side-by-side acceptance calls, connector workflow and pilot scorecard |
 | “WATI already does WhatsApp and voice.” | “WATI is a broad communications platform. Ask for the exact voice-minute allowance, Indian number workflow and dental booking integration, then compare the complete monthly bill and setup.” | Written scope and fixed-rate card |
 | “AI will mishandle an emergency.” | “Emergency and severe-pain calls should follow a deterministic escalation policy, not general AI advice.” | Recorded test calls, 112/urgent-care wording and live-transfer audit |
 | “₹4,999 is too much.” | “Use two weeks of overflow forwarding and measure bookings recovered. Continue only if the recovered value exceeds the fee.” | Clinic's own treatment values and conversion report; do not use an unverified salary comparison |
@@ -173,8 +177,8 @@ These are product capabilities in the repository. They still require real accoun
 |---:|---|---|---|---|---:|
 | 1 | No named Practo / Clinicia / Eka connector | Established clinics and small chains | Double-booking and duplicate-entry fear outweigh voice features | Structured booking export plus read-only availability import; then one two-way connector | P0 |
 | 2 | No live Indian dental proof | Every risk-aware owner | Competitors can show enterprise logos or category reviews; Avery currently asks buyers to trust a new workflow | Five paid pilots with consented sample calls, answer rate, bookings recovered and failure log | P0 |
-| 3 | Onboarding and existing-number forwarding are not productized enough | Clinics with published numbers | Owners will not change their number or debug carrier settings | Jio/Airtel/Vi/BSNL forwarding guides, 30-minute assisted setup and pass/fail acceptance test | P0 |
-| 4 | No Tamil, Telugu or Kannada call mode | Chennai, Hyderabad and Bengaluru expansion | Hindi/Hinglish does not cover target-city callers | Add one language at a time with native-speaker SVT; start with Tamil or Telugu based on pilot demand | P1 |
+| 3 | No Tamil, Telugu or Kannada call mode | Chennai, Hyderabad and Bengaluru expansion | Pluxo advertises 11 Indian languages, making Avery's narrower coverage visible in every direct comparison | Add one language at a time with native-speaker SVT; start with Tamil or Telugu based on pilot demand | P0 |
+| 4 | Onboarding and existing-number forwarding are not productized enough | Clinics with published numbers | Owners will not change their number or debug carrier settings | Jio/Airtel/Vi/BSNL forwarding guides, 30-minute assisted setup and pass/fail acceptance test | P1 |
 | 5 | Human handoff and urgent-call policy need visible controls and proof | Clinics treating pain and emergencies | One unsafe or failed urgent transfer can stop a purchase | Transfer rules, urgent-keyword escalation, retry/fallback and operator audit screen | P1 |
 | 6 | No recall / reactivation campaign | Clinics comparing revenue outcomes | Inbound-only value plateaus; Pluxo and messaging tools can claim recall revenue | WhatsApp recall lists first; consent-aware outbound voice later | P1 |
 | 7 | No booking deposit flow | High-value dental procedures | Clinics worry that AI-booked patients will no-show | Razorpay payment link after booking with configurable deposit policy | P2 |
@@ -213,7 +217,7 @@ All sources were viewed on 2026-11-15. The row-level source set is preserved in 
 
 ### Clinic products and Indian clinic AI
 
-- Pluxo: https://peerlist.io/prabeshgoyal/project/pluxo--ai-front-desk-for-clinics-in-india
+- Pluxo: https://www.pluxo.ai/ai-receptionist-pricing-india · https://www.pluxo.ai/ai-receptionist-for/multispecialty-clinics
 - Awaaz Desk: https://in.linkedin.com/in/hrushik
 - Practo Ray: https://www.practo.com/providers/clinics/ray/plans
 - Clinicia: https://clinicia.com/pricing/ · https://clinicia.com/app/pricing.php
