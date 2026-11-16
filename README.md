@@ -499,6 +499,12 @@ to that number reach the Worker's webhook, and the number's mapping in the admin
 3. Map each phone number ID to a business in Operator → WhatsApp. That page shows which of these
    settings are present (`GET /admin/whatsapp-status`, booleans only).
 
+### Kannada, Telugu and Tamil calls (optional, per business)
+
+Sarvam `kn-IN` / `te-IN` / `ta-IN` for speech in and out, prompt rules, greetings, DPDP notice and
+WhatsApp templates in each language. Translations await native review: see
+[docs/languages.md](docs/languages.md) and [docs/translations-review.md](docs/translations-review.md).
+
 ### Hindi and Hinglish calls (optional, per business)
 
 Each business answers in `en` (default), `hi` (Hindi) or `hi-en` (Hinglish — callers mixing

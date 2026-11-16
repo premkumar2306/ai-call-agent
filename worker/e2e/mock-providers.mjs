@@ -166,7 +166,7 @@ function decide(req) {
     .map(m => (Array.isArray(m.content) ? m.content.map(b => b.text ?? '').join(' ') : String(m.content ?? '')).toLowerCase());
   const lastUserText = userTexts.at(-1) ?? '';
   const serviceIdOf = () => (system.match(/\[id: ([^\]]+)\]/) ?? [])[1];
-  const wantsFirst = t => /(first one|that works|yes please|book it|पहला)/.test(t);
+  const wantsFirst = t => /(first one|that works|yes please|book it|पहला|ಮೊದಲ|మొదటి|முதல்)/.test(t);
   if (lastIsToolResult) {
     // A chat keeps only the text of earlier turns, so after "the first one
     // works" the model re-checks availability, then books the first slot.
@@ -195,15 +195,15 @@ function decide(req) {
     return null;
   };
 
-  if (/(staff|person|someone|human|transfer|किसी से बात)/.test(userText) && tools.has('transfer_to_staff')) {
+  if (/(staff|person|someone|human|transfer|किसी से बात|ಯಾರಾದರೂ|ఎవరితోనైనా|யாரிடமாவது)/.test(userText) && tools.has('transfer_to_staff')) {
     return { tool: 'transfer_to_staff', input: { reason: 'caller asked for a person' } };
   }
-  if (/(first one|that works|yes please|book it|पहला)/.test(userText) && tools.has('book_appointment')) {
+  if (/(first one|that works|yes please|book it|पहला|ಮೊದಲ|మొదటి|முதல்)/.test(userText) && tools.has('book_appointment')) {
     const slot = findSlot();
     if (slot && serviceId) return { tool: 'book_appointment', input: { product_id: serviceId, scheduled_at: slot, customer_name: 'Priya Sharma' } };
     if (!slot && serviceId && tools.has('check_availability')) return { tool: 'check_availability', input: { service_id: serviceId } };
   }
-  if (/(book|appointment|बुक|अपॉइंटमेंट)/.test(userText) && tools.has('check_availability') && serviceId) {
+  if (/(book|appointment|बुक|अपॉइंटमेंट|ಬುಕ್|ಅಪಾಯಿಂಟ್|బుక్|అపాయింట్|புக்|அப்பாயிண்ட்)/.test(userText) && tools.has('check_availability') && serviceId) {
     return { tool: 'check_availability', input: { service_id: serviceId } };
   }
   if (/(bye|thank you|धन्यवाद)/.test(userText)) return say('Thank you for calling. Goodbye!', 'कॉल करने के लिए धन्यवाद। नमस्ते!');

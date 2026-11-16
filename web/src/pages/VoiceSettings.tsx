@@ -9,7 +9,7 @@ interface Props {
 }
 
 interface Voice {
-  language: 'en' | 'hi' | 'hi-en';
+  language: 'en' | 'hi' | 'hi-en' | 'kn' | 'te' | 'ta';
   sttProvider: 'deepgram' | 'sarvam';
   ttsProvider: 'cartesia' | 'sarvam';
   voiceId?: string;
@@ -20,7 +20,12 @@ const LANGUAGES = [
   { value: 'en', label: 'English' },
   { value: 'hi', label: 'Hindi' },
   { value: 'hi-en', label: 'Hinglish (Hindi + English)' },
+  { value: 'kn', label: 'Kannada (Indian languages voice only)' },
+  { value: 'te', label: 'Telugu (Indian languages voice only)' },
+  { value: 'ta', label: 'Tamil (Indian languages voice only)' },
 ];
+// Kannada, Telugu and Tamil run on Sarvam for both hearing and speaking.
+const SARVAM_ONLY = ['kn', 'te', 'ta'];
 
 // Per-business phone-line language and speech providers (PUT /admin/sectors/:key/voice).
 export default function VoiceSettings({ base, auth, sectors }: Props) {
@@ -92,7 +97,7 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
         )}
         <div className="field">
           <label htmlFor="vs-lang">Language</label>
-          <select id="vs-lang" className="input" value={voice?.language ?? 'en'} disabled={!voice} onChange={e => set({ language: e.target.value as Voice['language'] })}>
+          <select id="vs-lang" className="input" value={voice?.language ?? 'en'} disabled={!voice} onChange={e => set(SARVAM_ONLY.includes(e.target.value) ? { language: e.target.value as Voice['language'], sttProvider: 'sarvam', ttsProvider: 'sarvam' } : { language: e.target.value as Voice['language'] })}>
             {LANGUAGES.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
           </select>
         </div>

@@ -330,7 +330,8 @@ async function placeCall(mocks, { carrier, number, from, lines, hangUpEarly = fa
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
 
-const NOTICE = { en: /AI assistant.*transcribed/i, hi: /AI सहायक/ };
+const NOTICE = { en: /AI assistant.*transcribed/i, hi: /AI सहायक/, kn: /AI ಸಹಾಯಕ/, te: /AI సహాయకుడితో/, ta: /AI உதவியாளருடன்/ };
+const SARVAM_LANG = { hi: 'hi-IN', kn: 'kn-IN', te: 'te-IN', ta: 'ta-IN' };
 
 async function callScenario(mocks, s) {
   console.log(`\n▶ ${s.name}`);
@@ -356,7 +357,8 @@ async function callScenario(mocks, s) {
   const stt = mocks.log.stt.slice(sttStart).at(-1);
   check(n, `speech recognition is ${s.stt}`, stt?.kind === s.stt, JSON.stringify(stt?.query ?? {}).slice(0, 120));
   if (s.stt === 'deepgram') check(n, 'Deepgram gets µ-law 8 kHz audio', stt?.query?.encoding === 'mulaw' && stt?.query?.sample_rate === '8000' && mocks.log.sttAudio.deepgram > audioStart.deepgram, `${mocks.log.sttAudio.deepgram - audioStart.deepgram} bytes`);
-  if (s.stt === 'sarvam') check(n, 'Sarvam gets 16 kHz PCM in hi-IN', stt?.query?.['language-code'] === 'hi-IN' && [...mocks.log.sarvamSttFormats].some(f => f.endsWith('@16000')) && mocks.log.sttAudio.sarvam > audioStart.sarvam, `${[...mocks.log.sarvamSttFormats].join(',')}`);
+  const sl = SARVAM_LANG[s.voice?.voice_language ?? 'hi'] ?? 'hi-IN';
+  if (s.stt === 'sarvam') check(n, `Sarvam gets 16 kHz PCM in ${sl}`, stt?.query?.['language-code'] === sl && [...mocks.log.sarvamSttFormats].some(f => f.endsWith('@16000')) && mocks.log.sttAudio.sarvam > audioStart.sarvam, `${[...mocks.log.sarvamSttFormats].join(',')}`);
   // The opener may be synthesized in the default voice before the business's
   // voice is known (then dropped); from the first line in its voice, all are.
   const first = heard.findIndex(t => t.provider === s.tts);
@@ -364,7 +366,8 @@ async function callScenario(mocks, s) {
   const tts = voiced[0];
   if (first > 0) check(n, 'default-voice opener requests before the switch (cost only, not heard)', true, `${first} request(s): ${heard.slice(0, first).map(t => t.provider).join(', ')}`);
   if (s.tts === 'cartesia') check(n, 'Cartesia asked for raw µ-law 8 kHz', voiced.length > 0 && voiced.every(t => t.provider === 'cartesia' && t.format?.encoding === 'pcm_mulaw' && t.format?.sample_rate === 8000), JSON.stringify(tts?.format));
-  if (s.tts === 'sarvam') check(n, 'Sarvam TTS asked for µ-law 8 kHz in hi-IN', voiced.length > 0 && voiced.every(t => t.provider === 'sarvam' && t.format?.codec === 'mulaw' && t.format?.sample_rate === 8000 && t.format?.language === 'hi-IN'), JSON.stringify(tts?.format));
+  if (s.tts === 'sarvam') check(n, `Sarvam TTS asked for µ-law 8 kHz in ${sl}`, voiced.length > 0 && voiced.every(t => t.provider === 'sarvam' && t.format?.codec === 'mulaw' && t.format?.sample_rate === 8000 && t.format?.language === sl), JSON.stringify(tts?.format));
+  if (s.script) check(n, 'greeting and replies are spoken in the business language (native script)', voiced.some(t => s.script.test(t.text) && /Avery|ಅಸಿಸ್ಟೆಂಟ್|అసిస్టెంట్|அசிஸ்டன்ட்/.test(t.text)), voiced.find(t => s.script.test(t.text))?.text?.slice(0, 80));
 
   const bookings = await api('GET', `/admin/bookings/${s.key}`);
   const booked = (Array.isArray(bookings) ? bookings : bookings?.bookings ?? []).find(b => (b.customerName ?? b.customer_name) === 'Priya Sharma');
@@ -816,7 +819,7 @@ async function whatsappProdScenario(mocks) {
   await api('POST', '/admin/whatsapp/templates', { event: 'missed_call' });
   const again = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
   const onMeta = [...mocks.wa.templates.values()];
-  check(n, 'template create: en, hi and Hinglish, UTILITY, sent to the WABA with examples', created.length === 3 && created.every(t => t.status === 'PENDING')
+  check(n, 'template create: en, hi, Hinglish, kn, te and ta, UTILITY, sent to the WABA with examples', created.length === 6 && created.every(t => t.status === 'PENDING') && ['kn', 'te', 'ta'].every(l => onMeta.some(t => t.name === REM && t.language === l))
     && onMeta.some(t => t.name === REM && t.language === 'hi') && onMeta.some(t => t.name === `${REM}_hinglish` && t.language === 'en')
     && onMeta.every(t => t.category === 'UTILITY' && t.components[0].example?.body_text?.[0]?.length >= 1)
     && mocks.log.whatsapp.some(w => w.method === 'POST' && w.path.endsWith(`/${SECRETS.WA_BUSINESS_ACCOUNT_ID}/message_templates`)) && again.length === 0,
@@ -1022,6 +1025,28 @@ const SCENARIOS = [
     voice: { voice_language: 'hi', stt_provider: 'sarvam', tts_provider: 'sarvam' },
     expectNotice: true, noticeLang: 'hi', transfer: true,
     lines: ['नमस्ते, मुझे अपॉइंटमेंट बुक करना है।', 'पहला वाला ठीक है।', 'क्या मैं किसी से बात कर सकता हूँ?'],
+  },
+  // Kannada, Telugu and Tamil (launch 5): Sarvam in and out, the scripted brain understands each.
+  {
+    name: 'Indian business over Exotel (Kannada, Sarvam)', key: 'in_kn', carrier: 'exotel', country: 'IN',
+    number: '+918047100021', from: '+919812345621', staffPhone: '+919876500021', stt: 'sarvam', tts: 'sarvam',
+    voice: { voice_language: 'kn', stt_provider: 'sarvam', tts_provider: 'sarvam' }, script: /[\u0C80-\u0CFF]/,
+    expectNotice: true, noticeLang: 'kn', transfer: true,
+    lines: ['ನಮಸ್ಕಾರ, ನನಗೆ ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ಬುಕ್ ಮಾಡಬೇಕು.', 'ಮೊದಲನೆಯದು ಸರಿ.', 'ನಾನು ಯಾರಾದರೂ ಜೊತೆ ಮಾತನಾಡಬಹುದಾ?'],
+  },
+  {
+    name: 'Indian business over Exotel (Telugu, Sarvam)', key: 'in_te', carrier: 'exotel', country: 'IN',
+    number: '+918047100022', from: '+919812345622', staffPhone: '+919876500022', stt: 'sarvam', tts: 'sarvam',
+    voice: { voice_language: 'te', stt_provider: 'sarvam', tts_provider: 'sarvam' }, script: /[\u0C00-\u0C7F]/,
+    expectNotice: true, noticeLang: 'te', transfer: true,
+    lines: ['నమస్కారం, నాకు అపాయింట్‌మెంట్ బుక్ చేయాలి.', 'మొదటిది సరే.', 'నేను ఎవరితోనైనా మాట్లాడవచ్చా?'],
+  },
+  {
+    name: 'Indian business over Exotel (Tamil, Sarvam)', key: 'in_ta', carrier: 'exotel', country: 'IN',
+    number: '+918047100023', from: '+919812345623', staffPhone: '+919876500023', stt: 'sarvam', tts: 'sarvam',
+    voice: { voice_language: 'ta', stt_provider: 'sarvam', tts_provider: 'sarvam' }, script: /[\u0B80-\u0BFF]/,
+    expectNotice: true, noticeLang: 'ta', transfer: true,
+    lines: ['வணக்கம், எனக்கு அப்பாயிண்ட்மென்ட் புக் செய்ய வேண்டும்.', 'முதல் நேரம் சரி.', 'நான் யாரிடமாவது பேசலாமா?'],
   },
 ];
 
