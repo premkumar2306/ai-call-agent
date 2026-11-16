@@ -113,7 +113,15 @@ export function previews(meta: SectorMeta | null | undefined, businessName: stri
     reminder: fillTemplate(defaultFor('reminder').body[lang], p3),
     cancellation: fillTemplate(defaultFor('cancellation').body[lang], [businessName, sample, formatWhen('2026-11-18T10:30', lang)]),
     missed_call: fillTemplate(defaultFor('missed_call').body[lang], [businessName]),
+    recall: fillTemplate(defaultFor('recall').body[lang], [businessName, monthsText(6, lang), sample]),
+    no_show: fillTemplate(defaultFor('no_show').body[lang], p3),
+    review_request: fillTemplate(defaultFor('review_request').body[lang], [businessName, 'https://g.page/r/…/review']),
   };
+}
+
+/** "6 months" in the message language. */
+export function monthsText(n: number, lang: ReplyLanguage): string {
+  return lang === 'hi' ? `${n} महीने` : lang === 'hi-en' ? `${n} mahine` : `${n} month${n === 1 ? '' : 's'}`;
 }
 
 // ── Sending ──────────────────────────────────────────────────────────────────

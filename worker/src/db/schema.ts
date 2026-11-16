@@ -90,6 +90,15 @@ export const orders = sqliteTable('orders', {
   resourceName:     text('resource_name'),
   endsAt:           text('ends_at'),                    // business-local end, set for resource bookings
   details:          text('details', { mode: 'json' }).$type<Record<string, string>>(), // vertical booking fields
+  // 0025: visit outcome and clinic follow-ups (each sent once)
+  visitStatus:      text('visit_status'),                // completed | no_show
+  visitMarkedAt:    integer('visit_marked_at'),
+  noShowSentAt:     integer('no_show_sent_at'),
+  noShowChannel:    text('no_show_channel'),
+  reviewSentAt:     integer('review_sent_at'),
+  reviewChannel:    text('review_channel'),
+  recallSentAt:     integer('recall_sent_at'),
+  recallChannel:    text('recall_channel'),
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -481,4 +490,18 @@ export const metricsSettings = sqliteTable('metrics_settings', {
   shareToken:     text('share_token'),
   createdAt:      integer('created_at').notNull(),
   updatedAt:      integer('updated_at').notNull(),
+});
+
+// 0025: clinic features (per business, all off by default).
+export const clinicFeatures = sqliteTable('clinic_features', {
+  businessType:    text('business_type').primaryKey(),
+  durationBooking: integer('duration_booking', { mode: 'boolean' }).notNull().default(false),
+  recalls:         integer('recalls', { mode: 'boolean' }).notNull().default(false),
+  recallMonths:    integer('recall_months').notNull().default(6),
+  recallCategory:  text('recall_category'),
+  noShowRecovery:  integer('no_show_recovery', { mode: 'boolean' }).notNull().default(false),
+  reviewRequests:  integer('review_requests', { mode: 'boolean' }).notNull().default(false),
+  reviewUrl:       text('review_url'),
+  createdAt:       integer('created_at').notNull(),
+  updatedAt:       integer('updated_at').notNull(),
 });

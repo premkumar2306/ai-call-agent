@@ -17,7 +17,7 @@
 import type { Env } from '../types';
 import { graphFetch, type ReplyLanguage } from './whatsapp-api';
 
-export const EVENTS = ['confirmation', 'reminder', 'cancellation', 'missed_call'] as const;
+export const EVENTS = ['confirmation', 'reminder', 'cancellation', 'missed_call', 'recall', 'no_show', 'review_request'] as const;
 export type WaEvent = typeof EVENTS[number];
 export const VARIANTS: ReplyLanguage[] = ['en', 'hi', 'hi-en'];
 
@@ -72,6 +72,35 @@ export const DEFAULT_TEMPLATES: TemplateDef[] = [
       en: 'Sorry we missed your call to {{1}}. Reply to this message and we will help you here on WhatsApp: book, reschedule or ask a question. Reply STOP to opt out.',
       hi: 'माफ़ कीजिए, {{1}} पर आपकी कॉल पूरी नहीं हो पाई। इस मैसेज का जवाब दें, हम यहीं WhatsApp पर मदद करेंगे: बुकिंग, समय बदलना या कोई सवाल। मैसेज बंद करने के लिए STOP लिखें।',
       'hi-en': 'Sorry, {{1}} par aapki call poori nahi ho paayi. Is message ka reply karein, hum yahin WhatsApp par help karenge: booking, reschedule ya koi sawaal. Messages band karne ke liye STOP likhein.',
+    },
+  },
+  // Launch 4 (clinic features; each off until the business turns it on).
+  // Hindi and Hinglish wording needs a native speaker's review (docs/translations-review.md).
+  {
+    event: 'recall', family: 'avery_recall',
+    example: ['Sharma Dental Clinic', '6 months', 'dental cleaning'],
+    body: {
+      en: 'Hello from {{1}}. It has been about {{2}} since your last {{3}}. Reply here to book your next visit, and we will find you a time. Reply STOP to opt out.',
+      hi: 'नमस्ते, {{1}} की ओर से। लगभग {{2}} हो गए हैं आपके पिछले {{3}} को। अगली विज़िट बुक करने के लिए यहीं जवाब दें, हम आपके लिए समय ढूँढ देंगे। मैसेज बंद करने के लिए STOP लिखें।',
+      'hi-en': 'Namaste, {{1}} se. Lagbhag {{2}} ho gaye hain aapke pichhle {{3}} ko. Agli visit book karne ke liye yahin reply karein, hum aapke liye time dhoondh denge. Messages band karne ke liye STOP likhein.',
+    },
+  },
+  {
+    event: 'no_show', family: 'avery_missed_appointment',
+    example: ['Sharma Dental Clinic', 'Dental check-up', 'Mon, 18 Nov, 10:30 am'],
+    body: {
+      en: 'Hello from {{1}}. We missed you at your {{2}} on {{3}}. Reply here to book a new time, or reply CALL and the clinic will call you back. Reply STOP to opt out.',
+      hi: 'नमस्ते, {{1}} की ओर से। आपके {{2}} ({{3}}) पर हम आपसे नहीं मिल पाए। नया समय बुक करने के लिए यहीं जवाब दें, या CALL लिखें, क्लिनिक आपको कॉल करेगा। मैसेज बंद करने के लिए STOP लिखें।',
+      'hi-en': 'Namaste, {{1}} se. Aapke {{2}} ({{3}}) par hum aapse nahi mil paaye. Naya time book karne ke liye yahin reply karein, ya CALL likhein, clinic aapko call karega. Messages band karne ke liye STOP likhein.',
+    },
+  },
+  {
+    event: 'review_request', family: 'avery_review_request',
+    example: ['Sharma Dental Clinic', 'https://g.page/r/example/review'],
+    body: {
+      en: 'Thank you for visiting {{1}}. If you have a minute, we would value your review on Google: {{2}} You can also reply here to tell the clinic how it went. Reply STOP to opt out.',
+      hi: 'नमस्ते, {{1}} आने के लिए धन्यवाद। अगर आपके पास एक मिनट हो, तो Google पर अपना रिव्यू दें: {{2}} आप यहीं जवाब देकर भी क्लिनिक को बता सकते हैं कि अनुभव कैसा रहा। मैसेज बंद करने के लिए STOP लिखें।',
+      'hi-en': 'Namaste, {{1}} aane ke liye thank you. Agar aapke paas ek minute ho, toh Google par apna review dein: {{2}} Aap yahin reply karke bhi clinic ko bata sakte hain ki experience kaisa raha. Messages band karne ke liye STOP likhein.',
     },
   },
 ];
