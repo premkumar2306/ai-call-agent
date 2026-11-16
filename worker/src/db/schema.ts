@@ -453,3 +453,32 @@ export const callRouting = sqliteTable('call_routing', {
   primaryKey({ columns: [t.carrier, t.callSid] }),
   index('idx_call_routing_business').on(t.businessType, t.createdAt),
 ]);
+
+// 0024: pilot metrics.
+export const callOutcomes = sqliteTable('call_outcomes', {
+  carrier:         text('carrier').notNull(),
+  callSid:         text('call_sid').notNull(),
+  businessType:    text('business_type').notNull(),
+  callerHash:      text('caller_hash'),
+  startedAt:       integer('started_at').notNull(),
+  endedAt:         integer('ended_at').notNull(),
+  durationSeconds: integer('duration_seconds').notNull(),
+  userTurns:       integer('user_turns').notNull().default(0),
+  transferred:     integer('transferred', { mode: 'boolean' }).notNull().default(false),
+  messageTaken:    integer('message_taken', { mode: 'boolean' }).notNull().default(false),
+  isTest:          integer('is_test', { mode: 'boolean' }).notNull().default(false),
+  createdAt:       integer('created_at').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.carrier, t.callSid] }),
+  index('idx_call_outcomes_business').on(t.businessType, t.startedAt),
+]);
+
+export const metricsSettings = sqliteTable('metrics_settings', {
+  businessType:   text('business_type').primaryKey(),
+  weeklySummary:  integer('weekly_summary', { mode: 'boolean' }).notNull().default(false),
+  weeklyLastSent: text('weekly_last_sent'),
+  shareEnabled:   integer('share_enabled', { mode: 'boolean' }).notNull().default(false),
+  shareToken:     text('share_token'),
+  createdAt:      integer('created_at').notNull(),
+  updatedAt:      integer('updated_at').notNull(),
+});

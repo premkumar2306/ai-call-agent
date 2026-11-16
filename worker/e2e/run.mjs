@@ -425,6 +425,33 @@ async function pilotScenario() {
   await api('PUT', `/pilot/${B}`, { enabled: false, startsOn: null, endsOn: null, clinicNumber: null });
 }
 
+// Pilot metrics (launch item 3): a real simulated overflow call that books,
+// then the dashboard numbers, the share link and the weekly summary default.
+async function metricsScenario(mocks) {
+  const n = 'Pilot metrics';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en';
+  const before = await api('GET', `/metrics/${B}?days=7`);
+  check(n, 'weekly summary and share link are off by default', before?.settings?.weeklySummary === false && before.settings.shareEnabled === false && before.settings.shareToken === null, JSON.stringify(before?.settings));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  await api('PUT', `/pilot/${B}`, { enabled: true, startsOn: today, endsOn: '2099-12-31', clinicNumber: '+918041234567', clinicLine: 'jio' });
+  const call = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300077', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await new Promise(r => setTimeout(r, 1500));
+  const m = (await api('GET', `/metrics/${B}?pilot=1`))?.metrics;
+  check(n, 'an overflow call that books counts as a recovered booking', call.webhook?.ok && m?.calls >= 1 && m.overflowCalls >= 1 && m.answered >= 1 && m.recoveredBookings >= 1 && m.answerRate > 0,
+    JSON.stringify(m));
+  check(n, 'no-show is reported as not tracked (no made-up figure)', m?.noShow?.status === 'not_tracked', JSON.stringify(m?.noShow));
+  const on = await api('PUT', `/metrics/${B}/settings`, { shareEnabled: true });
+  const page = await fetch(`${BASE}/report/${on?.shareToken}`);
+  const html = await page.text();
+  const json = await (await fetch(`${BASE}/report/${on?.shareToken}?format=json`)).json();
+  check(n, 'opt-in share link: read-only report with the same figures, no patient numbers', page.status === 200 && /Recovered bookings/.test(html) && json?.data?.metrics?.recoveredBookings === m?.recoveredBookings && !/9812300077/.test(html), `${page.status}, recovered ${json?.data?.metrics?.recoveredBookings}`);
+  await api('PUT', `/metrics/${B}/settings`, { shareEnabled: false });
+  const gone = await fetch(`${BASE}/report/${on?.shareToken}`);
+  check(n, 'turning sharing off kills the link', gone.status === 404, `${gone.status}`);
+  await api('PUT', `/pilot/${B}`, { enabled: false, startsOn: null, endsOn: null, clinicNumber: null });
+}
+
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
 // token, the caller hanging up mid-call, and the hangup callback.
 async function plivoScenario(mocks) {
@@ -951,6 +978,7 @@ try {
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();
+  if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);

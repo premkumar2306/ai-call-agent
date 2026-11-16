@@ -68,7 +68,7 @@ by the cron string.
 
 | Cron (UTC) | Jobs | Safe to re-run? |
 |---|---|---|
-| `47 20 * * *` (daily, 02:17 IST) | data-retention sweep, month-end overage billing, dunning notices | Yes: each is idempotent |
+| `47 20 * * *` (daily, 02:17 IST) | data-retention sweep, month-end overage billing, dunning notices, weekly pilot summary (Mondays, opt-in) | Yes: each is idempotent |
 | `17 * * * *` (hourly) | WhatsApp appointment reminders (2–24 h ahead, for businesses that turned them on), WhatsApp number health and quality alerts | Yes: each booking is claimed before its reminder is sent; alerts go once per drop |
 
 The hourly trigger exists because reminders have to go out about 24 hours before each
@@ -95,3 +95,9 @@ the clock.
 A clinic can keep its own number and forward only busy, no-answer and unreachable calls to Avery.
 See [overflow-pilot.md](overflow-pilot.md) for the per-business pilot switch, the overflow tag,
 "test your forwarding", and the carrier codes (with sources and the codes still to verify).
+
+## Pilot metrics
+
+Answer rate, recovered bookings, transfer rate (and no-show rate once tracked) per business, from
+real calls and bookings only: [pilot-metrics.md](pilot-metrics.md) has the exact formulas. The weekly
+email and the read-only report link are off until the owner turns them on.

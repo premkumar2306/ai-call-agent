@@ -20,6 +20,8 @@ import { calendarAdminRouter, oauthRouter } from './routes/calendar';
 import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/billing';
 import { closePeriod } from './services/billing/service';
 import { runDunning } from './services/billing/lifecycle';
+import { runWeeklySummaries } from './services/metrics';
+import { metricsRouter, publicReportRouter } from './routes/metrics';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
 import { installProviderMock } from './utils/provider-mock';
@@ -74,6 +76,8 @@ app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
 app.route('/billing',  billingRouter);
 app.route('/pilot',    pilotRouter);
+app.route('/metrics',  metricsRouter);
+app.route('/report',   publicReportRouter);
 app.route('/razorpay', razorpayRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────
@@ -144,6 +148,12 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
       runDunning(env)
         .then(r => { if (r.length) console.log('[billing] dunning', JSON.stringify(r)); })
         .catch(e => console.error('[billing] dunning failed', e?.message || e)),
+    );
+    // Weekly pilot summary (Mondays, only for businesses that turned it on).
+    ctx.waitUntil(
+      runWeeklySummaries(env)
+        .then(r => { if (r.length) console.log('[metrics] weekly', JSON.stringify(r)); })
+        .catch(e => console.error('[metrics] weekly failed', e?.message || e)),
     );
     return;
   }
