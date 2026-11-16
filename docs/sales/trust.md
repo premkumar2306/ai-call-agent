@@ -1,5 +1,7 @@
 # DeskZen trust one-pager: privacy, phone lines, GST billing
 
+Polished private version (Artifact): https://claude.ai/artifact/7dZCSYVyWFHYSQ9QR9jj2m
+
 For clinic owners and their advisers. Everything below is what the product does today. Where
 something is configured per clinic, or hasn't been proven on a live line yet, it says so.
 
