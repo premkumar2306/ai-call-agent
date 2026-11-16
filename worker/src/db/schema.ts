@@ -423,3 +423,33 @@ export const razorpayEvents = sqliteTable('razorpay_events', {
   event:      text('event').notNull(),
   receivedAt: integer('received_at').notNull(),
 });
+
+// 0023: overflow-only pilots on the clinic's existing number.
+export const pilotConfigs = sqliteTable('pilot_configs', {
+  businessType:            text('business_type').primaryKey(),
+  enabled:                 integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  mode:                    text('mode').notNull().default('overflow'),
+  startsOn:                text('starts_on'),
+  endsOn:                  text('ends_on'),
+  clinicNumber:            text('clinic_number'),
+  clinicLine:              text('clinic_line'),
+  forwardingTestStartedAt: integer('forwarding_test_started_at'),
+  createdAt:               integer('created_at').notNull(),
+  updatedAt:               integer('updated_at').notNull(),
+});
+
+export const callRouting = sqliteTable('call_routing', {
+  carrier:       text('carrier').notNull(),
+  callSid:       text('call_sid').notNull(),
+  businessType:  text('business_type').notNull(),
+  calledNumber:  text('called_number'),
+  callerHash:    text('caller_hash'),
+  forwardedFrom: text('forwarded_from'),
+  isOverflow:    integer('is_overflow', { mode: 'boolean' }).notNull().default(false),
+  reason:        text('reason').notNull(),
+  pilotActive:   integer('pilot_active', { mode: 'boolean' }).notNull().default(false),
+  createdAt:     integer('created_at').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.carrier, t.callSid] }),
+  index('idx_call_routing_business').on(t.businessType, t.createdAt),
+]);

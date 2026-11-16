@@ -6,6 +6,7 @@ import { callerIdentity } from '../utils/identity';
 import { businessForNumber, normalizeE164 } from '../services/phone-numbers';
 import { transferKey } from '../services/call-context';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
+import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
 
 // Plivo (Indian numbers, alternative to Exotel). A Plivo application's
 // Answer URL is POST https://<worker>/plivo/answer, which returns a
@@ -99,6 +100,10 @@ plivoRouter.post('/answer', requirePlivoSig, async (c) => {
   const callUuid = p.CallUUID || crypto.randomUUID();
   const { callerHash, callerPhone } = await callerIdentity(p.From, callUuid, customerHashSalt(c.env), (raw) => normalizeE164(raw, '91'));
   const token = await signStreamToken(c.env, businessType, callerHash, callerPhone);
+  // Overflow pilot: how the call got here (ForwardedFrom when the carrier sends it).
+  background(c, recordCallRouting(c.env, {
+    carrier: 'plivo', callSid: p.CallUUID, businessType, calledNumber: normalizeE164(p.To, '91'), callerHash, forwardedFrom: forwardedFromParam(p),
+  }));
   const base = (c.env.PLIVO_WEBHOOK_URL ?? `https://${host}`).replace(/\/$/, '');
   return c.text(
     '<?xml version="1.0" encoding="UTF-8"?><Response>' +

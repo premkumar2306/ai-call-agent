@@ -392,6 +392,39 @@ async function callScenario(mocks, s) {
   }
 }
 
+// Overflow-only pilot on the clinic's own number (launch item 2): the clinic's
+// carrier forwards busy/no-answer calls to the Avery number; calls are tagged
+// overflow and ForwardedFrom is captured; "test your forwarding" completes.
+async function pilotScenario() {
+  const n = 'Overflow pilot';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en', CLINIC = '+918041234567';
+  const off = await api('GET', `/pilot/${B}`);
+  check(n, 'off by default: no pilot config, not active', off?.config === null && off.active === false, JSON.stringify({ config: off?.config, active: off?.active }));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const bad = await fetch(`${BASE}/pilot/${B}`, { method: 'PUT', headers: { 'X-Admin-Key': ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  check(n, 'a pilot needs start and end dates', bad.status === 400, `${bad.status}`);
+  await api('PUT', `/pilot/${B}`, { enabled: true, startsOn: today, endsOn: '2099-12-31', clinicNumber: '080 4123 4567', clinicLine: 'airtel' });
+  const test = await api('POST', `/pilot/${B}/forwarding-test`);
+  check(n, 'test your forwarding: waiting for a forwarded call', test?.status === 'waiting', test?.status);
+  const sid = `pl-fwd-${randomUUID()}`;
+  const res = await plivoPost('/plivo/answer', { CallUUID: sid, From: '919812300001', To: '918047100002', ForwardedFrom: CLINIC.slice(1), Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' });
+  const xml = await res.text();
+  await new Promise(r => setTimeout(r, 300));
+  const after = await api('GET', `/pilot/${B}/forwarding-test`);
+  check(n, 'a forwarded Plivo call is answered with the stream as usual', res.status === 200 && xml.includes('<Stream'), `${res.status}`);
+  check(n, 'test your forwarding: received, ForwardedFrom matches the clinic number', after?.status === 'received' && after.call?.forwardedFrom === CLINIC && after.call.forwardedFromMatches === true, JSON.stringify(after?.call));
+  const sid2 = `pl-ovf-${randomUUID()}`;
+  await plivoPost('/plivo/answer', { CallUUID: sid2, From: '919812300002', To: '918047100002', Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' });
+  await new Promise(r => setTimeout(r, 300));
+  const st = await api('GET', `/pilot/${B}`);
+  const r1 = st?.recent?.find(r => r.forwardedFrom === CLINIC), r2 = st?.recent?.find(r => r.reason === 'pilot_overflow');
+  check(n, 'calls tagged overflow: carrier_forwarded (with number) and pilot_overflow (no number sent)', st?.active === true && r1?.isOverflow === true && r1.reason === 'carrier_forwarded' && r2?.isOverflow === true, JSON.stringify(st?.recent?.slice(0, 2)));
+  const us = await api('GET', '/pilot/us_twilio');
+  check(n, 'the US business is unchanged: no pilot, no routing rows', us?.config === null && us.recent.length === 0, `${us?.recent?.length} rows`);
+  await api('PUT', `/pilot/${B}`, { enabled: false, startsOn: null, endsOn: null, clinicNumber: null });
+}
+
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
 // token, the caller hanging up mid-call, and the hangup callback.
 async function plivoScenario(mocks) {
@@ -917,6 +950,7 @@ try {
   // The Razorpay scenario bills the Exotel business's call minutes, so `-- razorpay` places that call too.
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
+  if (!only || 'pilot'.includes(only)) await pilotScenario();
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);

@@ -1,3 +1,4 @@
+import { pilotRouter } from './routes/pilot';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
@@ -72,6 +73,7 @@ app.route('/features', featuresRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
 app.route('/billing',  billingRouter);
+app.route('/pilot',    pilotRouter);
 app.route('/razorpay', razorpayRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────
