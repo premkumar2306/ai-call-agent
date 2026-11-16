@@ -21,6 +21,8 @@ import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/bill
 import { closePeriod } from './services/billing/service';
 import { runDunning } from './services/billing/lifecycle';
 import { runWeeklySummaries } from './services/metrics';
+import { runClinicFollowUps } from './services/clinic-features';
+import { clinicAdminRouter, clinicRouter } from './routes/clinic';
 import { metricsRouter, publicReportRouter } from './routes/metrics';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
@@ -70,6 +72,7 @@ app.route('/admin/billing', billingAdminRouter);
 app.route('/admin/integrations', integrationsAdminRouter);
 app.route('/admin/whatsapp', whatsappAdminRouter);
 app.route('/admin/plivo', plivoAdminRouter);
+app.route('/admin/clinic', clinicAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/features', featuresRouter);
 app.route('/oauth',    oauthRouter);
@@ -77,6 +80,7 @@ app.route('/whatsapp', whatsappRouter);
 app.route('/billing',  billingRouter);
 app.route('/pilot',    pilotRouter);
 app.route('/metrics',  metricsRouter);
+app.route('/clinic',   clinicRouter);
 app.route('/report',   publicReportRouter);
 app.route('/razorpay', razorpayRouter);
 
@@ -161,6 +165,12 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
     runReminders(env)
       .then(r => { if (r.length) console.log('[wa] reminders', JSON.stringify(r.map(x => x.outcome))); })
       .catch(e => console.error('[wa] reminders failed', e?.message || e)),
+  );
+  // Clinic follow-ups: recalls, no-show recovery, review requests (each off until a clinic turns it on).
+  ctx.waitUntil(
+    runClinicFollowUps(env)
+      .then(r => { if (r.length) console.log('[clinic] follow-ups', JSON.stringify(r.map(x => `${x.job}:${x.outcome}`))); })
+      .catch(e => console.error('[clinic] follow-ups failed', e?.message || e)),
   );
   ctx.waitUntil(
     refreshHealth(env)

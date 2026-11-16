@@ -109,9 +109,31 @@ export async function computeMetrics(env: Env, businessType: string, from: numbe
     from, to, calls: calls.length, answered, answerRate: rate(answered, calls.length),
     overflowCalls, afterHoursCalls, transfers, transferRate: rate(transfers, answered),
     bookingsFromCalls: fromCalls.size, recoveredBookings: recovered.size,
-    // No-show tracking arrives with clinic features (launch item 4).
-    noShow: { status: 'not_tracked' },
+    noShow: await noShowRates(env, businessType, tz, from, to),
   };
+}
+
+/**
+ * No-show rate = no_show ÷ (completed + no_show) over appointments scheduled in
+ * the window, from visits staff marked (launch item 4). "before" is the
+ * same-length window just before `from`. Not tracked until a visit is marked.
+ */
+export async function noShowRates(env: Env, businessType: string, timeZone: string, from: number, to: number): Promise<PilotMetrics['noShow']> {
+  const local = (t: number) => new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .format(new Date(t * 1000)).replace(' ', 'T');
+  const count = async (a: number, b: number) => {
+    const r = await env.DB.prepare(`SELECT
+        sum(CASE WHEN visit_status = 'no_show' THEN 1 ELSE 0 END) AS ns,
+        sum(CASE WHEN visit_status IN ('no_show', 'completed') THEN 1 ELSE 0 END) AS marked
+      FROM orders WHERE business_type = ? AND status != 'CANCELLED' AND substr(scheduled_at, 1, 16) >= ? AND substr(scheduled_at, 1, 16) < ?
+        AND customer_id_hashed NOT LIKE 'synthetic-%'`)
+      .bind(businessType, local(a), local(b)).first<{ ns: number | null; marked: number | null }>().catch(() => null);
+    return { ns: Number(r?.ns ?? 0), marked: Number(r?.marked ?? 0) };
+  };
+  const after = await count(from, to);
+  const before = await count(from - (to - from), from);
+  if (!after.marked && !before.marked) return { status: 'not_tracked' };
+  return { status: 'ok', before: rate(before.ns, before.marked), after: rate(after.ns, after.marked) };
 }
 
 // ── Settings, share link ────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ Let **C** be the calls in `call_outcomes` for the business with `from ≤ starte
 | **Recovered bookings** | distinct bookings from calls that were overflow **or** after-hours |
 | Transfers | calls in C with `transferred = 1` |
 | **Transfer rate** | `transfers / answered` |
-| **No-show rate** | Not tracked yet: shown as "not tracked" until no-show recovery (launch item 4) records missed appointments. The formula will be `no_shows / (completed + no_shows)` over appointments scheduled in the window, "before" being the same-length window just before the pilot start. |
+| **No-show rate** | `no_show / (completed + no_show)` over appointments **scheduled** in the window whose visit staff marked (Appointments → Completed / No-show, launch item 4). "Before" is the same-length window just before `from`; "after" is the window. Shown as "not tracked" until at least one visit in either window is marked. |
 
 Rates are rounded to 0.1 percentage point in the API and to whole percent in the UI.
 
