@@ -21,6 +21,7 @@ import PrivacySettings from './pages/PrivacySettings';
 import VoiceSettings from './pages/VoiceSettings';
 import PilotSettings from './pages/PilotSettings';
 import ClinicFeatures from './components/ClinicFeatures';
+import PracticeSoftware from './components/PracticeSoftware';
 import PhoneNumbers from './pages/PhoneNumbers';
 import PhoneNumber from './pages/PhoneNumber';
 import Home from './pages/Home';
@@ -316,6 +317,7 @@ export default function App() {
               {settingsKey === 'business' && <>
                 <Business sector={sector} base={BASE} auth={headers} canEdit={canEdit} onRenamed={loadMe} />
                 <LocaleSettings base={BASE} auth={headers} sectors={one} />
+                {bizMeta?.countryCode === 'IN' && <PracticeSoftware base={BASE} auth={headers} sector={sector} />}
               </>}
               {settingsKey === 'assistant' && <>
                 <Dashboard sector={sector} base={BASE} auth={headers} canEdit={canEdit} operator={isOperator} />

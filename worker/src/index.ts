@@ -23,6 +23,8 @@ import { runDunning } from './services/billing/lifecycle';
 import { runWeeklySummaries } from './services/metrics';
 import { runClinicFollowUps } from './services/clinic-features';
 import { clinicAdminRouter, clinicRouter } from './routes/clinic';
+import { frontDeskRouter, practiceRouter } from './routes/practice';
+import { runIcsSync } from './services/practice';
 import { metricsRouter, publicReportRouter } from './routes/metrics';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
@@ -81,6 +83,8 @@ app.route('/billing',  billingRouter);
 app.route('/pilot',    pilotRouter);
 app.route('/metrics',  metricsRouter);
 app.route('/clinic',   clinicRouter);
+app.route('/practice', practiceRouter);
+app.route('/fd',       frontDeskRouter);
 app.route('/report',   publicReportRouter);
 app.route('/razorpay', razorpayRouter);
 
@@ -171,6 +175,12 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
     runClinicFollowUps(env)
       .then(r => { if (r.length) console.log('[clinic] follow-ups', JSON.stringify(r.map(x => `${x.job}:${x.outcome}`))); })
       .catch(e => console.error('[clinic] follow-ups failed', e?.message || e)),
+  );
+  // Practice software: refresh imported ICS busy times (only businesses that turned it on).
+  ctx.waitUntil(
+    runIcsSync(env)
+      .then(r => { if (r.length) console.log('[practice] ics', JSON.stringify(r)); })
+      .catch(e => console.error('[practice] ics sync failed', e?.message || e)),
   );
   ctx.waitUntil(
     refreshHealth(env)

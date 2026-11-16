@@ -39,6 +39,13 @@ export async function startMocks({ port = 0 } = {}) {
         return json(res, 401, { err_msg: `Invalid credentials: ${req.headers.authorization ?? req.headers['x-api-key'] ?? ''}` });
       }
       if (host === 'api.anthropic.com' && path === '/v1/messages') return anthropic(JSON.parse(body), res, log);
+      if (host === 'ics.mock.test') {
+        // A practice-software calendar export: today (IST) is fully booked.
+        log.other.push({ host, path, method: req.method });
+        const d = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10).replace(/-/g, '');
+        res.writeHead(200, { 'content-type': 'text/calendar' });
+        return res.end(['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', 'UID:e2e-1', `DTSTART;VALUE=DATE:${d}`, 'SUMMARY:Booked in practice software', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n'));
+      }
       if (host === 'api.cartesia.ai' && path === '/tts/bytes') {
         const b = JSON.parse(body);
         log.tts.push({ provider: 'cartesia', text: b.transcript, format: b.output_format, at: Date.now() });

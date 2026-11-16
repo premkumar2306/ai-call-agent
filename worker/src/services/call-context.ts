@@ -24,6 +24,8 @@ export interface CallCache {
   messageId?: string;
   // Clinic duration booking switch, read once per call (launch 4).
   durationBooking?: boolean;
+  // Front-desk confirmation mode, read once per call (launch 6).
+  frontDesk?: boolean;
   // Full, unfiltered product list for the business — used for recommendation
   // scoring every turn and reused (when no category filter is requested) by
   // search_services / get_recommendations.

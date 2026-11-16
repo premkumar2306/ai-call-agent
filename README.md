@@ -557,6 +557,12 @@ Procedure-length booking with chair capacity, recalls, no-show recovery and revi
 (no review gating). Each is off until switched on; messages use the WhatsApp templates and STOP
 opt-out and run from the hourly cron. See [docs/clinic-features.md](docs/clinic-features.md).
 
+### Practice software (Practo, Clinicia, Eka)
+
+Front-desk confirmation mode (one-tap Confirm / Suggest another time; the patient hears "pending")
+and read-only ICS availability import, both off by default. What each vendor supports:
+[docs/practice-software.md](docs/practice-software.md). Set `WORKER_URL` for the front-desk links.
+
 ### Calendar integration (optional)
 
 Each business can connect its own calendar from the admin UI's **Calendar** page.

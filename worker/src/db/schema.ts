@@ -99,6 +99,10 @@ export const orders = sqliteTable('orders', {
   reviewChannel:    text('review_channel'),
   recallSentAt:     integer('recall_sent_at'),
   recallChannel:    text('recall_channel'),
+  // 0026: front-desk confirmation mode
+  frontDeskStatus:  text('front_desk_status'),           // pending | confirmed | suggested
+  frontDeskToken:   text('front_desk_token'),
+  suggestedAt:      text('suggested_at'),
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -504,4 +508,19 @@ export const clinicFeatures = sqliteTable('clinic_features', {
   reviewUrl:       text('review_url'),
   createdAt:       integer('created_at').notNull(),
   updatedAt:       integer('updated_at').notNull(),
+});
+
+// 0026: practice software integration settings (all off by default).
+export const practiceSettings = sqliteTable('practice_settings', {
+  businessType:     text('business_type').primaryKey(),
+  software:         text('software'),
+  confirmationMode: integer('confirmation_mode', { mode: 'boolean' }).notNull().default(false),
+  frontDeskPhone:   text('front_desk_phone'),
+  icsImport:        integer('ics_import', { mode: 'boolean' }).notNull().default(false),
+  icsUrl:           text('ics_url'),
+  icsLastSync:      integer('ics_last_sync'),
+  icsLastError:     text('ics_last_error'),
+  icsBusyCount:     integer('ics_busy_count'),
+  createdAt:        integer('created_at').notNull(),
+  updatedAt:        integer('updated_at').notNull(),
 });

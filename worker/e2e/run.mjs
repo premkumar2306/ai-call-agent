@@ -522,6 +522,49 @@ async function clinicScenario(mocks) {
   await api('PUT', `/clinic/${B}`, { noShowRecovery: false, reviewRequests: false, recalls: false });
 }
 
+// Practice software (launch 6): front-desk confirmation mode and read-only
+// ICS availability import, both off by default.
+async function practiceScenario(mocks) {
+  const n = 'Practice software';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en', DESK = '+919845000001';
+  const off = await api('GET', `/practice/${B}`);
+  check(n, 'front-desk mode and ICS import are off by default', off.confirmationMode === false && off.icsImport === false, JSON.stringify(off));
+  await api('PUT', `/practice/${B}`, { software: 'practo', confirmationMode: true, frontDeskPhone: DESK });
+  const t = Date.now();
+  const call = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300301', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(1000);
+  const said = mocks.log.tts.filter(x => x.at >= t).map(x => x.text).join(' ');
+  const deskSms = mocks.log.sms.find(m => m.at >= t && m.to === DESK);
+  const token = (/\/fd\/([0-9a-f]{48})/.exec(deskSms?.body ?? '') ?? [])[1];
+  const row = sql(`SELECT status, front_desk_status FROM orders WHERE business_type = '${B}' AND callback_phone = '+919812300301' ORDER BY created_at DESC LIMIT 1`)[0];
+  check(n, 'the caller is told the booking is pending until the front desk confirms', call.webhook?.ok && /pending until the front desk confirms/.test(said), said.slice(-160));
+  check(n, 'the front desk gets a one-tap link (SMS); the booking is pending', !!token && row?.status === 'PENDING' && row.front_desk_status === 'pending', deskSms?.body?.slice(0, 120));
+  check(n, 'the patient gets "pending", not "confirmed"', mocks.log.sms.some(m => m.at >= t && m.to === '+919812300301' && /pending until the clinic confirms/.test(m.body)) && !mocks.log.sms.some(m => m.at >= t && m.to === '+919812300301' && /you're booked/.test(m.body)), '');
+  const page = await fetch(`${BASE}/fd/${token}`);
+  const html = await page.text();
+  const still = sql(`SELECT status FROM orders WHERE front_desk_token = '${token}'`)[0];
+  check(n, 'opening the link shows Confirm / Suggest and changes nothing', page.status === 200 && /Confirm/.test(html) && /Suggest this time/.test(html) && still?.status === 'PENDING', `${page.status}, ${still?.status}`);
+  const t2 = Date.now();
+  const conf = await fetch(`${BASE}/fd/${token}/confirm`, { method: 'POST', redirect: 'manual' });
+  await sleep(500);
+  const done = sql(`SELECT status, front_desk_status FROM orders WHERE front_desk_token = '${token}'`)[0];
+  check(n, 'Confirm (one tap): booking confirmed, the patient gets the confirmation', conf.status === 303 && done?.status === 'CONFIRMED' && done.front_desk_status === 'confirmed' && mocks.log.sms.some(m => m.at >= t2 && m.to === '+919812300301' && /booked/.test(m.body)), JSON.stringify(done));
+  await api('PUT', `/practice/${B}`, { confirmationMode: false });
+
+  // ICS import: today is fully booked in the practice software → nothing is offered today.
+  await api('PUT', `/practice/${B}`, { icsImport: true, icsUrl: 'https://ics.mock.test/clinic.ics' });
+  const sync = await api('POST', `/practice/${B}/ics/sync`);
+  const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+  const t3 = Date.now();
+  await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300302', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(800);
+  const b3 = sql(`SELECT scheduled_at FROM orders WHERE business_type = '${B}' AND callback_phone = '+919812300302' ORDER BY created_at DESC LIMIT 1`)[0];
+  check(n, 'ICS import (read-only): busy times block slots; nothing is written back', sync?.ok === true && sync.busy === 1 && !!b3?.scheduled_at && !b3.scheduled_at.startsWith(today)
+    && !mocks.log.other.some(o => o.host === 'ics.mock.test' && o.method !== 'GET' && o.at >= t3), `synced ${sync?.busy}, booked ${b3?.scheduled_at}`);
+  await api('PUT', `/practice/${B}`, { icsImport: false });
+}
+
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
 // token, the caller hanging up mid-call, and the hangup callback.
 async function plivoScenario(mocks) {
@@ -1072,6 +1115,7 @@ try {
   if (!only || 'pilot'.includes(only)) await pilotScenario();
   if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
   if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);
+  if (!only || 'practice'.includes(only)) await practiceScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
