@@ -470,7 +470,7 @@ async function razorpayScenario(mocks) {
   const seats = (await api('GET', '/account/plans'))?.offers?.find(o => o.code === 'FOUNDING25')?.seatsLeft;
   check(n, 'founding offer: Clinic + FOUNDING25 → 30 free days, price unchanged, 24 places left, included minutes shown',
     fc?.state === 'trialing' && fc.trialDaysLeft === 30 && fc.offer?.code === 'FOUNDING25' && fc.plan?.monthly?.amountPaise === 499900
-    && fc.usage?.includedMinutes === 800 && fc.usage?.includedMinutesLeft === 800 && seats === 24,
+    && fc.usage?.includedMinutes === 800 && fc.usage?.includedMinutesLeft === 800 - fc.usage?.minutes && fc.usage?.includedMinutesUsed === fc.usage?.minutes && seats === 24,
     `state=${fc?.state}, ${fc?.trialDaysLeft} days, offer ${fc?.offer?.code}, ₹${fc?.plan?.monthly?.amountPaise / 100}, left ${fc?.usage?.includedMinutesLeft}, seats ${seats}`);
 
   // A no-trial plan with every minute billed as overage, so month-end has something to bill.
