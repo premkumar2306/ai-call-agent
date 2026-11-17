@@ -106,7 +106,7 @@ describe('hourly follow-ups', () => {
   });
   it('review: every completed visit after 2 hours, same link for all (no gating)', async () => {
     await saveClinicFeatures(env, 'in_d', { reviewRequests: true, reviewUrl: 'https://g.page/r/abc/review' });
-    await order('o1', 'a', 'clean', '2026-11-10T10:00');
+    await order('o1', 'a', 'clean', `${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() - 86400e3))}T10:00`);
     await markVisit(env, 'in_d', 'o1', 'completed');
     expect(await runClinicFollowUps(env)).toEqual([]); // too soon
     const later = new Date(Date.now() + 3 * 3600_000);
