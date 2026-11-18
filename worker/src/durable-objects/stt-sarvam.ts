@@ -42,6 +42,8 @@ export interface SarvamSttOptions {
   model?: string;
   isEcho?: (text: string) => boolean;
   onActivity?: () => void;
+  /** The socket closed or errored while the call was still using it (not after our own close()). */
+  onClose?: () => void;
   bargeInMinWords?: number;
   /** How long a transcript ending on a dangling word waits for the rest. Default 900; 0 disables. */
   incompleteHoldMs?: number;
@@ -76,7 +78,7 @@ export async function createSarvamSTT(
   onTranscript: (text: string) => void,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
-  const { apiKey, language: lang, debug = false, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho, onActivity } = opts;
+  const { apiKey, language: lang, debug = false, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho, onActivity, onClose } = opts;
   if (!apiKey) throw new Error('Missing SARVAM_API_KEY');
 
   const resp = await fetch(sarvamSttUrl(opts), {
@@ -161,10 +163,12 @@ export async function createSarvamSTT(
     }
   });
   ws.addEventListener('close', (e: any) => {
-    if (isOpen) console.warn(`[sarvam stt] socket closed (${e?.code ?? ''} ${e?.reason ?? ''})`);
+    const was = isOpen;
+    if (was) console.warn(`[sarvam stt] socket closed (${e?.code ?? ''} ${e?.reason ?? ''})`);
     isOpen = false;
+    if (was) onClose?.();
   });
-  ws.addEventListener('error', (e: any) => { isOpen = false; console.error('[sarvam stt]', e?.message || e); });
+  ws.addEventListener('error', (e: any) => { const was = isOpen; isOpen = false; console.error('[sarvam stt]', e?.message || e); if (was) onClose?.(); });
 
   const sendChunk = (mulaw: Uint8Array) => {
     const pcm = pcm16ToBytes(upsampler.push(mulaw));

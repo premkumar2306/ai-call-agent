@@ -1,7 +1,7 @@
 import { mulawToPcm16le, pcm16leToMulaw } from './g711';
 import {
   base64ToBytes, bytesToBase64, parseJsonFrame, str, stringRecord,
-  type InboundEvent, type TelephonyAdapter,
+  type InboundEvent, type TelephonyAdapter, dtmfDigit,
 } from './types';
 
 // Exotel AgentStream — the Voicebot applet's bidirectional WebSocket.
@@ -63,10 +63,14 @@ export class ExotelAdapter implements TelephonyAdapter {
           },
         };
       }
+      case 'dtmf': {
+        const digit = dtmfDigit(msg.dtmf?.digit ?? msg.dtmf?.digits);
+        return digit ? { type: 'dtmf', digit } : null;
+      }
       case 'stop':
         return { type: 'stop' };
       default:
-        return null;   // connected, dtmf, anything new
+        return null;   // connected, anything new
     }
   }
 

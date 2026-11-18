@@ -1,6 +1,6 @@
 import {
   base64ToBytes, bytesToBase64, parseJsonFrame, str,
-  type InboundEvent, type TelephonyAdapter,
+  type InboundEvent, type TelephonyAdapter, dtmfDigit,
 } from './types';
 
 // Plivo Audio Streams, bidirectional (<Stream bidirectional="true"
@@ -43,6 +43,10 @@ export class PlivoAdapter implements TelephonyAdapter {
             to: str(s.to),
           },
         };
+      }
+      case 'dtmf': {
+        const digit = dtmfDigit(msg.dtmf?.digit ?? msg.dtmf?.digits);
+        return digit ? { type: 'dtmf', digit } : null;
       }
       case 'stop':
         return { type: 'stop' };

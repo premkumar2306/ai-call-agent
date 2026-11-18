@@ -1,6 +1,6 @@
 import {
   base64ToBytes, bytesToBase64, parseJsonFrame, str, stringRecord,
-  type InboundEvent, type TelephonyAdapter,
+  type InboundEvent, type TelephonyAdapter, dtmfDigit,
 } from './types';
 
 // Twilio Media Streams (bidirectional, <Connect><Stream>):
@@ -34,6 +34,10 @@ export class TwilioAdapter implements TelephonyAdapter {
             params: stringRecord(s.customParameters),
           },
         };
+      }
+      case 'dtmf': {
+        const digit = dtmfDigit(msg.dtmf?.digit ?? msg.dtmf?.digits);
+        return digit ? { type: 'dtmf', digit } : null;
       }
       case 'stop':
         return { type: 'stop' };

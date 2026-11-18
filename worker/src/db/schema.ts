@@ -22,12 +22,14 @@ export const sectors = sqliteTable('sectors', {
   disclosureText:   text('disclosure_text'),
   privacyNoticeUrl: text('privacy_notice_url'),
   retentionDays:    integer('retention_days'),            // null = keep
+  guardrails:       integer('guardrails', { mode: 'boolean' }), // 0027: null/false = off
   // Phone-line language + providers (0012). Defaults = English, Deepgram, Cartesia.
   voiceLanguage: text('voice_language').notNull().default('en'),   // en | hi | hi-en
   sttProvider:   text('stt_provider').notNull().default('deepgram'), // deepgram | sarvam
   ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
   voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
   kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
+  dtmfInput:    integer('dtmf_input', { mode: 'boolean' }).notNull().default(false), // keypad digits as answers (0028)
   assistantName: text('assistant_name'),      // spoken name (0018); null = "Avery"
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),

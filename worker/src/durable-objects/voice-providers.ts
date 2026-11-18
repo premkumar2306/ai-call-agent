@@ -65,6 +65,7 @@ export function createStt(
       model: env.SARVAM_STT_MODEL,
       isEcho: common.isEcho,
       onActivity: common.onActivity,
+      onClose: common.onClose,
       bargeInMinWords: common.bargeInMinWords,
       incompleteHoldMs: common.incompleteHoldMs,
       highVadSensitivity: /^(1|true)$/i.test(env.SARVAM_HIGH_VAD_SENSITIVITY ?? ''),

@@ -32,11 +32,13 @@ export type InboundEvent =
   | { type: 'media'; audio: Uint8Array }
   /** Playback reached a mark we sent earlier. */
   | { type: 'mark'; name: string }
+  /** One keypad press: '0'-'9', '*' or '#'. Same shape on every carrier. */
+  | { type: 'dtmf'; digit: string }
   | { type: 'stop' };
 
 export interface TelephonyAdapter {
   readonly provider: TelephonyProvider;
-  /** Parses one inbound frame. null for frames the relay doesn't act on (connected, dtmf, junk). */
+  /** Parses one inbound frame. null for frames the relay doesn't act on (connected, junk). */
   parse(data: string | ArrayBuffer): InboundEvent | null;
   /** Outbound frames that play this μ-law 8 kHz audio (may be buffered until the next mark). */
   audio(mulaw: Uint8Array): string[];
@@ -44,6 +46,12 @@ export interface TelephonyAdapter {
   mark(name: string): string[];
   /** Frames that drop audio queued on the carrier side (barge-in). */
   clear(): string[];
+}
+
+/** A single keypad key from a carrier's dtmf payload, or null. */
+export function dtmfDigit(raw: unknown): string | null {
+  const d = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
+  return /^[0-9*#]$/.test(d) ? d : null;
 }
 
 export function base64ToBytes(b64: string): Uint8Array {

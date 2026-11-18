@@ -11,6 +11,8 @@ import { saveTranscript } from '../services/transcript.service';
 import { missedCallFollowUp } from '../services/whatsapp-outbound';
 import { callStartNotice, recordConsent } from '../services/disclosure';
 import { assistantNameOf, getVertical } from '../services/verticals';
+import { dtmfAction, digitsUtterance } from '../services/dtmf';
+import { troubleLine } from '../services/voice-language';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { recordCallOutcome } from '../services/metrics';
 import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
@@ -65,6 +67,21 @@ import { logEvent } from '../utils/telemetry';
 // speak. Guards against the leading edge of our own audio echoing back on a
 // speakerphone and instantly cutting off the reply we just began.
 const BARGE_IN_MIN_SPEAK_MS = 300;
+
+// A speech socket that drops mid-call is reopened: up to STT_RECONNECT_TRIES
+// attempts (backoff 200 / 500 / 1000 ms) inside STT_RECOVER_WINDOW_MS. If the
+// gap passes STT_GAP_FILLER_MS the caller hears "one moment". Past the window
+// the call is handed to staff (or ended politely), never left in silence.
+const STT_RECONNECT_BACKOFF_MS = [200, 500, 1000];
+const STT_RECOVER_WINDOW_MS = 5000;
+const STT_GAP_FILLER_MS = 1500;
+// A voice chunk is requested again (backoff 200 / 500 ms) before it's given up on;
+// this many chunks in a row given up on means the voice provider is down.
+const TTS_RETRY_BACKOFF_MS = [200, 500];
+const TTS_DOWN_AFTER = 2;
+
+// Keypad digits are submitted as one answer after this long without a press (or on #).
+const DTMF_IDLE_MS = 2500;
 
 // Dead-air watchdog: while a turn is still working and nothing is queued
 // or playing, say something after this much silence — before the first
@@ -159,6 +176,15 @@ export class CallRelay extends DurableObject<Env> {
   private transcriptGen = 0;
   // Utterance from an interrupted turn the caller never heard a reply to.
   private carryOver = '';
+  // Keypad digits pressed as an answer, not yet handed to the turn (services/dtmf.ts).
+  private dtmfDigits = '';
+  // Provider failures (STT socket drop, voice down): one recovery attempt at a time, one hand-off.
+  private sttRecovering = false;
+  private callFailed = false;
+  private ttsFailStreak = 0;
+  // cache.endCall was set: goodbye, then close. Unlike hangupWhenDone, the caller speaking doesn't cancel it.
+  private endCallWhenDone = false;
+  private dtmfTimer: ReturnType<typeof setTimeout> | undefined;
   private callStartedAt = Date.now();
   // Silence tracking (see SILENCE_REPROMPT_MS). quietSince is 0 until the
   // stream starts, so the timer only runs on a live call.
@@ -227,10 +253,8 @@ export class CallRelay extends DurableObject<Env> {
   // Opened only after the stream is authenticated, so an unauthenticated
   // connection never opens a (billed) Deepgram session. Startup overlaps the
   // greeting TTS, so the caller doesn't notice the delay.
-  private startStt() {
-    // A restart (applyVoice) supersedes an earlier socket still connecting.
-    const gen = ++this.sttGen;
-    createStt(
+  private openStt(gen: number): Promise<Stt> {
+    return createStt(
       this.env,
       this.voice,
       {
@@ -240,13 +264,20 @@ export class CallRelay extends DurableObject<Env> {
         isEcho: (text) => this.looksLikeEcho(text),
         // Mid-sentence speech must hold off "Are you still there?".
         onActivity: () => this.callerActive(),
+        onClose: () => { if (gen === this.sttGen) this.handleSttDrop(); },
         incompleteHoldMs: numEnv(this.env.DG_INCOMPLETE_HOLD_MS),
         statementHoldMs: numEnv(this.env.DG_STATEMENT_HOLD_MS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
       (text) => { this.handleTranscript(fixPhoneNumbers(text)); },
       (reason) => { this.handleSpeechStart(reason); },
-    )
+    );
+  }
+
+  private startStt() {
+    // A restart (applyVoice) supersedes an earlier socket still connecting.
+    const gen = ++this.sttGen;
+    this.openStt(gen)
       .then(s => {
         // The call may already have ended while Deepgram was connecting.
         if (this.twWs?.readyState !== WebSocket.OPEN || gen !== this.sttGen) { s.close(); return; }
@@ -260,6 +291,69 @@ export class CallRelay extends DurableObject<Env> {
         console.error('[stt startup]', e?.message || e);
         if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1011, 'STT startup failed');
       });
+  }
+
+  // The speech socket dropped mid-call. Reopen it (see STT_* above); the call
+  // and the carrier stream stay up meanwhile.
+  private handleSttDrop() {
+    if (this.sttRecovering || this.callFailed || this.twWs?.readyState !== WebSocket.OPEN) return;
+    this.sttRecovering = true;
+    this.stt = { sendAudio: () => {}, close: () => {} };
+    const t0 = Date.now();
+    console.warn(`[call] ${this.callSid.slice(-8)} speech socket dropped — reconnecting`);
+    const filler = setTimeout(() => {
+      if (this.sttRecovering && !this.agentActive) this.speakCanned([this.lines.fillers[0]]);
+    }, STT_GAP_FILLER_MS);
+    const live = () => this.twWs?.readyState === WebSocket.OPEN;
+    void (async () => {
+      try {
+        for (const backoff of STT_RECONNECT_BACKOFF_MS) {
+          await new Promise(r => setTimeout(r, backoff));
+          if (!live()) return;
+          const left = STT_RECOVER_WINDOW_MS - (Date.now() - t0);
+          if (left <= 0) break;
+          const gen = ++this.sttGen;
+          const attempt = this.openStt(gen);
+          // A socket that opens after we gave up on it is closed, not leaked.
+          attempt.then(s => { if (gen !== this.sttGen) s.close(); }, () => {});
+          try {
+            const s = await Promise.race([attempt, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), left))]);
+            if (!live() || gen !== this.sttGen) { s.close(); return; }
+            this.stt = s;
+            logEvent('info', 'call.stt_recovered', { callId: this.callSid.slice(-8), provider: this.telephony.provider, ms: Date.now() - t0 });
+            return;
+          } catch (e: any) {
+            ++this.sttGen;   // the attempt that timed out must not become the live socket
+            console.warn(`[call] speech reconnect failed: ${e?.message || e}`);
+          }
+        }
+        if (live()) this.failCall('stt');
+      } finally {
+        clearTimeout(filler);
+        this.sttRecovering = false;
+      }
+    })();
+  }
+
+  // A provider can't be recovered. Never silence: apologise and hand the call
+  // to staff when the business has a line (the caller can't leave a message
+  // when we can't hear them), otherwise apologise and hang up.
+  // `spoken` is false when the voice itself is what failed.
+  private failCall(reason: 'stt' | 'tts') {
+    if (this.callFailed || this.endStreamWhenDone || this.twWs?.readyState !== WebSocket.OPEN) return;
+    this.callFailed = true;
+    logEvent('error', 'call.provider_failed', { callId: this.callSid.slice(-8), provider: this.telephony.provider, reason });
+    const staff = this.cache.sectorMeta?.phone?.replace(/[^\d+]/g, '');
+    const lang = this.voice.language;
+    if (staff) {
+      this.cache.transferTo = staff;
+      this.ctx.waitUntil(this.env.CACHE.put(transferKey(this.callSid), staff, { expirationTtl: 600 }));
+      this.endStreamWhenDone = true;
+    } else {
+      this.hangupWhenDone = true;
+    }
+    if (reason === 'stt') this.speakCanned([troubleLine(lang, !!staff)]);
+    if (!this.quietSince) this.quietSince = Date.now();
   }
 
   // Switches the call to the business's voice settings once the sector
@@ -346,8 +440,44 @@ export class CallRelay extends DurableObject<Env> {
     return isEchoOf(text, spoken, this.voice.language);
   }
 
-  private handleTranscript(text: string) {
+  // A keypad press. 0 asks for staff; digits are an answer to a number/date
+  // question when the business turned dtmf_input on; the rest is ignored.
+  // The decision is services/dtmf.ts; what happens next goes through the same
+  // path as speech, so transfer hours, barge-in and the transcript all apply.
+  private handleDtmf(digit: string) {
     if (!this.session || !this.twWs) return;
+    const meta = this.cache.sectorMeta;
+    const lastAssistant = [...this.spokenLog.slice(-3).map(s => s.text), ''].join(' ').trim()
+      || [...this.cache.history].reverse().find(t => t.role === 'assistant')?.content || '';
+    const action = dtmfAction(digit, {
+      hasStaffLine: !!meta?.phone,
+      inputEnabled: !!meta?.dtmfInput,
+      collecting: this.dtmfDigits.length > 0,
+      lastAssistantText: lastAssistant,
+    });
+    console.log(`[dtmf] ${digit} → ${action}`);
+    if (action === 'ignore') return;
+    if (this.dtmfTimer) { clearTimeout(this.dtmfTimer); this.dtmfTimer = undefined; }
+    if (action === 'transfer') {
+      this.dtmfDigits = '';
+      this.handleTranscript("I'd like to speak to a person, please.");
+      return;
+    }
+    if (action === 'collect') this.dtmfDigits += digit;
+    if (action === 'submit' || this.dtmfDigits.length >= 15) return this.submitDtmf();
+    this.callerActive();
+    this.dtmfTimer = setTimeout(() => this.submitDtmf(), DTMF_IDLE_MS);
+  }
+
+  private submitDtmf() {
+    if (this.dtmfTimer) { clearTimeout(this.dtmfTimer); this.dtmfTimer = undefined; }
+    const digits = this.dtmfDigits;
+    this.dtmfDigits = '';
+    if (digits) this.handleTranscript(digitsUtterance(digits));
+  }
+
+  private handleTranscript(text: string) {
+    if (!this.session || !this.twWs || this.endCallWhenDone) return;
     if (this.looksLikeEcho(text)) {
       console.log(`[turn] ignoring echo of our own audio: "${text.slice(0, 60)}"`);
       return;
@@ -394,7 +524,16 @@ export class CallRelay extends DurableObject<Env> {
   // already-issued Cartesia request, so synthesis overlaps earlier playback.
   private async playChunk(turn: ActiveTurn, chunk: SpokenChunk, started: Promise<Response | null>) {
     const { signal } = turn.abort;
-    const res = await started;
+    let res = await started;
+    // A failed synthesis request is retried, not skipped (a skipped one is a hole in the sentence).
+    for (const backoff of res || signal.aborted ? [] : TTS_RETRY_BACKOFF_MS) {
+      await new Promise(r => setTimeout(r, backoff));
+      if (signal.aborted) break;
+      res = await this.ttsProvider.start(chunk.text, signal).catch(() => null);
+      if (res) break;
+    }
+    if (res) this.ttsFailStreak = 0;
+    else if (!signal.aborted && ++this.ttsFailStreak >= TTS_DOWN_AFTER) this.failCall('tts');
     if (res) this.meter.addTts(chunk.text); // the synthesis was requested, so it's billed
     if (signal.aborted || !res) {
       // Nobody will read this body; release it rather than leak the stream.
@@ -510,6 +649,8 @@ export class CallRelay extends DurableObject<Env> {
         heardText: () => this.heardText(turn),
         onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
         onUsage: (model, usage) => this.meter.addLlm(model, usage),
+        // Booking side effects (calendar, staff notification) finish even if the caller hangs up mid-tool.
+        background: (p) => this.ctx.waitUntil(p),
       });
       metric.outcome = !result.committed ? 'dropped' : result.interrupted ? 'interrupted' : 'done';
       if (!result.committed) {
@@ -520,6 +661,7 @@ export class CallRelay extends DurableObject<Env> {
       }
       clearInterval(watchdog);
       await chunkChain;
+      if (this.cache.endCall) this.endCallWhenDone = true;
       if (this.cache.transferTo && !this.endStreamWhenDone) {
         await this.env.CACHE.put(transferKey(this.callSid), this.cache.transferTo, { expirationTtl: 600 });
         this.endStreamWhenDone = true;
@@ -648,6 +790,18 @@ export class CallRelay extends DurableObject<Env> {
       this.ctx.waitUntil(this.flushUsage());
       this.ctx.waitUntil(this.flushFollowUp());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'transfer');
+      return;
+    }
+    if (this.endCallWhenDone) {
+      // The goodbye has finished playing; end the call and finalise once.
+      this.endCallWhenDone = false;
+      this.quietSince = 0;
+      console.log(`[call] ${this.callSid.slice(-8)} ending call (endCall)`);
+      this.stt.close();
+      this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushUsage());
+      this.ctx.waitUntil(this.flushFollowUp());
+      if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'call ended');
       return;
     }
     if (this.hangupWhenDone) {
@@ -826,7 +980,11 @@ export class CallRelay extends DurableObject<Env> {
           .catch(e => console.error('[calendarBusy prefetch]', e?.message || e));
       }
 
+    } else if (ev.type === 'dtmf') {
+      this.handleDtmf(ev.digit);
+
     } else if (ev.type === 'stop') {
+      if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
       this.ctx.waitUntil(this.flushUsage());
@@ -896,6 +1054,7 @@ export class CallRelay extends DurableObject<Env> {
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean) {
     this.active?.abort.abort();
+    if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
     this.stt.close();
     this.ctx.waitUntil(this.flushTranscript());
     this.ctx.waitUntil(this.flushUsage());

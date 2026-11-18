@@ -19,6 +19,10 @@ export interface CallCache {
   // Set by transfer_to_staff: the number CallRelay hands the call to once
   // the current reply has played.
   transferTo?: string;
+  // Set when the call must be ended after the current reply (e.g. an abusive
+  // caller after the warning). CallRelay says the goodbye, then closes and
+  // finalises the call once.
+  endCall?: boolean;
   callSid?: string;
   // The call's take_message row, so later details update it.
   messageId?: string;

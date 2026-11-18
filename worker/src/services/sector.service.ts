@@ -33,6 +33,7 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     disclosureText:   row.disclosureText ?? undefined,
     privacyNoticeUrl: row.privacyNoticeUrl ?? undefined,
     retentionDays:    row.retentionDays ?? undefined,
+    ...(row.guardrails ? { guardrails: true } : {}),
     voice: resolveVoiceSettings({ voice: {
       language: row.voiceLanguage as VoiceSettings['language'],
       sttProvider: row.sttProvider as VoiceSettings['sttProvider'],
@@ -41,6 +42,8 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     } }),
     kind:       row.kind ?? undefined,
     ...(row.assistantName ? { assistantName: row.assistantName } : {}),
+    // Only present when on, so a business without it reads exactly as before.
+    ...(row.dtmfInput ? { dtmfInput: true } : {}),
   };
 }
 
@@ -159,6 +162,14 @@ export async function invalidateSectors(env: Env): Promise<void> {
   await env.CACHE.delete(CACHE_KEY);
 }
 
+/** Switches conversation guardrails on or off for one business. False when it doesn't exist. */
+export async function setGuardrails(env: Env, key: string, enabled: boolean): Promise<boolean> {
+  const rows = await getDb(env.DB).update(sectorsTable).set({ guardrails: enabled, updatedAt: new Date() })
+    .where(eq(sectorsTable.key, key)).returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return rows.length > 0;
+}
+
 export interface PrivacySettings {
   aiDisclosure: boolean | null;     // null = automatic (on in India)
   disclosureText: string | null;    // null = built-in wording
@@ -204,7 +215,7 @@ export async function updateSectorVoice(env: Env, key: string, voice: Partial<Vo
 
 /** Changes only the given columns of an existing sector. False if there's no such sector. */
 export async function updateSector(env: Env, key: string, patch: Partial<Pick<typeof sectorsTable.$inferInsert,
-  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity'>>): Promise<boolean> {
+  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity' | 'dtmfInput'>>): Promise<boolean> {
   const rows = await getDb(env.DB).update(sectorsTable)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(sectorsTable.key, key))

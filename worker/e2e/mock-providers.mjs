@@ -25,6 +25,9 @@ export async function startMocks({ port = 0 } = {}) {
   const log = { tts: [], stt: [], anthropic: [], razorpay: [], plivo: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
   const failing = new Set();
+  // Faults a scenario switches on: refuse the next N speech-socket upgrades, fail the next N
+  // voice requests, slow every model reply.
+  const faults = { sttRefuse: 0, ttsFail: 0, llmDelayMs: 0 };
   // Plivo account contents for GET Number/ and Application/:id/ (set by the run).
   const plivo = { numbers: [], apps: {} };
 
@@ -38,7 +41,10 @@ export async function startMocks({ port = 0 } = {}) {
         log.other.push({ host, path, method: req.method, failed: true });
         return json(res, 401, { err_msg: `Invalid credentials: ${req.headers.authorization ?? req.headers['x-api-key'] ?? ''}` });
       }
-      if (host === 'api.anthropic.com' && path === '/v1/messages') return anthropic(JSON.parse(body), res, log);
+      if (host === 'api.anthropic.com' && path === '/v1/messages') {
+        if (faults.llmDelayMs) await sleep(faults.llmDelayMs);
+        return anthropic(JSON.parse(body), res, log);
+      }
       if (host === 'ics.mock.test') {
         // A practice-software calendar export: today (IST) is fully booked.
         log.other.push({ host, path, method: req.method });
@@ -48,6 +54,7 @@ export async function startMocks({ port = 0 } = {}) {
       }
       if (host === 'api.cartesia.ai' && path === '/tts/bytes') {
         const b = JSON.parse(body);
+        if (faults.ttsFail > 0) { faults.ttsFail--; log.other.push({ host, path, failed: true }); return json(res, 503, { error: 'unavailable' }); }
         log.tts.push({ provider: 'cartesia', text: b.transcript, format: b.output_format, at: Date.now() });
         return audioResponse(res, b.transcript);
       }
@@ -95,6 +102,7 @@ export async function startMocks({ port = 0 } = {}) {
     const kind = url.pathname.startsWith('/api.deepgram.com/') ? 'deepgram'
       : url.pathname.startsWith('/api.sarvam.ai/speech-to-text') ? 'sarvam' : null;
     if (!kind) { socket.destroy(); return; }
+    if (faults.sttRefuse > 0) { faults.sttRefuse--; log.other.push({ host: kind, path: 'upgrade', failed: true }); socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n'); socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => {
       const entry = { kind, ws, t: 0, query: Object.fromEntries(url.searchParams) };
       log.stt.push({ kind, query: entry.query, at: Date.now() });
@@ -143,8 +151,25 @@ export async function startMocks({ port = 0 } = {}) {
     }
   }
 
+  /** A cough or line noise: the recogniser hears speech but produces no words. */
+  async function cough() {
+    if (!stt) throw new Error('no speech-recognition socket is open');
+    const { kind, ws } = stt;
+    if (kind === 'deepgram') {
+      ws.send(JSON.stringify({ type: 'SpeechStarted', timestamp: stt.t }));
+      await sleep(250);
+      ws.send(JSON.stringify({ type: 'UtteranceEnd', last_word_end: stt.t + 0.3 }));
+    } else {
+      ws.send(JSON.stringify({ type: 'events', data: { signal_type: 'START_SPEECH' } }));
+      await sleep(250);
+      ws.send(JSON.stringify({ type: 'events', data: { signal_type: 'END_SPEECH' } }));
+    }
+  }
+
   return {
-    url, log, say,
+    url, log, say, cough, faults,
+    /** The provider drops the open speech socket (no close frame), as a network failure would. */
+    dropStt: () => stt?.ws.terminate(),
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
     failing,
@@ -202,6 +227,9 @@ function decide(req) {
     return null;
   };
 
+  // Guardrail scenarios: a model that invents a price, and one that claims a booking it never made.
+  if (/root canal/.test(userText)) return say('A root canal costs 7500 rupees.');
+  if (/confirm my booking/.test(userText)) return say("You're all set, your appointment is confirmed.");
   if (/(staff|person|someone|human|transfer|किसी से बात|ಯಾರಾದರೂ|ఎవరితోనైనా|யாரிடமாவது)/.test(userText) && tools.has('transfer_to_staff')) {
     return { tool: 'transfer_to_staff', input: { reason: 'caller asked for a person' } };
   }
@@ -213,13 +241,19 @@ function decide(req) {
   if (/(book|appointment|बुक|अपॉइंटमेंट|ಬುಕ್|ಅಪಾಯಿಂಟ್|బుక్|అపాయింట్|புக்|அப்பாயிண்ட்)/.test(userText) && tools.has('check_availability') && serviceId) {
     return { tool: 'check_availability', input: { service_id: serviceId } };
   }
+  if (/leave my (phone )?number/.test(userText)) return say('What phone number should I use to reach you?');
+  if (/(tell me about|your services)/.test(userText)) {
+    return say('We offer general consultations, follow-up visits and routine check-ups. Each consultation takes about thirty minutes with one of our doctors. Follow-up visits are shorter and usually take fifteen minutes. We are open every weekday from nine in the morning until six in the evening. You can also book online or ask me to find a time for you right now.');
+  }
   if (/(bye|thank you|धन्यवाद)/.test(userText)) return say('Thank you for calling. Goodbye!', 'कॉल करने के लिए धन्यवाद। नमस्ते!');
   return say('Sure, I can help with that. Would you like to book a consultation?', 'ज़रूर, मैं मदद कर सकती हूँ। क्या आप अपॉइंटमेंट बुक करना चाहेंगे?');
 }
 
 function anthropic(req, res, log) {
   const d = decide(req);
-  log.anthropic.push({ model: req.model, stream: !!req.stream, decision: d.tool ?? 'text', toolResult: d.toolResult, tools: (req.tools ?? []).length, at: Date.now() });
+  const lastMsg = (req.messages ?? []).at(-1);
+  const lastUser = Array.isArray(lastMsg?.content) ? lastMsg.content.map(b => b.text ?? '').join(' ') : String(lastMsg?.content ?? '');
+  log.anthropic.push({ lastUser, model: req.model, stream: !!req.stream, decision: d.tool ?? 'text', toolResult: d.toolResult, tools: (req.tools ?? []).length, at: Date.now() });
   const usage = { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 };
   const id = `msg_mock_${Date.now()}`;
   const block = d.tool

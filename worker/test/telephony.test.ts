@@ -92,7 +92,7 @@ describe('ExotelAdapter', () => {
     expect(a.parse(JSON.stringify({ event: 'media', stream_sid: 'SS1', media: { chunk: 1, timestamp: '20', payload: b64(pcm) } })))
       .toEqual({ type: 'media', audio: new Uint8Array([0x10, 0x90, 0xff, 0x42]) });
     expect(a.parse('{"event":"mark","stream_sid":"SS1","mark":{"name":"m3"}}')).toEqual({ type: 'mark', name: 'm3' });
-    expect(a.parse('{"event":"dtmf","dtmf":{"digit":"1"}}')).toBeNull();
+    expect(a.parse('{"event":"dtmf","dtmf":{"digit":"1"}}')).toEqual({ type: 'dtmf', digit: '1' });
     expect(a.parse('{"event":"connected"}')).toBeNull();
     expect(a.parse('{"event":"stop","stop":{"reason":"callended"}}')).toEqual({ type: 'stop' });
   });

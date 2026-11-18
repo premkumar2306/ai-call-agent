@@ -48,6 +48,10 @@ export interface SectorMeta {
   kind?: string;
   // The assistant's spoken name (0018). Unset = "Avery" (assistantNameOf).
   assistantName?: string;
+  // Keypad digits count as answers to "what's your number / date?" (0028). Absent = off.
+  dtmfInput?: boolean;
+  // Conversation guardrails (0027, services/guardrails.ts). Off unless true.
+  guardrails?: boolean;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */

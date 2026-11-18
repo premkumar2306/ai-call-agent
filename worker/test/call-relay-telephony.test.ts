@@ -159,6 +159,34 @@ describe('CallRelay over Exotel', () => {
   });
 });
 
+describe('CallRelay: cache.endCall', () => {
+  it('after the goodbye has played, closes the stream once and stops listening to the caller', async () => {
+    const { relay, ws, send } = makeRelay(makeEnv(), 'exotel');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await send(exotelStart());
+    await vi.waitFor(() => expect(ws.sent.filter(m => m.event === 'mark')).toHaveLength(2));
+
+    // A turn finished with cache.endCall set (runOneTurn arms this).
+    relay.cache.endCall = true;
+    relay.endCallWhenDone = true;
+    const gen = relay.transcriptGen;
+    relay.handleTranscript('please do not hang up');
+    expect(relay.transcriptGen).toBe(gen);   // not treated as a new turn
+
+    // Still playing the goodbye: nothing closes yet.
+    await send({ event: 'media', stream_sid: 'SS1', media: { chunk: 1, timestamp: '20', payload: Buffer.alloc(320).toString('base64') } });
+    expect(ws.closed).toBeUndefined();
+
+    // Playback reaches the last mark → the next media frame ends the call.
+    for (const m of ws.sent.filter(m => m.event === 'mark')) await send({ event: 'mark', stream_sid: 'SS1', mark: { name: m.mark.name } });
+    await send({ event: 'media', stream_sid: 'SS1', media: { chunk: 2, timestamp: '40', payload: Buffer.alloc(320).toString('base64') } });
+    expect(ws.closed).toEqual({ code: 1000, reason: 'call ended' });
+    expect(stt.closed).toBeGreaterThan(0);
+    expect(relay.usageFlushed).toBe(true);
+    expect(relay.endCallWhenDone).toBe(false);
+  });
+});
+
 describe('CallRelay over Twilio (unchanged wire format)', () => {
   it('sends camelCase media/mark/clear frames exactly as before', async () => {
     const env = makeEnv({ NODE_ENV: 'production' });
