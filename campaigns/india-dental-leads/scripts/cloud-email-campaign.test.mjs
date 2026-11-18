@@ -19,6 +19,7 @@ import {
   normalizeCampaignState,
   recordCampaignSend,
   selectCandidates,
+  sendPreflight,
   validateRecipientDomain
 } from './cloud-email-campaign.mjs';
 
@@ -237,4 +238,13 @@ test('validateRecipientDomain does not send through null MX or DNS errors', asyn
 
   assert.equal(nullMx.status, 'domain_no_mail');
   assert.equal(unavailable.status, 'dns_error');
+});
+
+test('sendPreflight skips the batch when DKIM or MX fails', async () => {
+  const blocked = await sendPreflight('a@deskzen.in', async () => ({ blocked: true, checks: [{ name: 'DKIM selector1', ok: false, blocker: true }] }));
+  assert.equal(blocked.skip, true);
+  assert.match(blocked.message, /DKIM selector1.*nothing sent/);
+  assert.equal((await sendPreflight('a@deskzen.in', async () => ({ blocked: false, checks: [] }))).skip, false);
+  const errored = await sendPreflight('a@deskzen.in', async () => { throw new Error('timeout'); });
+  assert.equal(errored.skip, true);
 });
