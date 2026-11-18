@@ -24,8 +24,6 @@ export interface CallCache {
   // finalises the call once.
   endCall?: boolean;
   callSid?: string;
-  // Set by guardrails after a second abusive turn: the call should end once the goodbye has played.
-  endCall?: boolean;
   // The call's take_message row, so later details update it.
   messageId?: string;
   // Clinic duration booking switch, read once per call (launch 4).
