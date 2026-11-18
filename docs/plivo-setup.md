@@ -137,3 +137,16 @@ the staff phone. Then make each call below and check the result.
 | "This line is not configured" | The number isn't mapped | Operator → Phone numbers, provider Plivo |
 | Transfer rings nobody | No staff phone set, or the caller ID is rejected | Set the staff phone, and check that the number is a voice-enabled Plivo number |
 | Silence after the greeting on a Hindi line | `SARVAM_API_KEY` is missing | `npx wrangler secret put SARVAM_API_KEY` |
+
+## Fallback answer URL
+
+If the Worker's Answer URL errors or times out, Plivo requests the application's **Fallback
+Answer URL**. Set it, per Plivo application, to
+
+    https://<worker-host>/plivo/fallback?to=%2B91XXXXXXXXXX
+
+with the clinic's staff phone in `to`. It says "Please hold while we connect you" and dials that
+number, with no database or AI involved. Plivo signs the full URL, so the number can't be changed
+by a caller. Without `to`, it apologises and hangs up. One Plivo application per clinic is needed
+if each clinic should ring its own staff. This has been tested in unit tests only, not on a live
+line yet.

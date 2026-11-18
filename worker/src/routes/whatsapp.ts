@@ -182,6 +182,8 @@ export function isOptIn(text: string): boolean {
 
 /** Deepgram query for a voice note in the business's language (nova-3: hi, multi for Hinglish). */
 export function voiceNoteQuery(lang: ReplyLanguage): string {
+  // Kannada, Telugu, Tamil: Deepgram's language detection (verify accuracy on real voice notes).
+  if (lang === 'kn' || lang === 'te' || lang === 'ta') return new URLSearchParams({ model: 'nova-3', detect_language: 'true', smart_format: 'true' }).toString();
   const language = lang === 'hi' ? 'hi' : lang === 'hi-en' ? 'multi' : 'en';
   return new URLSearchParams({ model: 'nova-3', language, smart_format: 'true' }).toString();
 }

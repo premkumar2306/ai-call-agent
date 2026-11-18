@@ -8,6 +8,8 @@ import { formatClock, formatDayLabel, localeOf, normalizePhone as normalizePhone
 import { getVertical, detailsFromArgs, missingRequired, type Vertical } from './verticals';
 import { getDb } from '../db/client';
 import { orders as ordersTable, callMessages } from '../db/schema';
+import { durationBookingOn, getBookedIntervals, overlappingPatients } from './clinic-features';
+import { getPracticeSettings, pendingSpokenResponse, requestFrontDeskConfirmation } from './practice';
 import { notifyBooking, notifyMessage } from './notify.service';
 import type { CallCache } from './call-context';
 import {
@@ -267,6 +269,22 @@ export async function getResourceBookings(env: Env, businessType: string): Promi
   return rows
     .filter(r => r.resourceId && r.start)
     .map(r => ({ resourceId: r.resourceId!, start: r.start!.slice(0, 16), end: (r.end ?? r.start!).slice(0, 16) }));
+}
+
+/** Front-desk confirmation mode, read once per call. */
+async function frontDeskOn(env: Env, businessType: string, cache?: CallCache | null): Promise<boolean> {
+  if (cache?.frontDesk !== undefined) return cache.frontDesk;
+  const on = !!(await getPracticeSettings(env, businessType))?.confirmationMode;
+  if (cache) cache.frontDesk = on;
+  return on;
+}
+
+/** The clinic duration-booking switch, read once per call. */
+async function durationOn(env: Env, businessType: string, cache?: CallCache | null): Promise<boolean> {
+  if (cache?.durationBooking !== undefined) return cache.durationBooking;
+  const on = await durationBookingOn(env, businessType);
+  if (cache) cache.durationBooking = on;
+  return on;
 }
 
 /** "YYYY-MM-DDTHH:MM[:SS]" + minutes, as a local "YYYY-MM-DDTHH:MM:00" (same day or later). */
@@ -642,8 +660,15 @@ export async function executeTool(
         // skipped entirely when the call already has a prefetched, kept-in-
         // sync booked-slot set (CallRelay prefetches one at call start —
         // see CallCache) — this tool becomes pure CPU in that case.
-        const slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy, new Date(), token.sub);
+        let slots = await getAvailableSlots(env, businessType, sectorMeta, duration, cache?.bookedDatetimes ?? undefined, calendarBusy, new Date(), token.sub);
         lap?.('getAvailableSlots');
+        // Clinic duration booking (off by default): the whole procedure must fit
+        // alongside fewer than `capacity` (chairs) other patients' overlapping visits.
+        if (slots.length && await durationOn(env, businessType, cache)) {
+          const intervals = await getBookedIntervals(env, businessType, slots[0].datetime);
+          const chairs = sectorMeta?.capacity ?? 1;
+          slots = slots.filter(sl => overlappingPatients(intervals, sl.datetime.slice(0, 16), addLocalMinutes(sl.datetime, duration).slice(0, 16), token.sub) < chairs);
+        }
         return availabilityReply(slots, args, serviceId, serviceName ? ` for ${serviceName}` : '');
       }
 
@@ -840,6 +865,7 @@ export async function executeTool(
               callbackPhone,
               notes: args.notes as string | undefined,
               capacity: sectorMeta?.capacity,
+              ...(scheduledAt && await durationOn(env, businessType, cache) ? { durationMinutes: product.durationMinutes ?? 60 } : {}),
             },
           ),
           slotFreeP,
@@ -855,7 +881,10 @@ export async function executeTool(
           const duration = await durationP;
           await defer(syncBookingToCalendar(env, order, sectorMeta, duration));
         }
-        await defer(notifyBooking(env, sectorMeta, order, 'booked'));
+        // Front-desk confirmation mode (launch 6): the clinic confirms first.
+        const frontDesk = order.scheduledAt ? await frontDeskOn(env, businessType, cache) : false;
+        if (frontDesk) await defer(requestFrontDeskConfirmation(env, sectorMeta, order).then(() => undefined));
+        else await defer(notifyBooking(env, sectorMeta, order, 'booked'));
         // Clear from cart. The customer already heard the booking confirmed
         // by the time this write happens — cart bookkeeping doesn't need to
         // block the response, so fire it and move on.
@@ -880,10 +909,10 @@ export async function executeTool(
         const when = order.scheduledAt ? ` for ${slotLabel(order.scheduledAt)}` : '';
         // The name is read back so a misheard one ("Westfield") gets corrected now.
         const name = order.customerName ? `, ${order.customerName}` : '';
-        const msg = `You're all set${name} — ${order.productName}${when}. Anything else I can help with?`;
+        const msg = frontDesk ? pendingSpokenResponse(order.productName, when) : `You're all set${name} — ${order.productName}${when}. Anything else I can help with?`;
         return {
           success: true,
-          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: order.status, price: formatPrice(product, loc) },
+          data: { id: order.id, reference: order.id.slice(0, 8), service: order.productName, scheduled_at: order.scheduledAt, status: frontDesk ? 'PENDING_CLINIC_CONFIRMATION' : order.status, price: formatPrice(product, loc) },
           spoken_response: msg,
         };
       }

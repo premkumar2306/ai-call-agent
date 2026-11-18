@@ -6,6 +6,7 @@ import { callerIdentity } from '../utils/identity';
 import { businessForNumber, normalizeE164 } from '../services/phone-numbers';
 import { transferKey } from '../services/call-context';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
+import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
 
 // Plivo (Indian numbers, alternative to Exotel). A Plivo application's
 // Answer URL is POST https://<worker>/plivo/answer, which returns a
@@ -99,11 +100,37 @@ plivoRouter.post('/answer', requirePlivoSig, async (c) => {
   const callUuid = p.CallUUID || crypto.randomUUID();
   const { callerHash, callerPhone } = await callerIdentity(p.From, callUuid, customerHashSalt(c.env), (raw) => normalizeE164(raw, '91'));
   const token = await signStreamToken(c.env, businessType, callerHash, callerPhone);
+  // Overflow pilot: how the call got here (ForwardedFrom when the carrier sends it).
+  background(c, recordCallRouting(c.env, {
+    carrier: 'plivo', callSid: p.CallUUID, businessType, calledNumber: normalizeE164(p.To, '91'), callerHash, forwardedFrom: forwardedFromParam(p),
+  }));
   const base = (c.env.PLIVO_WEBHOOK_URL ?? `https://${host}`).replace(/\/$/, '');
   return c.text(
     '<?xml version="1.0" encoding="UTF-8"?><Response>' +
     `<Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">${xml(`wss://${host}/plivo/stream?token=${token}`)}</Stream>` +
     `<Redirect method="POST">${xml(`${base}/plivo/after-stream`)}</Redirect></Response>`,
+    200, XML,
+  );
+});
+
+// ── POST /plivo/fallback?to=<staff E.164> ─────────────────────────────────────
+// The Plivo Application's Fallback Answer URL. Plivo requests it only when the
+// Answer URL fails (error or timeout), so it is deliberately trivial: no D1,
+// no KV, no AI. It apologises and rings the clinic's staff phone given in the
+// URL (signed by Plivo with the rest of the URL, so it can't be changed by a
+// caller). Without `to` it apologises and hangs up.
+
+plivoRouter.post('/fallback', requirePlivoSig, async (c) => {
+  const p = await formParams(c);
+  const to = normalizeE164(c.req.query('to'), '91');
+  const ours = normalizeE164(p.To, '91');
+  console.warn(`[plivo] fallback answer used for ${p.CallUUID ?? 'unknown call'}${to ? ', ringing staff' : ''}`);
+  if (!to) {
+    return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Speak>Sorry, we cannot take your call right now. Please try again shortly.</Speak><Hangup/></Response>', 200, XML);
+  }
+  return c.text(
+    '<?xml version="1.0" encoding="UTF-8"?><Response><Speak>Please hold while we connect you.</Speak>' +
+    `<Dial timeout="30"${ours ? ` callerId="${xml(ours.slice(1))}"` : ''}><Number>${xml(to.slice(1))}</Number></Dial></Response>`,
     200, XML,
   );
 });

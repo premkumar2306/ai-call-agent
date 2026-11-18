@@ -33,6 +33,7 @@ export interface SarvamTtsConfig {
 
 export function sarvamTtsLanguage(lang: VoiceLanguage): string {
   // Hinglish is code-mixed text in a Hindi voice; Bulbul handles the English words.
+  if (lang === 'kn' || lang === 'te' || lang === 'ta') return `${lang}-IN`;
   return lang === 'en' ? 'en-IN' : 'hi-IN';
 }
 

@@ -5,6 +5,7 @@ import { signCompactStreamToken, verifyCompactStreamToken } from '../utils/strea
 import { businessForNumber, normalizeE164 } from '../services/phone-numbers';
 import { transferKey } from '../services/call-context';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
+import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
 
 // Exotel (Indian numbers). An ExoPhone's call flow, built in Exotel's App
 // Bazaar, is:
@@ -91,6 +92,10 @@ exotelRouter.on(['GET', 'POST'], '/voicebot', requireExotelAuth, async (c) => {
   }
   const from = normalizeE164(pick(p, 'CallFrom', 'From'), '91') ?? undefined;
   const token = await signCompactStreamToken(c.env, { callSid, businessType, from });
+  // Overflow pilot. Exotel's ForwardedFrom is deprecated, so the tag mostly comes from the pilot dates.
+  background(c, recordCallRouting(c.env, {
+    carrier: 'exotel', callSid, businessType, calledNumber: normalizeE164(called, '91'), forwardedFrom: forwardedFromParam(p),
+  }));
   if (token.length > 250) console.warn(`[exotel] stream token is ${token.length} chars; Exotel truncates query strings over 256 — use a shorter business key`);
   return c.json({ url: `wss://${c.req.header('host')}/exotel/stream?t=${token}` });
 });

@@ -469,6 +469,12 @@ voice and WhatsApp. Withheld numbers get a per-call identity.
 it, which keeps the secret out of request logs. In production every `/exotel/*` request without the
 secret is rejected (and all of them are rejected if `EXOTEL_WEBHOOK_SECRET` isn't set).
 
+#### Overflow pilot on the clinic's own number
+
+Per business, off by default: the clinic forwards busy / no-answer / unreachable calls to its
+Avery number, calls are tagged overflow (`call_routing`, migration 0023), and Settings → Phone has
+a "test your forwarding" check. Guide and carrier codes: [docs/overflow-pilot.md](docs/overflow-pilot.md).
+
 #### Plivo setup
 
 Create a Plivo application with Answer URL `POST https://<worker>/plivo/answer`, attach your Indian
@@ -493,6 +499,12 @@ to that number reach the Worker's webhook, and the number's mapping in the admin
    system-user token, used to send replies).
 3. Map each phone number ID to a business in Operator → WhatsApp. That page shows which of these
    settings are present (`GET /admin/whatsapp-status`, booleans only).
+
+### Kannada, Telugu and Tamil calls (optional, per business)
+
+Sarvam `kn-IN` / `te-IN` / `ta-IN` for speech in and out, prompt rules, greetings, DPDP notice and
+WhatsApp templates in each language. Translations await native review: see
+[docs/languages.md](docs/languages.md) and [docs/translations-review.md](docs/translations-review.md).
 
 ### Hindi and Hinglish calls (optional, per business)
 
@@ -539,6 +551,18 @@ What changes on a Hindi / Hinglish line:
 Every call starts on the default English pipeline and switches once the business's settings load
 (during the greeting's first words), so English businesses pay no extra lookup. Providers are
 adapters behind one interface (`worker/src/durable-objects/voice-providers.ts`).
+
+### Clinic follow-ups (optional, per business)
+
+Procedure-length booking with chair capacity, recalls, no-show recovery and review requests
+(no review gating). Each is off until switched on; messages use the WhatsApp templates and STOP
+opt-out and run from the hourly cron. See [docs/clinic-features.md](docs/clinic-features.md).
+
+### Practice software (Practo, Clinicia, Eka)
+
+Front-desk confirmation mode (one-tap Confirm / Suggest another time; the patient hears "pending")
+and read-only ICS availability import, both off by default. What each vendor supports:
+[docs/practice-software.md](docs/practice-software.md). Set `WORKER_URL` for the front-desk links.
 
 ### Calendar integration (optional)
 

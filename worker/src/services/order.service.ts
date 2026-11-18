@@ -4,6 +4,9 @@ import { orders as ordersTable } from '../db/schema';
 import { getProductById } from './catalog.service';
 import type { Sector, Order, Env } from '../types';
 
+const addLocalMinutes = (datetime: string, minutes: number) =>
+  new Date(new Date(`${datetime.slice(0, 16)}:00Z`).getTime() + minutes * 60_000).toISOString().slice(0, 16);
+
 function mapRow(r: typeof ordersTable.$inferSelect): Order {
   return {
     id: r.id,
@@ -59,6 +62,12 @@ export interface BookingDetails {
   notes?: string;
   /** Different customers' visits that may start at the same time. */
   capacity?: number;
+  /**
+   * Duration booking (clinic feature, off by default): the visit lasts this
+   * many minutes, and at most `capacity` other patients' visits may overlap
+   * it (chairs), instead of only counting the same start time.
+   */
+  durationMinutes?: number;
   /**
    * Booked with a resource (a clinic's doctor): conflicts are any overlap
    * with that resource's other bookings, instead of `capacity`.
@@ -180,6 +189,7 @@ export async function placeOrder(
     // visit with several jobs ("add a tune-up to my oil change").
     const nowSec = Math.floor(now.getTime() / 1000);
     const capacity = Math.max(1, booking.capacity ?? 1);
+    const durationEnd = booking.durationMinutes ? addLocalMinutes(scheduledAt, booking.durationMinutes).slice(0, 16) : null;
     const result = await db.run(sql`
       INSERT INTO orders (
         id, customer_id_hashed, business_type, product_id, vendor_name, product_name, status,
@@ -206,7 +216,18 @@ export async function placeOrder(
           AND status != 'CANCELLED'
           AND substr(scheduled_at, 1, 16) = substr(${scheduledAt}, 1, 16)
           AND customer_id_hashed != ${customerIdHashed}
-      ) < ${capacity}`);
+      ) < ${capacity}
+      AND (${durationEnd === null ? 1 : 0} = 1 OR (
+        SELECT count(DISTINCT o.customer_id_hashed) FROM orders o LEFT JOIN products p ON p.id = o.product_id
+        WHERE o.business_type = ${sector} AND o.status != 'CANCELLED' AND o.resource_id IS NULL AND o.scheduled_at IS NOT NULL
+          AND o.customer_id_hashed != ${customerIdHashed}
+          AND substr(o.scheduled_at, 1, 16) < ${durationEnd}
+          AND COALESCE(substr(o.ends_at, 1, 16), strftime('%Y-%m-%dT%H:%M', substr(o.scheduled_at, 1, 16), '+' || COALESCE(p.duration_minutes, 60) || ' minutes')) > substr(${scheduledAt}, 1, 16)
+      ) < ${capacity})`);
+    if (result.meta.changes && durationEnd) {
+      await db.run(sql`UPDATE orders SET ends_at = ${durationEnd} WHERE id = ${id}`);
+      (row as any).endsAt = durationEnd;
+    }
     if (!result.meta.changes) {
       throw Object.assign(new Error('That time slot was just booked'), { code: 'SLOT_TAKEN' });
     }

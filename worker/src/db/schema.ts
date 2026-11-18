@@ -90,6 +90,19 @@ export const orders = sqliteTable('orders', {
   resourceName:     text('resource_name'),
   endsAt:           text('ends_at'),                    // business-local end, set for resource bookings
   details:          text('details', { mode: 'json' }).$type<Record<string, string>>(), // vertical booking fields
+  // 0025: visit outcome and clinic follow-ups (each sent once)
+  visitStatus:      text('visit_status'),                // completed | no_show
+  visitMarkedAt:    integer('visit_marked_at'),
+  noShowSentAt:     integer('no_show_sent_at'),
+  noShowChannel:    text('no_show_channel'),
+  reviewSentAt:     integer('review_sent_at'),
+  reviewChannel:    text('review_channel'),
+  recallSentAt:     integer('recall_sent_at'),
+  recallChannel:    text('recall_channel'),
+  // 0026: front-desk confirmation mode
+  frontDeskStatus:  text('front_desk_status'),           // pending | confirmed | suggested
+  frontDeskToken:   text('front_desk_token'),
+  suggestedAt:      text('suggested_at'),
   shippingLine1:    text('shipping_line1'),
   shippingCity:     text('shipping_city'),
   shippingState:    text('shipping_state'),
@@ -445,4 +458,92 @@ export const billingOffers = sqliteTable('billing_offers', {
   isActive:       integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:      integer('created_at').notNull(),
   updatedAt:      integer('updated_at').notNull(),
+});
+
+// 0023: overflow-only pilots on the clinic's existing number.
+export const pilotConfigs = sqliteTable('pilot_configs', {
+  businessType:            text('business_type').primaryKey(),
+  enabled:                 integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  mode:                    text('mode').notNull().default('overflow'),
+  startsOn:                text('starts_on'),
+  endsOn:                  text('ends_on'),
+  clinicNumber:            text('clinic_number'),
+  clinicLine:              text('clinic_line'),
+  forwardingTestStartedAt: integer('forwarding_test_started_at'),
+  createdAt:               integer('created_at').notNull(),
+  updatedAt:               integer('updated_at').notNull(),
+});
+
+export const callRouting = sqliteTable('call_routing', {
+  carrier:       text('carrier').notNull(),
+  callSid:       text('call_sid').notNull(),
+  businessType:  text('business_type').notNull(),
+  calledNumber:  text('called_number'),
+  callerHash:    text('caller_hash'),
+  forwardedFrom: text('forwarded_from'),
+  isOverflow:    integer('is_overflow', { mode: 'boolean' }).notNull().default(false),
+  reason:        text('reason').notNull(),
+  pilotActive:   integer('pilot_active', { mode: 'boolean' }).notNull().default(false),
+  createdAt:     integer('created_at').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.carrier, t.callSid] }),
+  index('idx_call_routing_business').on(t.businessType, t.createdAt),
+]);
+
+// 0024: pilot metrics.
+export const callOutcomes = sqliteTable('call_outcomes', {
+  carrier:         text('carrier').notNull(),
+  callSid:         text('call_sid').notNull(),
+  businessType:    text('business_type').notNull(),
+  callerHash:      text('caller_hash'),
+  startedAt:       integer('started_at').notNull(),
+  endedAt:         integer('ended_at').notNull(),
+  durationSeconds: integer('duration_seconds').notNull(),
+  userTurns:       integer('user_turns').notNull().default(0),
+  transferred:     integer('transferred', { mode: 'boolean' }).notNull().default(false),
+  messageTaken:    integer('message_taken', { mode: 'boolean' }).notNull().default(false),
+  isTest:          integer('is_test', { mode: 'boolean' }).notNull().default(false),
+  createdAt:       integer('created_at').notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.carrier, t.callSid] }),
+  index('idx_call_outcomes_business').on(t.businessType, t.startedAt),
+]);
+
+export const metricsSettings = sqliteTable('metrics_settings', {
+  businessType:   text('business_type').primaryKey(),
+  weeklySummary:  integer('weekly_summary', { mode: 'boolean' }).notNull().default(false),
+  weeklyLastSent: text('weekly_last_sent'),
+  shareEnabled:   integer('share_enabled', { mode: 'boolean' }).notNull().default(false),
+  shareToken:     text('share_token'),
+  createdAt:      integer('created_at').notNull(),
+  updatedAt:      integer('updated_at').notNull(),
+});
+
+// 0025: clinic features (per business, all off by default).
+export const clinicFeatures = sqliteTable('clinic_features', {
+  businessType:    text('business_type').primaryKey(),
+  durationBooking: integer('duration_booking', { mode: 'boolean' }).notNull().default(false),
+  recalls:         integer('recalls', { mode: 'boolean' }).notNull().default(false),
+  recallMonths:    integer('recall_months').notNull().default(6),
+  recallCategory:  text('recall_category'),
+  noShowRecovery:  integer('no_show_recovery', { mode: 'boolean' }).notNull().default(false),
+  reviewRequests:  integer('review_requests', { mode: 'boolean' }).notNull().default(false),
+  reviewUrl:       text('review_url'),
+  createdAt:       integer('created_at').notNull(),
+  updatedAt:       integer('updated_at').notNull(),
+});
+
+// 0026: practice software integration settings (all off by default).
+export const practiceSettings = sqliteTable('practice_settings', {
+  businessType:     text('business_type').primaryKey(),
+  software:         text('software'),
+  confirmationMode: integer('confirmation_mode', { mode: 'boolean' }).notNull().default(false),
+  frontDeskPhone:   text('front_desk_phone'),
+  icsImport:        integer('ics_import', { mode: 'boolean' }).notNull().default(false),
+  icsUrl:           text('ics_url'),
+  icsLastSync:      integer('ics_last_sync'),
+  icsLastError:     text('ics_last_error'),
+  icsBusyCount:     integer('ics_busy_count'),
+  createdAt:        integer('created_at').notNull(),
+  updatedAt:        integer('updated_at').notNull(),
 });

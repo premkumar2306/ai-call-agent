@@ -247,4 +247,6 @@ export interface Env {
   BILLING_SAC_CODE?: string;
   /** Plain var: the admin UI's address, linked from billing emails (e.g. https://app.example.com). */
   APP_URL?: string;
+  /** Public https base of this Worker (front-desk confirm links). Falls back to PLIVO_WEBHOOK_URL / TWILIO_WEBHOOK_URL. */
+  WORKER_URL?: string;
 }
