@@ -28,7 +28,7 @@ export const sectors = sqliteTable('sectors', {
   ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
   voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
   kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
-  dtmfInput:    integer('dtmf_input', { mode: 'boolean' }).notNull().default(false), // keypad digits as answers (0027)
+  dtmfInput:    integer('dtmf_input', { mode: 'boolean' }).notNull().default(false), // keypad digits as answers (0028)
   assistantName: text('assistant_name'),      // spoken name (0018); null = "Avery"
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),

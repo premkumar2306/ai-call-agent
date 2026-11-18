@@ -48,7 +48,7 @@ export interface SectorMeta {
   kind?: string;
   // The assistant's spoken name (0018). Unset = "Avery" (assistantNameOf).
   assistantName?: string;
-  // Keypad digits count as answers to "what's your number / date?" (0027). Absent = off.
+  // Keypad digits count as answers to "what's your number / date?" (0028). Absent = off.
   dtmfInput?: boolean;
 }
 

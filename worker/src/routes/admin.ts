@@ -190,7 +190,7 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
   const current = resolveVoiceSettings(meta);
   const voice = parseVoiceInput(body, current, !!c.env.SARVAM_API_KEY);
   if (!voice.ok) return c.json({ success: false, error: voice.error }, 400);
-  // dtmf_input: keypad digits as answers (0027), off by default.
+  // dtmf_input: keypad digits as answers (0028), off by default.
   const dtmf = (body as Record<string, unknown>).dtmf_input;
   if (dtmf !== undefined && typeof dtmf !== 'boolean') return c.json({ success: false, error: 'dtmf_input must be true or false' }, 400);
   await updateSectorVoice(c.env, key, voice.value);
