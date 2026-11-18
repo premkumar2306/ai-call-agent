@@ -10,6 +10,10 @@ import { saveTranscript } from './transcript.service';
 import { buildBusinessProfile, describeLocalNow, FULL_CATALOG_MAX } from './business-profile';
 import { assistantNameOf, getVertical, VERTICALS, type Vertical } from './verticals';
 import type { CallCache } from './call-context';
+import {
+  CORRECTIONS, allowedAmounts, bookingSucceeded, claimsBooking, detectCallerSignal, guardrailPrompt, guardrailReply, guardrailsEnabled,
+  promisesOutcome, recordGuardrailEvent, redactPII, replyLang, toolResultTexts, unsupportedAmount, type GuardEventKind,
+} from './guardrails';
 import { chatLanguageRules, languageRules, resolveVoiceSettings, type VoiceLanguage } from './voice-language';
 import type { Order, Product, SectorMeta } from '../types';
 
@@ -261,7 +265,7 @@ export type Channel = 'voice' | 'chat';
 // `name` is the assistant's spoken name (assistantNameOf(meta)); callers
 // always pass it. The default is what the US business has always been called,
 // so its prompt (pinned by test/us-unchanged.test.ts) is unchanged.
-export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en', name = 'Mogi'): string {
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en', name = 'Mogi', guardrails = ''): string {
   const v = vertical.prompt;
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
@@ -319,7 +323,7 @@ ${v.afterBooking}
 - Existing appointments: list_bookings; to cancel, cancel_booking; to move one, check_availability for the new time, then reschedule_booking.
 ${v.transfer}
 - Messages: get their name and what it's about first (their number is the one they're calling from unless they give another), then call take_message once. Never say a message is passed on before take_message succeeds. If they add or correct something, call take_message again with the complete message.
-${v.cantAnswer}${v.extra ? `\n\n${v.extra}` : ''}`;
+${v.cantAnswer}${v.extra ? `\n\n${v.extra}` : ''}${guardrails ? `\n\n${guardrails}` : ''}`;
 }
 
 function describeCaller(session: SessionPayload, orders: Order[] | null | undefined, meta: SectorMeta | null): string {
@@ -352,7 +356,7 @@ export function buildSystemPrompt(opts: {
 }): Anthropic.TextBlockParam[] {
   const bizName = opts.sectorMeta?.name ?? opts.businessType;
   const stable = opts.stable
-    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language, assistantNameOf(opts.sectorMeta))}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language, assistantNameOf(opts.sectorMeta), guardrailsEnabled(opts.sectorMeta) ? guardrailPrompt(opts.sectorMeta) : '')}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
   return [
     { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },
@@ -395,7 +399,7 @@ export async function runTurn(
     opts.onLap?.(label, ms);
   };
 
-  console.log(`[${tag}] ${businessType}: "${utterance.slice(0, 80)}"`);
+  console.log(`[${tag}] ${businessType}: "${redactPII(utterance).text.slice(0, 80)}"`);
 
   // ── Load call history ───────────────────────────────────────────────────
   // With a call-lifetime `cache` (the CallRelay Durable Object) history
@@ -456,7 +460,27 @@ export async function runTurn(
   // `turnMessages` is this turn's slice of the conversation: the utterance,
   // then each completed tool_use/tool_result pair. It's committed to
   // history at the end — whole, or as far as it got before a barge-in.
-  const turnMessages: Anthropic.MessageParam[] = [{ role: 'user', content: utterance }];
+  // Conversation guardrails (off unless the business opted in): card numbers,
+  // Aadhaar and OTPs are redacted before anything is stored or sent to the
+  // model, and emergencies, self-harm, abuse, injection and advice requests
+  // get a fixed reply with no model call. See services/guardrails.ts.
+  const guard = guardrailsEnabled(sectorMeta);
+  const stored = guard ? redactPII(utterance).text : utterance;
+  const flag = (kind: GuardEventKind, detail?: string) => background(recordGuardrailEvent(env, { businessType, callSid, kind, detail }));
+  const priorUser = history.filter(t => t.role === 'user').map(t => t.content);
+  const emergencyActive = guard && priorUser.some(t => detectCallerSignal(t)?.kind === 'emergency');
+  let canned: string | null = null;
+  if (guard) {
+    const d = detectCallerSignal(utterance);
+    if (d) {
+      const strike = d.kind === 'abuse' ? 1 + priorUser.filter(t => detectCallerSignal(t)?.kind === 'abuse').length : 0;
+      canned = guardrailReply(d.kind, replyLang(d, utterance, sectorMeta), sectorMeta, { strike });
+      flag(d.kind, strike ? `strike ${strike}` : undefined);
+      if (strike >= 2 && cache) cache.endCall = true;
+    }
+  }
+  const blocked: Array<'price' | 'booking' | 'promise'> = [];
+  const turnMessages: Anthropic.MessageParam[] = [{ role: 'user', content: stored }];
   let spokenResponse = '';
   let finalText = '';
   let interrupted = false;
@@ -475,8 +499,25 @@ export async function runTurn(
   // sentence end (every chunk after it).
   let emittedAny = false;
 
-  const emit = (chunk: string) => {
+  const emit = (chunk: string, trusted = false) => {
     if (signal?.aborted) return;
+    // Facts: a price must come from the catalog or a tool result, and a
+    // booking is only ever claimed after the booking tool succeeded. Tool
+    // replies and our own fixed lines are `trusted`.
+    if (guard && !trusted) {
+      const all = [...priorMessages, ...turnMessages];
+      let bad: 'price' | 'booking' | 'promise' | null = null;
+      const amount = unsupportedAmount(chunk, allowedAmounts(products, sectorMeta, toolResultTexts(all)));
+      if (amount !== null) bad = 'price';
+      else if (claimsBooking(chunk) && !bookingSucceeded(all)) bad = 'booking';
+      else if (promisesOutcome(chunk)) bad = 'promise';
+      if (bad) {
+        console.log(`[${tag}] guardrail blocked ${bad}: "${chunk.slice(0, 80)}"`);
+        blocked.push(bad);
+        flag(`blocked_${bad}`, bad === 'price' ? String(amount) : undefined);
+        return;
+      }
+    }
     // The model sometimes thinks aloud before a tool call ("Wednesday is
     // 2026-11-04, and 10 o'clock is 10:00."). A raw ISO date is never meant
     // for the caller, so a sentence carrying one is dropped.
@@ -506,7 +547,8 @@ export async function runTurn(
   };
 
   try {
-    for (let i = 0; i < MAX_TOOL_ROUNDS; i++) {
+    if (canned) { emit(canned, true); finalText = canned; }
+    for (let i = 0; i < (canned ? 0 : MAX_TOOL_ROUNDS); i++) {
       if (signal?.aborted) { interrupted = true; break; }
       // The SDK timeout stops at response headers; a stream that stalls
       // after that would hang the turn. Abort the round if no event arrives
@@ -574,7 +616,10 @@ export async function runTurn(
       const executed = await Promise.all(toolBlocks.map(async (tb) => {
         console.log(`[${tag}] tool: ${tb.name} ${JSON.stringify(tb.input).slice(0, 200)}`);
         const toolT0 = Date.now();
-        const result = await executeTool(
+        // After an emergency the assistant never books or offers slots.
+        const result = emergencyActive && (tb.name === 'book_appointment' || tb.name === 'check_availability')
+          ? { success: false, error: 'EMERGENCY', spoken_response: guardrailReply('emergency', 'en', sectorMeta) } as ToolResult
+          : await executeTool(
           tb.name,
           tb.input as Record<string, unknown>,
           session,
@@ -612,7 +657,7 @@ export async function runTurn(
       // datetimes behind what was said.
       if (directToolReply && executed.length === 1
           && canSpeakToolResultDirectly(executed[0].tb.name, executed[0].result)) {
-        emit(executed[0].result.spoken_response);
+        emit(executed[0].result.spoken_response, true);
         finalText = executed[0].result.spoken_response;
         lap(`direct-tool-reply:${executed[0].tb.name} (skipped anthropic#${i + 1})`);
         break;
@@ -637,6 +682,10 @@ export async function runTurn(
     }
   }
   lap('runTurn total');
+  if (blocked.length && !interrupted) {
+    emit(CORRECTIONS[blocked[0]], true);
+    finalText = spokenResponse;
+  }
 
   // ── Commit to history ─────────────────────────────────────────────────────
   let assistantText: string;
@@ -656,7 +705,7 @@ export async function runTurn(
   const updatedMessages = trimMessages([...priorMessages, ...turnMessages, { role: 'assistant', content: assistantText }]);
   const updatedHistory: Turn[] = [
     ...history,
-    { role: 'user', content: utterance },
+    { role: 'user', content: stored },
     { role: 'assistant', content: interrupted ? assistantText : spokenResponse },
   ];
   if (cache) {

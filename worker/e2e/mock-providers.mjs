@@ -202,6 +202,9 @@ function decide(req) {
     return null;
   };
 
+  // Guardrail scenarios: a model that invents a price, and one that claims a booking it never made.
+  if (/root canal/.test(userText)) return say('A root canal costs 7500 rupees.');
+  if (/confirm my booking/.test(userText)) return say("You're all set, your appointment is confirmed.");
   if (/(staff|person|someone|human|transfer|किसी से बात|ಯಾರಾದರೂ|ఎవరితోనైనా|யாரிடமாவது)/.test(userText) && tools.has('transfer_to_staff')) {
     return { tool: 'transfer_to_staff', input: { reason: 'caller asked for a person' } };
   }

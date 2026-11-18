@@ -48,6 +48,8 @@ export interface SectorMeta {
   kind?: string;
   // The assistant's spoken name (0018). Unset = "Avery" (assistantNameOf).
   assistantName?: string;
+  // Conversation guardrails (0027, services/guardrails.ts). Off unless true.
+  guardrails?: boolean;
 }
 
 /** Someone a booking is made with — a clinic's doctor — with their own hours. */
