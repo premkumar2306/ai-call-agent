@@ -65,6 +65,30 @@ export const SERVICE_TEMPLATES: Record<string, { name: string; durationMinutes: 
   other: [{ name: 'Appointment', durationMinutes: 30 }],
 };
 
+// One-click starter lists for an empty catalog. Prices are deliberately absent (0 = "price on request").
+export type StarterKey = 'dental' | 'clinic' | 'legal' | 'general';
+export const STARTER_SERVICES: Record<StarterKey, { label: string; items: { name: string; durationMinutes: number; category?: string }[] }> = {
+  dental: { label: 'dental', items: [
+    { name: 'Consultation', durationMinutes: 15, category: 'CONSULTATION' }, { name: 'Cleaning / scaling', durationMinutes: 30 }, { name: 'Filling', durationMinutes: 45 },
+    { name: 'Root canal', durationMinutes: 60 }, { name: 'Extraction', durationMinutes: 30 }, { name: 'Crown fitting', durationMinutes: 60 },
+    { name: 'Teeth whitening', durationMinutes: 60 }, { name: 'Braces consultation', durationMinutes: 30 } ] },
+  clinic: { label: 'clinic', items: [
+    { name: 'General consultation', durationMinutes: 15, category: 'CONSULTATION' }, { name: 'Follow-up visit', durationMinutes: 10 }, { name: 'Health check-up', durationMinutes: 45 },
+    { name: 'Blood test', durationMinutes: 15 }, { name: 'Vaccination', durationMinutes: 15 }, { name: 'ECG', durationMinutes: 20 }, { name: 'Child check-up', durationMinutes: 20 } ] },
+  legal: { label: 'law firm', items: [
+    { name: 'Initial consultation', durationMinutes: 30, category: 'CONSULTATION' }, { name: 'Follow-up consultation', durationMinutes: 30 }, { name: 'Document review', durationMinutes: 45 },
+    { name: 'Document drafting (agreement, affidavit)', durationMinutes: 45 }, { name: 'Legal notice', durationMinutes: 30 }, { name: 'Court case review', durationMinutes: 60 } ] },
+  general: { label: 'general', items: [
+    { name: 'Consultation', durationMinutes: 30 }, { name: 'Appointment', durationMinutes: 30 }, { name: 'Follow-up', durationMinutes: 15 },
+    { name: 'Service visit', durationMinutes: 60 }, { name: 'Quote / estimate', durationMinutes: 30 } ] },
+};
+export function starterKey(vertical: string | null | undefined, kind?: string | null): StarterKey {
+  if (kind === 'dental') return 'dental';
+  if (vertical === 'clinic') return 'clinic';
+  if (vertical === 'legal') return 'legal';
+  return 'general';
+}
+
 export const DEFAULT_HOURS: WeekHours = {
   mon: { open: true, from: '09:00', to: '18:00' }, tue: { open: true, from: '09:00', to: '18:00' },
   wed: { open: true, from: '09:00', to: '18:00' }, thu: { open: true, from: '09:00', to: '18:00' },

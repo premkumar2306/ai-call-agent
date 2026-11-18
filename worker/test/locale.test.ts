@@ -236,3 +236,15 @@ describe('country dropdown defaults', () => {
     expect(countryDefaults('GB').countryCode).toBe('US');
   });
 });
+
+describe('price on request', () => {
+  const base = { id: 'x', name: 'Braces', priceCents: 0, originalPriceCents: 0 } as Product;
+  it('never says "free" for a service marked price on request', () => {
+    const p = { ...base, description: 'Price on request' } as Product;
+    expect(formatPrice(p, IN)).not.toBe('free');
+    expect(formatSpokenPrice(p, IN)).not.toBe('free');
+  });
+  it('still says free for a genuinely free service', () => {
+    expect(formatPrice({ ...base, description: 'Free first visit' } as Product, IN)).toBe('free');
+  });
+});

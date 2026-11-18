@@ -56,6 +56,7 @@ const calendarRedirect = takeCalendarRedirect();
 const SETTINGS = [
   { key: 'business', label: 'Business details' },
   { key: 'assistant', label: 'Assistant' },
+  { key: 'services', label: 'Services & prices' },
   { key: 'phone', label: 'Phone number' },
   { key: 'whatsapp', label: 'WhatsApp' },
   { key: 'privacy', label: 'Privacy' },
@@ -160,7 +161,8 @@ export default function App() {
     { route: 'calls', label: 'Calls & messages', icon: '☎' },
     { route: 'calendar', label: 'Calendar', icon: '▦' },
     ...(showTeam ? [{ route: 'team', label: words?.many ?? 'Team', icon: '☺' }] : []),
-    { route: 'services', label: 'Services & prices', icon: '☰' },
+    // Read-only members (front desk) still need prices; editors find them in Settings.
+    ...(!canEdit ? [{ route: 'services', label: 'Services & prices', icon: '☰' }] : []),
     { route: 'try', label: 'Try your assistant', icon: '▶' },
     ...(canEdit ? [{ route: 'settings', label: 'Settings', icon: '⚙' }] : []),
   ];
@@ -173,8 +175,8 @@ export default function App() {
   ];
   const allowed = [...businessNav, ...(isOperator ? operatorNav : [])];
   const fallback = isOperator ? 'op/businesses' : 'home';
-  // Old links: #/appointments and #/settings/calendar now live on the Calendar page.
-  const r0 = route === 'appointments' || route === 'settings/calendar' ? 'calendar' : route;
+  // Old links: #/appointments and #/settings/calendar now live on the Calendar page; #/services is Settings → Services & prices.
+  const r0 = route === 'appointments' || route === 'settings/calendar' ? 'calendar' : route === 'services' && canEdit ? 'settings/services' : route;
   const top = r0.startsWith('op/') ? r0 : r0.split('/')[0];
   const current = allowed.some(n => n.route === top) ? r0 : fallback;
   const currentTop = current.startsWith('op/') ? current : current.split('/')[0];
@@ -303,8 +305,8 @@ export default function App() {
             {canEdit && <Team key={`${sector}-members`} sector={sector} base={BASE} auth={headers} myUserId={me?.user.id} />}
           </>}
           {sector && current === 'services' && <>
-            <PageHeader title="Services & prices" description="What callers can book, how long it takes and what it costs. The assistant quotes these prices." />
-            <Services key={sector} sector={sector} base={BASE} auth={headers} canEdit={canEdit} />
+            <PageHeader title="Services & prices" description="What callers can book, how long it takes and what it costs." />
+            <Services key={sector} sector={sector} base={BASE} auth={headers} canEdit={false} />
           </>}
           {sector && current === 'try' && <>
             <PageHeader title="Try your assistant" description="Talk or type as a caller would, and hear how your assistant answers. No phone call is made." />
@@ -323,6 +325,7 @@ export default function App() {
                 <Dashboard sector={sector} base={BASE} auth={headers} canEdit={canEdit} operator={isOperator} />
                 <VoiceSettings base={BASE} auth={headers} sectors={one} />
               </>}
+              {settingsKey === 'services' && <Services key={sector} sector={sector} base={BASE} auth={headers} canEdit={canEdit} />}
               {settingsKey === 'phone' && <>
                 <PhoneNumber sector={sector} base={BASE} auth={headers} canEdit={canEdit} onTry={() => go('try')} />
                 <WhatsAppNote base={BASE} auth={headers} />
