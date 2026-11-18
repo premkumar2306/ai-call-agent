@@ -250,11 +250,11 @@ const CARRIERS = {
 
 // ── One simulated call ───────────────────────────────────────────────────────
 
-async function placeCall(mocks, { carrier, number, from, lines, hangUpEarly = false }) {
+async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, script }) {
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
-  const call = { startedAt: Date.now(), callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false };
+  const call = { startedAt: Date.now(), callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false, clearTimes: [] };
   const opened = await c.open({ number, from, callSid });
   call.webhook = opened;
   if (!opened.ok) return call;
@@ -279,6 +279,7 @@ async function placeCall(mocks, { carrier, number, from, lines, hangUpEarly = fa
       }, Math.max(0, playedUntil - Date.now()));
     } else if (o.kind === 'clear') {
       call.cleared++;
+      call.clearTimes.push(Date.now());
       playedUntil = Date.now();
     }
   });
@@ -303,6 +304,8 @@ async function placeCall(mocks, { carrier, number, from, lines, hangUpEarly = fa
   await quiet(Date.now() - 1);
   call.greeting = mocks.log.tts.slice(ttsBefore).map(t => t.text);
   call.turns = [];
+  // A scenario that drives the call itself (interruptions, noise) instead of line by line.
+  if (script) await script({ call, quiet, remainingMs: () => Math.max(0, playedUntil - Date.now()) });
   for (const line of lines) {
     if (ws.readyState !== WebSocket.OPEN) break;
     const before = mocks.log.tts.length;
@@ -606,6 +609,66 @@ async function plivoScenario(mocks) {
   const tr = sql(`SELECT turns FROM transcripts WHERE call_sid = '${call.callSid}'`);
   const turns = tr[0] ? JSON.parse(tr[0].turns) : [];
   check(n, 'hangup mid-call: the call record (transcript) is saved', turns.some(t => t.role === 'user'), `${tr.length} row(s), ${turns.length} turn(s)`);
+}
+
+// Barge-in on every carrier: the caller talks over a long reply → the carrier's
+// playback is cleared fast; a cough and an echo of our own voice don't
+// interrupt; the cut-off reply is recorded once, as far as the caller heard it.
+async function bargeInScenario(mocks) {
+  for (const b of [
+    { key: 'us_twilio', carrier: 'twilio' },
+    { key: 'in_exotel', carrier: 'exotel' },
+    { key: 'in_plivo_en', carrier: 'plivo' },
+  ]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `barge-in ${b.carrier}`;
+    console.log(`\n▶ Barge-in over ${b.carrier}`);
+    let r = {};
+    const call = await placeCall(mocks, {
+      carrier: b.carrier, number: sc.number, from: sc.from,
+      script: async ({ call, quiet, remainingMs }) => {
+        const waitPlaying = async () => { for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50); };
+        const replyAt = Date.now();
+        const ttsBefore = mocks.log.tts.length;
+        await mocks.say('Tell me about your services please.');
+        await waitPlaying();
+        r.playingBeforeNoise = remainingMs();
+        // A cough: speech detected, no words → keep talking.
+        const c0 = call.cleared;
+        await mocks.cough();
+        await sleep(500);
+        r.coughCleared = call.cleared - c0;
+        // Our own voice coming back on a speakerphone → keep talking.
+        const spoken = mocks.log.tts.slice(ttsBefore).map(t => t.text).find(t => /consultations, follow-up/.test(t)) ?? 'We offer general consultations, follow-up visits and routine check-ups.';
+        const llm0 = mocks.log.anthropic.length;
+        await mocks.say(spoken);
+        await sleep(600);
+        r.echoCleared = call.cleared - c0;
+        r.echoTurns = mocks.log.anthropic.length - llm0;
+        // The caller really interrupts.
+        const c1 = call.cleared;
+        const said = Date.now();
+        await waitPlaying();
+        await mocks.say('Actually I want to book an appointment.');
+        for (let i = 0; i < 20 && call.cleared === c1; i++) await sleep(50);
+        r.clearMs = call.clearTimes.at(c1) ? call.clearTimes[c1] - said : null;
+        r.clearedByInterrupt = call.cleared - c1;
+        await quiet(said);
+        r.replyStartedAt = replyAt;
+      },
+    });
+    check(n, 'a cough does not interrupt the assistant', r.coughCleared === 0, `${r.coughCleared} clear frame(s)`);
+    check(n, 'an echo of our own voice does not interrupt or start a turn', r.echoCleared === 0 && r.echoTurns === 0, `${r.echoCleared} clear, ${r.echoTurns} model call(s)`);
+    check(n, `caller speaking over the reply clears the carrier's playback (${b.carrier})`, r.clearedByInterrupt >= 1, `${r.clearedByInterrupt} clear frame(s) in ${r.clearMs}ms`);
+    check(n, 'playback is cleared within ~1 s of the caller starting to speak', r.clearMs != null && r.clearMs < 1000, `${r.clearMs}ms`);
+    await sleep(500);
+    const tr = sql(`SELECT turns FROM transcripts WHERE call_sid = '${call.callSid}'`);
+    const turns = tr[0] ? JSON.parse(tr[0].turns) : [];
+    const mine = turns.filter(t => t.role === 'assistant' && /consultations/.test(t.content));
+    check(n, 'the cut-off reply is in the transcript once, not twice', mine.length === 1, `${mine.length} of ${turns.length} turns: ${mine.map(t => t.content.slice(0, 60)).join(' | ')}`);
+    check(n, 'the cut-off reply is recorded only as far as the caller heard it', mine.length === 1 && !/ask me to find a time/.test(mine[0].content), mine[0]?.content?.slice(-80) ?? 'none');
+    check(n, 'the assistant then answers the interruption', turns.some(t => t.role === 'user' && /book an appointment/.test(t.content)), `${turns.length} turns`);
+  }
 }
 
 async function rzpHook(event, payload, eventId = `evt_${randomUUID()}`, signature) {
@@ -1132,6 +1195,7 @@ try {
   // The Razorpay scenario bills the Exotel business's call minutes, so `-- razorpay` places that call too.
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
+  if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();
   if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
   if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);

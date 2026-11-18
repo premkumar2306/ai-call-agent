@@ -841,6 +841,21 @@ what ships.
 | `VOICE_SILENCE_REPROMPT_MS` | 8000 | Caller silence after the assistant finishes before "Are you still there?"; the same again ends the call with a goodbye. |
 | `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
 
+### Barge-in (caller talks over the assistant)
+
+There is no "final-only" mode; three signals can stop the assistant, all through `bargeIn()` in
+`call-relay.ts`. **Default (verified in code): recognised words.** The assistant stops when an interim
+transcript has at least `DG_BARGE_IN_MIN_WORDS` (2) words that are not backchannel ("uh huh", "okay")
+and not an echo of our own TTS (`isEchoOf`). A finalized transcript is the backstop (it also covers
+one-word interruptions like "wait"). `VOICE_BARGE_IN_ON_VAD=1` adds the raw speech-start event (off by
+default: line noise and echo trigger it). Nothing fires within 300 ms of the assistant starting to speak.
+Because the default waits for words, not just a final transcript, it does not add the dead air that PR #32
+worried about; that argument applies only to a final-only mode, which the code does not have.
+
+On barge-in the carrier's queued audio is dropped (Twilio `clear`, Exotel `clear`, Plivo `clearAudio`),
+the model stream and TTS are aborted, and the cut-off reply is rewritten in history to what the caller
+actually heard (once, with an "interrupted" marker). Covered by the `barge-in` e2e scenario on all three carriers.
+
 ### How a call turn works
 
 - **Grounding.** The system prompt carries a business profile built from D1 — address, phone, website,

@@ -143,8 +143,23 @@ export async function startMocks({ port = 0 } = {}) {
     }
   }
 
+  /** A cough or line noise: the recogniser hears speech but produces no words. */
+  async function cough() {
+    if (!stt) throw new Error('no speech-recognition socket is open');
+    const { kind, ws } = stt;
+    if (kind === 'deepgram') {
+      ws.send(JSON.stringify({ type: 'SpeechStarted', timestamp: stt.t }));
+      await sleep(250);
+      ws.send(JSON.stringify({ type: 'UtteranceEnd', last_word_end: stt.t + 0.3 }));
+    } else {
+      ws.send(JSON.stringify({ type: 'events', data: { signal_type: 'START_SPEECH' } }));
+      await sleep(250);
+      ws.send(JSON.stringify({ type: 'events', data: { signal_type: 'END_SPEECH' } }));
+    }
+  }
+
   return {
-    url, log, say,
+    url, log, say, cough,
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
     failing,
@@ -212,6 +227,9 @@ function decide(req) {
   }
   if (/(book|appointment|बुक|अपॉइंटमेंट|ಬುಕ್|ಅಪಾಯಿಂಟ್|బుక్|అపాయింట్|புக்|அப்பாயிண்ட்)/.test(userText) && tools.has('check_availability') && serviceId) {
     return { tool: 'check_availability', input: { service_id: serviceId } };
+  }
+  if (/(tell me about|your services)/.test(userText)) {
+    return say('We offer general consultations, follow-up visits and routine check-ups. Each consultation takes about thirty minutes with one of our doctors. Follow-up visits are shorter and usually take fifteen minutes. We are open every weekday from nine in the morning until six in the evening. You can also book online or ask me to find a time for you right now.');
   }
   if (/(bye|thank you|धन्यवाद)/.test(userText)) return say('Thank you for calling. Goodbye!', 'कॉल करने के लिए धन्यवाद। नमस्ते!');
   return say('Sure, I can help with that. Would you like to book a consultation?', 'ज़रूर, मैं मदद कर सकती हूँ। क्या आप अपॉइंटमेंट बुक करना चाहेंगे?');
