@@ -453,6 +453,26 @@ async function razorpayScenario(mocks) {
   const trial = await api('GET', '/billing/in_plivo_hi');
   check(n, 'trial: a new plan starts a 14-day free trial, next action Subscribe', trial?.state === 'trialing' && trial.trialDaysLeft === 14 && trial.nextAction === 'subscribe', `state=${trial?.state}, ${trial?.trialDaysLeft} days, ${trial?.nextAction}`);
 
+  // Clinic plan (headline) and the founding offer.
+  const pub = await api('GET', '/account/plans', undefined, { 'X-Admin-Key': '' });
+  const clinic = pub?.plans?.find(p => p.id === 'in_clinic'), starter = pub?.plans?.find(p => p.id === 'in_starter');
+  check(n, 'pricing: Clinic is the headline (₹4,999 + GST, 800 min, ₹6/min); Starter ₹2,999 for 300 min',
+    clinic?.monthlyFeePaise === 499900 && clinic.includedMinutes === 800 && clinic.overagePaisePerMinute === 600 && clinic.isFeatured === true
+    && starter?.monthlyFeePaise === 299900 && starter.includedMinutes === 300 && !starter.isFeatured,
+    `clinic ${clinic?.monthlyFeePaise}/${clinic?.includedMinutes}/${clinic?.overagePaisePerMinute}, starter ${starter?.monthlyFeePaise}/${starter?.includedMinutes}`);
+  const founding = pub?.offers?.find(o => o.code === 'FOUNDING25');
+  check(n, 'pricing: founding offer is public with 25 places (free setup, first month free)', founding?.seatsLeft === 25 && founding.freeDays === 30 && founding.waiveSetupFee === true, JSON.stringify(founding));
+  const wrongPlan = await post('/billing/in_plivo_hi/offer', { code: 'FOUNDING25' }, { 'X-Admin-Key': ADMIN });
+  check(n, 'founding offer: refused on Starter (Clinic only)', wrongPlan.status === 400, `${wrongPlan.status}`);
+  await api('PUT', '/admin/billing/accounts/in_plivo_hi', { planId: 'in_clinic' });
+  await api('POST', '/admin/billing/accounts/in_plivo_hi/offer', { code: 'founding25' });
+  const fc = await api('GET', '/billing/in_plivo_hi');
+  const seats = (await api('GET', '/account/plans'))?.offers?.find(o => o.code === 'FOUNDING25')?.seatsLeft;
+  check(n, 'founding offer: Clinic + FOUNDING25 → 30 free days, price unchanged, 24 places left, included minutes shown',
+    fc?.state === 'trialing' && fc.trialDaysLeft === 30 && fc.offer?.code === 'FOUNDING25' && fc.plan?.monthly?.amountPaise === 499900
+    && fc.usage?.includedMinutes === 800 && fc.usage?.includedMinutesLeft === 800 - fc.usage?.minutes && fc.usage?.includedMinutesUsed === fc.usage?.minutes && seats === 24,
+    `state=${fc?.state}, ${fc?.trialDaysLeft} days, offer ${fc?.offer?.code}, ₹${fc?.plan?.monthly?.amountPaise / 100}, left ${fc?.usage?.includedMinutesLeft}, seats ${seats}`);
+
   // A no-trial plan with every minute billed as overage, so month-end has something to bill.
   await api('PUT', '/admin/billing/plans/e2e_metered', { name: 'E2E Metered', monthlyFeePaise: 100000, includedMinutes: 0, overagePaisePerMinute: 700, trialDays: 0, gstRateBps: 1800 });
   await api('PUT', `/admin/billing/accounts/${B}`, { planId: 'e2e_metered' });

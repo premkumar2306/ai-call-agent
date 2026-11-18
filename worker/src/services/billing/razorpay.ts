@@ -100,13 +100,17 @@ export function createPlan(env: Env, p: { name: string; amountPaise: number; cur
  * mandate (UPI AutoPay / card) at checkout. `totalCount` is the number of
  * billing cycles before the subscription completes.
  */
-export function createSubscription(env: Env, s: { planId: string; totalCount: number; startAt?: number; notes?: Record<string, string> }) {
+export function createSubscription(env: Env, s: {
+  planId: string; totalCount: number; startAt?: number; notes?: Record<string, string>;
+  addons?: Array<{ name: string; amountPaise: number; currency: string }>; // upfront, with the first charge
+}) {
   return call<RazorpaySubscription>(env, 'POST', '/subscriptions', {
     plan_id: s.planId,
     total_count: s.totalCount,
     quantity: 1,
     customer_notify: 1,
     ...(s.startAt ? { start_at: s.startAt } : {}),
+    ...(s.addons?.length ? { addons: s.addons.map(a => ({ item: { name: a.name, amount: a.amountPaise, currency: a.currency } })) } : {}),
     notes: s.notes,
   });
 }

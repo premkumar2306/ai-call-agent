@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`margin: cost per minute from the pricing table > stays well under the ₹6/minute overage on every provider mix 1`] = `
+{
+  "englishExotel": 243,
+  "englishPlivo": 243,
+  "hindiPlivo": 173,
+}
+`;

@@ -13,6 +13,8 @@ import {
 } from '../services/accounts';
 import { getSector } from '../services/sector.service';
 import { assignDefaultPlan } from '../services/billing/service';
+import { ownerPlans } from '../services/billing/lifecycle';
+import { applyOffer, openOffers } from '../services/billing/offers';
 import { listNumberRequests, requestNumber } from '../services/self-serve';
 import { escapeHtml } from '../services/email.service';
 import { isAllowedOrigin } from '../utils/origins';
@@ -132,6 +134,9 @@ accountRouter.post('/logout', withOwner, async (c) => {
 // GET /account/business-kinds — options for the onboarding wizard (public)
 accountRouter.get('/business-kinds', (c) => c.json({ success: true, data: BUSINESS_KINDS }));
 
+// GET /account/plans — plans and open offers for the signup page and pricing copy (public; INR, excl. GST)
+accountRouter.get('/plans', async (c) => c.json({ success: true, data: { plans: await ownerPlans(c.env), offers: await openOffers(c.env) } }));
+
 // POST /account/businesses — onboarding wizard: create a business you own
 accountRouter.post('/businesses', withOwner, async (c) => {
   const p = c.get('principal');
@@ -143,12 +148,19 @@ accountRouter.post('/businesses', withOwner, async (c) => {
   if (owned.length >= MAX_OWNED_BUSINESSES) {
     return c.json({ success: false, error: `You can own up to ${MAX_OWNED_BUSINESSES} businesses. Contact support for more.` }, 403);
   }
-  const input = parseBusinessInput(await c.req.json().catch(() => null));
+  const body = await c.req.json().catch(() => null) as any;
+  const input = parseBusinessInput(body);
   if (typeof input === 'string') return c.json({ success: false, error: input }, 400);
   const key = await createBusiness(c.env, p.user, input);
-  // The default trial plan, if the operator marked one (no charge until the owner subscribes).
-  await assignDefaultPlan(c.env, key).catch(e => console.error('[account] default plan failed', e?.message || e));
-  return c.json({ success: true, data: { key, name: input.name } }, 201);
+  // The plan picked at signup, else the default trial plan if the operator marked one
+  // (Indian businesses only; no charge until the owner subscribes).
+  const planId = typeof body?.planId === 'string' ? body.planId : null;
+  const account = await assignDefaultPlan(c.env, key, planId).catch(e => { console.error('[account] default plan failed', e?.message || e); return null; });
+  let offerError: string | null = null;
+  if (account && typeof body?.offerCode === 'string' && body.offerCode.trim()) {
+    await applyOffer(c.env, key, body.offerCode).catch((e: any) => { offerError = e?.message || 'Offer not applied'; });
+  }
+  return c.json({ success: true, data: { key, name: input.name, planId: account?.planId ?? null, offerError } }, 201);
 });
 
 // ── Phone number (connected by the Avery team) ─────────────────────────────

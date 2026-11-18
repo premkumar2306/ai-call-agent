@@ -13,6 +13,7 @@ import {
 } from '../services/billing/service';
 import { applyWebhook, cancelSubscription, changePlan, ownerPlans, runDunning, updatePaymentLink, type RazorpayWebhook } from '../services/billing/lifecycle';
 import { getTaxInvoice, renderInvoiceHtml } from '../services/billing/invoices';
+import { applyOffer, listOffers, normalizeOfferCode, upsertOffer, validateOfferInput } from '../services/billing/offers';
 
 type BillingEnv = { Bindings: HonoEnv['Bindings']; Variables: HonoEnv['Variables'] & { viewer: Viewer } };
 
@@ -119,6 +120,15 @@ billingRouter.post('/:businessType/confirm', async (c) => {
 // Plans the owner can switch to (no Razorpay ids, no cost).
 billingRouter.get('/:businessType/plans', async (c) => c.json({ success: true, data: await ownerPlans(c.env) }));
 
+// POST { code } — apply an offer (e.g. FOUNDING25) before subscribing.
+billingRouter.post('/:businessType/offer', async (c) => {
+  const b = await c.req.json().catch(() => null);
+  try {
+    const a = await applyOffer(c.env, c.req.param('businessType'), b?.code);
+    return c.json({ success: true, data: { offerCode: a.offerCode, trialEndsAt: a.trialEndsAt } });
+  } catch (e) { return errorResponse(c, e); }
+});
+
 // POST { planId } — upgrade now, downgrade at the cycle end.
 billingRouter.post('/:businessType/change-plan', async (c) => {
   const b = await c.req.json().catch(() => null);
@@ -156,6 +166,24 @@ export const billingAdminRouter = new Hono<HonoEnv>();
 billingAdminRouter.use('*', withAdminKey);
 
 billingAdminRouter.get('/plans', async (c) => c.json({ success: true, data: await listPlans(c.env) }));
+
+// Offers (coupons): list with seats used, and create/change one.
+billingAdminRouter.get('/offers', async (c) => c.json({ success: true, data: await listOffers(c.env) }));
+billingAdminRouter.put('/offers/:code', async (c) => {
+  const code = normalizeOfferCode(c.req.param('code'));
+  if (!code) return c.json({ success: false, error: 'code must be 3–32 letters, digits, - or _' }, 400);
+  const parsed = validateOfferInput(await c.req.json().catch(() => null));
+  if (typeof parsed === 'string') return c.json({ success: false, error: parsed }, 400);
+  return c.json({ success: true, data: await upsertOffer(c.env, code, parsed) });
+});
+// POST /admin/billing/accounts/:businessType/offer { code } — apply an offer for a business (operator flag).
+billingAdminRouter.post('/accounts/:businessType/offer', async (c) => {
+  const b = await c.req.json().catch(() => null);
+  try {
+    const a = await applyOffer(c.env, c.req.param('businessType'), b?.code);
+    return c.json({ success: true, data: { offerCode: a.offerCode, trialEndsAt: a.trialEndsAt } });
+  } catch (e) { return errorResponse(c, e); }
+});
 
 // PUT /admin/billing/plans/:id — create or change a plan (prices in paise, excl. GST)
 billingAdminRouter.put('/plans/:id', async (c) => {
