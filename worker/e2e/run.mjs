@@ -47,6 +47,7 @@ const SECRETS = {
   EXOTEL_WEBHOOK_SECRET: 'ex-secret-mock', PLIVO_AUTH_TOKEN: 'pl-auth-mock', PLIVO_WEBHOOK_URL: BASE, PLIVO_AUTH_ID: 'MAMOCK0001',
   RAZORPAY_KEY_ID: 'rzp_test_mock', RAZORPAY_KEY_SECRET: 'rzp-secret-mock', RAZORPAY_WEBHOOK_SECRET: 'rzp-webhook-mock',
   RESEND_API_KEY: 're_mock', EMAIL_FROM: 'Avery <test@example.com>',
+  BILLING_SAC_CODE: '998439',                  // printed on invoices (the owner's accountant confirms the real code)
   BILLING_SUPPLIER_GSTIN: '27AAPFU0939F1ZV',   // Maharashtra: a Maharashtra customer gets CGST+SGST
   WA_APP_SECRET: 'wa-app-secret-mock', WA_VERIFY_TOKEN: 'wa-verify-mock', WA_ACCESS_TOKEN: 'EAAmockwhatsapptoken0123456789',
   // The legacy single number; any other unmapped number is refused.
@@ -939,6 +940,155 @@ async function razorpayScenario(mocks) {
   check(n, 'operator sees every business; the US business stays billing-off', all.length >= 3 && us?.state === 'off' && !us.plan, `${all.length} businesses, us_twilio ${us?.state}`);
 }
 
+// ── SVT: Indian dental clinic on Clinic + FOUNDING25 (Plivo): calls → usage → overage → invoice → margin ──
+
+// GSTIN check character (same algorithm as billing/pricing.ts) to build a valid Karnataka GSTIN.
+function gstinWithCheck(first14) {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let sum = 0;
+  for (let i = 0; i < 14; i++) { const p = chars.indexOf(first14[i]) * (i % 2 === 0 ? 1 : 2); sum += Math.floor(p / 36) + (p % 36); }
+  return first14 + chars[(36 - (sum % 36)) % 36];
+}
+const LLM_RATES = { 'claude-haiku-5-5': [0.10, 0.50, 0.01, 0.125], 'claude-sonnet-5-5': [2, 10, 0.10, 2.5] };
+
+async function svtIndiaScenario(mocks) {
+  const n = 'SVT India billing (Clinic + FOUNDING25, Plivo)';
+  console.log(`\n▶ ${n}`);
+  const B = 'svt_dental', CTRL = 'svt_ctrl', OWNER = 'owner@svt-dental.example', NUMBER = '+918047100150';
+  await setupBusiness({ key: B, name: 'SVT Dental Clinic', country: 'IN', phone: '+919876500150', number: NUMBER, provider: 'plivo' });
+  const sec = sql(`SELECT timezone, currency, locale, country_code FROM sectors WHERE key = '${B}'`)[0];
+  const mapped = sql(`SELECT * FROM phone_numbers WHERE business_type = '${B}'`)[0];
+  check(n, 'setup: IN / en-IN / INR / Asia/Kolkata, Plivo number mapped', sec?.country_code === 'IN' && sec.locale === 'en-IN' && sec.currency === 'INR' && sec.timezone === 'Asia/Kolkata' && mapped?.provider === 'plivo' && mapped.number === NUMBER, `${JSON.stringify(sec)}, ${mapped?.provider} ${mapped?.number}`);
+
+  // Plan with a ₹2,000 setup fee so FOUNDING25's waiver is observable (the seeded Clinic plan has none).
+  await api('PUT', '/admin/billing/plans/in_clinic', { name: 'Clinic', monthlyFeePaise: 499900, includedMinutes: 800, overagePaisePerMinute: 600, trialDays: 14, gstRateBps: 1800, setupFeePaise: 200000 });
+  await api('POST', '/admin/billing/plans/in_clinic/razorpay');
+  await api('PUT', `/admin/billing/accounts/${B}`, { planId: 'in_clinic' });
+  const redeemed = async () => (await api('GET', '/admin/billing/offers')).find(o => o.code === 'FOUNDING25').redeemed;
+  const r0 = await redeemed();
+  await api('POST', `/admin/billing/accounts/${B}/offer`, { code: 'FOUNDING25' });
+  const r1 = await redeemed();
+  const again = await post(`/admin/billing/accounts/${B}/offer`, { code: 'founding25' });
+  const ownerAgain = await post(`/billing/${B}/offer`, { code: 'FOUNDING25' });
+  await api('PUT', '/admin/billing/offers/SVT_OTHER', { name: 'Other', freeDays: 10 });
+  const other = await post(`/admin/billing/accounts/${B}/offer`, { code: 'SVT_OTHER' });
+  const r2 = await redeemed();
+  check(n, 'FOUNDING25 (e): redeemed once; applying it again claims no second seat; a different code is refused', r1 === r0 + 1 && r2 === r1 && other.status === 409, `redeemed ${r0}→${r1}→${r2}; same code again → ${again.status}/${ownerAgain.status} (idempotent); other code → ${other.status}`);
+
+  await api('PUT', `/billing/${B}/details`, { legalName: 'SVT Dental Clinic Pvt Ltd', billingEmail: OWNER, gstin: '27AAACR5055K1Z7', state: 'Maharashtra' });
+  const sub = await api('POST', `/billing/${B}/subscribe`);
+  const subCall = mocks.log.razorpay.find(r => r.method === 'POST' && r.path === '/v1/subscriptions' && r.body?.notes?.business_type === B);
+  const days = (subCall?.body?.start_at - Date.now() / 1000) / 86400;
+  const view0 = await api('GET', `/billing/${B}`);
+  check(n, 'FOUNDING25 (e): first charge deferred 30 days, no Setup add-on (₹2,000 setup waived), price unchanged', days > 29.9 && days < 30.1 && !subCall.body.addons && view0.plan.setupFee?.waived === true && view0.plan.monthly.amountPaise === 499900 && view0.trialDaysLeft === 30, `start_at in ${days.toFixed(2)} d, addons ${JSON.stringify(subCall?.body?.addons)}, setupFee.waived ${view0.plan.setupFee?.waived}, trialDaysLeft ${view0.trialDaysLeft}`);
+  await setupBusiness({ key: CTRL, name: 'SVT Control Clinic', country: 'IN', phone: '+919876500151', number: '+918047100151', provider: 'plivo' });
+  // Control: the same plan without the offer charges the setup fee (₹2,000 + 18% GST) with the first payment.
+  await api('PUT', `/admin/billing/accounts/${CTRL}`, { planId: 'in_clinic' });
+  await api('PUT', `/billing/${CTRL}/details`, { legalName: 'Control Clinic', billingEmail: 'ctrl@clinic.example' });
+  await api('POST', `/billing/${CTRL}/subscribe`);
+  const ctrlCall = mocks.log.razorpay.filter(r => r.method === 'POST' && r.path === '/v1/subscriptions' && r.body?.notes?.business_type === CTRL).pop();
+  check(n, 'FOUNDING25 (e) control: without the offer the Setup add-on is ₹2,360 (₹2,000 + GST)', ctrlCall?.body?.addons?.[0]?.item?.amount === 236000, JSON.stringify(ctrlCall?.body?.addons));
+
+  const id = sub.subscriptionId;
+  Object.assign(mocks.razorpaySub(id), { status: 'active', customer_id: 'cust_svt', current_end: Math.floor(Date.now() / 1000) + 30 * 86400 });
+  await rzpHook('subscription.activated', { subscription: { entity: { id } } });
+
+  // ── Two calls over Plivo ──
+  const enCall = await placeCall(mocks, { carrier: 'plivo', number: NUMBER, from: '+919812300201', lines: ["Hello, I'd like to book a teeth cleaning.", 'The first one is fine.'] });
+  const hiCall = await placeCall(mocks, { carrier: 'plivo', number: NUMBER, from: '+919812300202', lines: ['Namaste, cleaning ka price kya hai? Aur kal ke liye book kar dijiye.', 'Pehla wala theek hai.'] });
+  const recs = async () => (await api('GET', `/admin/billing/usage/${B}`)).filter(r => r.channel === 'voice');
+  let all = await recs();
+  const recOf = c => all.find(r => r.sourceId === c.callSid);
+  const costOf = r => {
+    const [i, o, cr, cw] = LLM_RATES[r.llmModel] ?? LLM_RATES['claude-haiku-5-5'];
+    const llm = (r.llmInputTokens * i + r.llmOutputTokens * o + r.llmCacheReadTokens * cr + r.llmCacheWriteTokens * cw) / 1e6;
+    const carrier = Math.ceil(r.durationSeconds / 60) * 0.006, stt = r.sttSeconds * 0.0077 / 60, tts = r.ttsChars * 0.00003;
+    return { carrier, stt, tts, llm, micros: Math.round((carrier + stt + tts + llm) * 1e6) };
+  };
+  for (const [label, c] of [['English caller books a cleaning', enCall], ['Hinglish caller asks price and books', hiCall]]) {
+    const r = recOf(c); const k = r && costOf(r);
+    check(n, `usage (a): ${label} → one record: provider plivo, business ${B}, ceil(seconds/60) minutes, cost = carrier+STT+TTS+AI`,
+      r && all.filter(x => x.sourceId === c.callSid).length === 1 && r.provider === 'plivo' && r.businessType === B && r.billableMinutes === Math.ceil(r.durationSeconds / 60) && r.billableMinutes >= 1
+      && Math.abs(r.costUsdMicros - k.micros) <= 2 && k.stt > 0 && k.tts > 0 && k.llm > 0,
+      r ? `${r.durationSeconds}s → ${r.billableMinutes} min; $${(r.costUsdMicros / 1e6).toFixed(5)} = carrier ${k.carrier.toFixed(5)} + STT ${k.stt.toFixed(5)} (${r.sttSeconds}s) + TTS ${k.tts.toFixed(5)} (${r.ttsChars} chars) + AI ${k.llm.toFixed(5)} (${r.llmModel}, ${r.llmInputTokens}/${r.llmOutputTokens} tok)` : 'no record');
+  }
+  const total = () => all.reduce((s, r) => s + r.billableMinutes, 0);
+  let sum = await api('GET', `/billing/${B}`);
+  const m2 = total();
+  check(n, 'usage (b): included minutes used = billed minutes; Billing API shows it; no overage (c)', all.length === 2 && sum.usage.minutes === m2 && sum.usage.includedMinutesUsed === m2 && sum.usage.includedMinutesLeft === 800 - m2 && sum.usage.calls === 2 && sum.usage.overageSoFar.minutes === 0 && sum.usage.overageSoFar.totalPaise === 0, `${m2} min used, ${sum.usage.includedMinutesLeft} left of ${sum.usage.includedMinutes}, overage ${sum.usage.overageSoFar?.minutes} min`);
+
+  // Margin (g) for the 2 calls: revenue is the plan fee spread over the 800 included minutes.
+  const cc = await api('GET', `/admin/billing/calls/${B}`);
+  const rows = [enCall, hiCall].map(c => cc.rows.find(r => r.sourceId === c.callSid));
+  const feePerMin = 499900 / 800;
+  check(n, 'margin (g): per-call revenue = billed min × ₹4,999/800; cost < revenue', rows.every(r => r && r.revenuePaise === Math.round(r.billableMinutes * feePerMin) && r.costPaise < r.revenuePaise && r.marginPaise > 0),
+    rows.map(r => `${r.billableMinutes} min: cost ${r.costPaise}p (phone ${r.phonePaise} + AI ${r.aiPaise} + speech ${r.speechPaise}) vs revenue ${r.revenuePaise}p → margin ${r.marginPaise}p`).join(' | '));
+
+  // (c) Cross 800: seed usage to 799 min, then two more calls (→ 800, → 801).
+  const period = sum.usage.period;
+  const seedMin = 799 - m2;
+  sql(`INSERT INTO usage_records (id, business_type, channel, provider, source_id, period, started_at, duration_seconds, billable_minutes, billable, created_at) VALUES ('seed-svt-1', '${B}', 'voice', 'plivo', 'seed-svt-1', '${period}', ${Math.floor(Date.now() / 1000) - 60}, ${seedMin * 60}, ${seedMin}, 1, ${Math.floor(Date.now() / 1000)})`);
+  const stages = [];
+  for (const [i, from] of ['+919812300203', '+919812300204'].entries()) {
+    await placeCall(mocks, { carrier: 'plivo', number: NUMBER, from, lines: ['Hello, I need to reschedule.'] });
+    all = await recs(); sum = await api('GET', `/billing/${B}`);
+    stages.push({ minutes: sum.usage.minutes, o: sum.usage.overageSoFar, total: total() });
+  }
+  const want = t => { const m = Math.max(0, t - 800); return { m, ex: m * 600, gst: Math.round(m * 600 * 0.18) }; };
+  const w0 = want(stages[0].total), w1 = want(stages[1].total);
+  check(n, 'overage (c): at ≤800 min none; past 800, overage = minutes over 800 × ₹6 (+18% GST)', stages[0].minutes === stages[0].total && stages[1].total > 800 && stages[0].o.minutes === w0.m && stages[0].o.amountPaise === w0.ex && stages[1].o.minutes === w1.m && stages[1].o.amountPaise === w1.ex && stages[1].o.gstPaise === w1.gst && stages[1].o.amountPaise > 0,
+    `${stages[0].minutes} min → overage ${stages[0].o.minutes} min ₹${stages[0].o.amountPaise / 100}; ${stages[1].minutes} min → ${stages[1].o.minutes} min ₹${stages[1].o.amountPaise / 100} + GST ₹${stages[1].o.gstPaise / 100} = ₹${stages[1].o.totalPaise / 100}`);
+
+  // (d) Month-end close. No overage in a previous month → nothing billed; this month → one Razorpay add-on.
+  const [py, pm] = period.split('-').map(Number), prev = pm === 1 ? `${py - 1}-12` : `${py}-${String(pm - 1).padStart(2, '0')}`;
+  sql(`INSERT INTO usage_records (id, business_type, channel, provider, source_id, period, started_at, duration_seconds, billable_minutes, billable, created_at) VALUES ('seed-svt-prev', '${B}', 'voice', 'plivo', 'seed-svt-prev', '${prev}', ${Math.floor(Date.now() / 1000) - 40 * 86400}, 300, 5, 1, ${Math.floor(Date.now() / 1000)})`);
+  const closedPrev = await api('POST', '/admin/billing/close-period', { period: prev });
+  const addonsBefore = mocks.log.razorpay.filter(r => r.path === `/v1/subscriptions/${id}/addons`).length;
+  check(n, 'close-period (c): previous month under 800 min → no_overage, no add-on', closedPrev.find(c => c.businessType === B)?.status === 'no_overage' && addonsBefore === 0, `${closedPrev.find(c => c.businessType === B)?.status}, ${addonsBefore} add-on(s)`);
+  // The free month is over (the trial would otherwise cover the whole month and waive the overage).
+  sql(`UPDATE billing_accounts SET trial_ends_at = ${Math.floor(Date.now() / 1000) - 86400} WHERE business_type = '${B}'`);
+  const closed = await api('POST', '/admin/billing/close-period', { period });
+  const addon = mocks.log.razorpay.find(r => r.path === `/v1/subscriptions/${id}/addons`);
+  const overageTotal = w1.ex + w1.gst;
+  sum = await api('GET', `/billing/${B}`);
+  const inv0 = sum.invoices.find(i => i.period === period);
+  check(n, 'close-period (d): overage billed as one Razorpay add-on = ₹6 × minutes over 800 + GST; split CGST+SGST (same state as supplier)', closed.find(c => c.businessType === B)?.status === 'billed' && addon?.body?.item?.amount === overageTotal && inv0?.amountPaise === w1.ex && inv0.gstPaise === w1.gst && inv0.totalPaise === overageTotal && inv0.cgst + inv0.sgst === w1.gst && inv0.igst === 0,
+    `add-on ₹${(addon?.body?.item?.amount ?? 0) / 100}; invoice row subtotal ₹${inv0?.amountPaise / 100}, CGST ${inv0?.cgst / 100} + SGST ${inv0?.sgst / 100}, IGST ${inv0?.igst / 100}, total ₹${inv0?.totalPaise / 100}`);
+
+  // (d) The GST tax invoice is issued when Razorpay reports the invoice paid (plan fee + overage add-on; Setup waived).
+  const planGross = 499900 + Math.round(499900 * 0.18), paidAt = Math.floor(Date.now() / 1000);
+  const mkInv = (invId, lines) => ({ id: invId, entity: 'invoice', subscription_id: id, status: 'paid', amount: lines.reduce((s, l) => s + l.net_amount, 0), amount_paid: lines.reduce((s, l) => s + l.net_amount, 0), paid_at: paidAt, line_items: lines });
+  const invA = mkInv('inv_svt_1', [{ type: 'plan', name: 'Clinic', net_amount: planGross, quantity: 1 }, { type: 'addon', name: `Extra minutes ${period}`, net_amount: overageTotal, quantity: 1 }]);
+  const taxCount = async () => (await api('GET', `/billing/${B}`)).taxInvoices.length;
+  const c0 = await taxCount();
+  const badHook = await rzpHook('invoice.paid', { invoice: { entity: mkInv('inv_svt_bad', [{ type: 'plan', name: 'Clinic', net_amount: planGross, quantity: 1 }]) } }, 'evt_svt_bad', 'deadbeef');
+  const cBad = await taxCount();
+  const good = await rzpHook('invoice.paid', { invoice: { entity: invA }, payment: { entity: { id: 'pay_svt_1' } } }, 'evt_svt_inv1');
+  const dupSame = await rzpHook('invoice.paid', { invoice: { entity: invA }, payment: { entity: { id: 'pay_svt_1' } } }, 'evt_svt_inv1');
+  const dupNew = await rzpHook('invoice.paid', { invoice: { entity: invA }, payment: { entity: { id: 'pay_svt_1' } } }, 'evt_svt_inv1_retry');
+  await rzpHook('payment.captured', { payment: { entity: { id: 'pay_svt_1', subscription_id: id, created_at: paidAt } } }, 'evt_svt_pay1');
+  sum = await api('GET', `/billing/${B}`);
+  const tA = sum.taxInvoices.find(t => t.totalPaise === planGross + overageTotal);
+  const html = tA ? await (await fetch(`${BASE}/billing/${B}/invoices/${tA.id}`, { headers: { 'X-Admin-Key': ADMIN } })).text() : '';
+  const gstA = tA ? tA.cgst + tA.sgst + tA.igst : 0;
+  check(n, 'webhook (f): bad signature rejected (401, no invoice); signed invoice.paid issues the invoice; duplicates (same event id, or retry with a new id) add nothing; payment.captured → captured',
+    badHook.status === 401 && cBad === c0 && good.ok && dupSame.ok && dupNew.ok && sum.taxInvoices.length === c0 + 1 && sum.payment.lastStatus === 'captured',
+    `bad ${badHook.status}, invoices ${c0}→${cBad}→${sum.taxInvoices.length} after good+2 duplicates, lastStatus ${sum.payment.lastStatus}`);
+  check(n, 'tax invoice (d): subtotal + CGST 9% + SGST 9% = total, IGST 0, supplier GSTIN, SAC, no Setup line, numbered AVY/FY/######',
+    tA && tA.igst === 0 && tA.cgst > 0 && tA.cgst === Math.floor(gstA / 2) && tA.taxablePaise + gstA === tA.totalPaise && Math.abs(gstA - Math.round(tA.taxablePaise * 0.18)) <= 1 && /^AVY\/\d\d-\d\d\/\d{6}$/.test(tA.number)
+    && html.includes(SECRETS.BILLING_SUPPLIER_GSTIN) && html.includes(`SAC ${SECRETS.BILLING_SAC_CODE}`) && /CGST 9%/.test(html) && /SGST 9%/.test(html) && !/Setup/.test(html),
+    tA ? `${tA.number}: taxable ₹${tA.taxablePaise / 100} + CGST ₹${tA.cgst / 100} + SGST ₹${tA.sgst / 100} = ₹${tA.totalPaise / 100}; SAC ${SECRETS.BILLING_SAC_CODE}` : 'no invoice');
+  // Inter-state customer (Karnataka GSTIN, supplier is Maharashtra) → IGST 18%; numbers run on without gaps.
+  await api('PUT', `/billing/${B}/details`, { gstin: gstinWithCheck('29AAACR5055K1Z'), state: 'Karnataka' });
+  const invB = mkInv('inv_svt_2', [{ type: 'plan', name: 'Clinic', net_amount: planGross, quantity: 1 }]);
+  await rzpHook('invoice.paid', { invoice: { entity: invB }, payment: { entity: { id: 'pay_svt_2' } } }, 'evt_svt_inv2');
+  sum = await api('GET', `/billing/${B}`);
+  const tB = sum.taxInvoices.find(t => t.totalPaise === planGross);
+  const seq = t => Number(t.number.split('/')[2]);
+  check(n, 'tax invoice (d): Karnataka customer → IGST 18% (no CGST/SGST); invoice numbers are consecutive', tB && tB.cgst === 0 && tB.sgst === 0 && tB.igst === planGross - tB.taxablePaise && tB.taxablePaise === 499900 && tB.igst === 89982 && seq(tB) === seq(tA) + 1,
+    tB ? `${tB.number}: taxable ₹${tB.taxablePaise / 100} + IGST ₹${tB.igst / 100} = ₹${tB.totalPaise / 100}; previous ${tA?.number}` : 'no invoice');
+}
+
 // ── WhatsApp (Meta Cloud API webhook → Graph API mock) ───────────────────────
 
 const WA = { pnid: '109000000000001', pnidHi: '109000000000002', unmapped: '109000000000777' };
@@ -1407,6 +1557,7 @@ try {
   if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);
   if (!only || 'practice'.includes(only)) await practiceScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
+  if (!only || 'svt'.includes(only)) await svtIndiaScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
   if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);
