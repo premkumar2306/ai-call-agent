@@ -22,6 +22,7 @@ export const sectors = sqliteTable('sectors', {
   disclosureText:   text('disclosure_text'),
   privacyNoticeUrl: text('privacy_notice_url'),
   retentionDays:    integer('retention_days'),            // null = keep
+  guardrails:       integer('guardrails', { mode: 'boolean' }), // 0027: null/false = off
   // Phone-line language + providers (0012). Defaults = English, Deepgram, Cartesia.
   voiceLanguage: text('voice_language').notNull().default('en'),   // en | hi | hi-en
   sttProvider:   text('stt_provider').notNull().default('deepgram'), // deepgram | sarvam

@@ -33,6 +33,7 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     disclosureText:   row.disclosureText ?? undefined,
     privacyNoticeUrl: row.privacyNoticeUrl ?? undefined,
     retentionDays:    row.retentionDays ?? undefined,
+    ...(row.guardrails ? { guardrails: true } : {}),
     voice: resolveVoiceSettings({ voice: {
       language: row.voiceLanguage as VoiceSettings['language'],
       sttProvider: row.sttProvider as VoiceSettings['sttProvider'],
@@ -159,6 +160,14 @@ export async function upsertSector(env: Env, key: string, data: {
 
 export async function invalidateSectors(env: Env): Promise<void> {
   await env.CACHE.delete(CACHE_KEY);
+}
+
+/** Switches conversation guardrails on or off for one business. False when it doesn't exist. */
+export async function setGuardrails(env: Env, key: string, enabled: boolean): Promise<boolean> {
+  const rows = await getDb(env.DB).update(sectorsTable).set({ guardrails: enabled, updatedAt: new Date() })
+    .where(eq(sectorsTable.key, key)).returning({ key: sectorsTable.key });
+  await env.CACHE.delete(CACHE_KEY);
+  return rows.length > 0;
 }
 
 export interface PrivacySettings {
