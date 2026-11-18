@@ -21,4 +21,10 @@ describe('parseServiceLines', () => {
     expect(good).toHaveLength(1);
     expect(bad.map(b => b.line)).toEqual(['Just a name', 'X, abc, 30', 'Y, 100, 0']);
   });
+  it('accepts Indian and western grouping, ₹ and Rs', () => {
+    const { good, bad } = parseServiceLines('Implant, 1,00,000, 90\nCrown - ₹1,00,000 - 60\nBridge, Rs. 25,000, 45\nVeneer, 1,000, 30\nScan,500,30');
+    expect(bad).toEqual([]);
+    expect(good.map(g => g.priceCents)).toEqual([10000000, 10000000, 2500000, 100000, 50000]);
+    expect(good.map(g => g.durationMinutes)).toEqual([90, 60, 45, 30, 30]);
+  });
 });

@@ -22,7 +22,8 @@ export function parseServiceLines(text: string): { good: ParsedService[]; bad: B
   const good: ParsedService[] = [];
   const bad: BadLine[] = [];
   for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim().replace(/(\d),(?=\d{3}(?!\d))/g, '$1');
+    // Grouping commas (1,000 / 1,00,000) are part of a number, not separators.
+    const line = raw.trim().replace(/(?<!\d)\d{1,3}(?:,\d{2})*,\d{3}(?!\d)/g, m => m.replace(/,/g, ''));
     if (!line) continue;
     const parts = line.split(SPLIT).map(p => p.trim()).filter(Boolean);
     if (parts.length < 2) { bad.push({ line, reason: 'Needs a name and a price' }); continue; }
