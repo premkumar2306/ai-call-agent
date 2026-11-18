@@ -574,6 +574,47 @@ async function practiceScenario(mocks) {
 
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
 // token, the caller hanging up mid-call, and the hangup callback.
+async function onboardScenario() {
+  const S = 'onboard';
+  const LEAD = 'lotus-dental-hub-bengaluru', K = 'lotus_dental_hub_bengaluru';
+  const run = (...extra) => spawnSync('node', ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', 'scripts/onboard-clinic.mjs', '--lead', LEAD, ...extra], { cwd: WORKER_DIR, encoding: 'utf8', env: { ...process.env, WORKER_URL: BASE, ADMIN_KEY: ADMIN } });
+  console.log('\n▶ onboard: India dental preset from a campaign lead');
+  const dry = run();
+  check(S, 'dry run prints the plan and exits 0', dry.status === 0 && /DRY RUN/.test(dry.stdout), dry.stderr.slice(0, 200));
+  check(S, 'dry run never prints the admin key', !dry.stdout.includes(ADMIN) && !dry.stderr.includes(ADMIN));
+  const gone = await fetch(`${BASE}/admin/sectors/${K}`, { headers: { 'X-Admin-Key': ADMIN } });
+  check(S, 'dry run creates nothing', gone.status === 404, `HTTP ${gone.status}`);
+  const applied = run('--apply');
+  check(S, '--apply succeeds', applied.status === 0, (applied.stdout + applied.stderr).slice(-300));
+  check(S, 'apply never prints the admin key', !applied.stdout.includes(ADMIN) && !applied.stderr.includes(ADMIN));
+  const sec = await api('GET', `/admin/sectors/${K}`);
+  check(S, 'India locale: IN, INR, Asia/Kolkata, en-IN', sec.countryCode === 'IN' && sec.currency === 'INR' && sec.timezone === 'Asia/Kolkata' && sec.locale === 'en-IN', JSON.stringify([sec.countryCode, sec.currency, sec.timezone, sec.locale]));
+  check(S, 'dental clinic vertical', sec.kind === 'dental' && sec.vertical === 'clinic', JSON.stringify([sec.kind, sec.vertical]));
+  check(S, 'voice: Hindi/English (Sarvam) and DTMF on', sec.voice?.language === 'hi-en' && sec.voice?.sttProvider === 'sarvam' && sec.dtmfInput === true, JSON.stringify(sec.voice));
+  check(S, 'no staff phone copied from the lead', !sec.phone);
+  const g = await api('GET', `/admin/guardrails/${K}`);
+  check(S, 'guardrails on', g.enabled === true);
+  const priv = await api('GET', `/admin/privacy/${K}/settings`);
+  check(S, 'DPDP disclosure on', JSON.stringify(priv).includes('true'), JSON.stringify(priv).slice(0, 200));
+  const cf = await api('GET', `/clinic/${K}`);
+  check(S, 'duration booking on; recalls, no-show, review requests off', cf.durationBooking === true && !cf.recalls && !cf.noShowRecovery && !cf.reviewRequests, JSON.stringify(cf));
+  const wa = await api('GET', `/admin/whatsapp/business/${K}`);
+  check(S, 'WhatsApp reminders and missed-call follow-up off', wa.settings?.reminders === false && wa.settings?.missedCallFollowup === false, JSON.stringify(wa.settings));
+  const pilot = await api('GET', `/pilot/${K}`);
+  check(S, 'pilot is a draft (not enabled), no dates', !pilot.config?.enabled && !pilot.active, JSON.stringify(pilot.config));
+  const bill = await api('GET', `/admin/billing/accounts/${K}`);
+  check(S, 'plan in_clinic with FOUNDING25, not subscribed', bill.planId === 'in_clinic' && bill.offerCode === 'FOUNDING25' && !bill.razorpaySubscriptionId, JSON.stringify([bill.planId, bill.offerCode]));
+  const products = await api('GET', `/admin/products/${K}`);
+  check(S, '8 dental starter services', Array.isArray(products) && products.length === 8, `${products?.length}`);
+  const nums = await api('GET', '/admin/phone-numbers');
+  check(S, 'no phone number mapped', !JSON.stringify(nums).includes(K));
+  const again = run('--apply');
+  check(S, 'running again changes nothing', again.status === 0 && /Already onboarded/.test(again.stdout), again.stdout.slice(-200));
+  const products2 = await api('GET', `/admin/products/${K}`);
+  const offers = await api('GET', '/admin/billing/offers');
+  check(S, 'no duplicate services; FOUNDING25 seat used once', products2.length === 8 && (offers.find(o => o.code === 'FOUNDING25')?.redeemed ?? 0) >= 1);
+}
+
 async function plivoScenario(mocks) {
   const n = 'plivo';
   console.log('\n▶ Plivo: signatures, unknown number, hangup mid-call');
@@ -1558,6 +1599,7 @@ try {
   if (!only || 'practice'.includes(only)) await practiceScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'svt'.includes(only)) await svtIndiaScenario(mocks);
+  if (!only || 'onboard'.includes(only)) await onboardScenario();
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
   if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);
