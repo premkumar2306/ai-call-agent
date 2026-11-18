@@ -199,6 +199,13 @@ export function unsupportedAmount(text: string, allowed: Set<number>): number | 
 export const claimsBooking = (text: string): boolean => BOOKING_CLAIMS.test(text);
 export const promisesOutcome = (text: string): boolean => OUTCOME_PROMISES.test(text);
 
+/** Which fact check (if any) a finished reply fails. Used by the WhatsApp path; runTurn checks per spoken chunk. */
+export function failedFactCheck(text: string, products: Product[], meta: SectorMeta | null | undefined, messages: Anthropic.MessageParam[]): 'price' | 'booking' | 'promise' | null {
+  if (unsupportedAmount(text, allowedAmounts(products, meta, toolResultTexts(messages))) !== null) return 'price';
+  if (claimsBooking(text) && !bookingSucceeded(messages)) return 'booking';
+  return promisesOutcome(text) ? 'promise' : null;
+}
+
 const BOOKING_TOOLS = new Set(['book_appointment', 'reschedule_booking']);
 
 /** True when a booking tool has returned success anywhere in the conversation. */

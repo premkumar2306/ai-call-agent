@@ -53,5 +53,6 @@ silence timeout. The hook is a few lines: when a turn finishes and `cache.endCal
   ("five thousand rupees") is not caught.
 - The checks run per spoken chunk; a claim split across two sentences is not caught.
 - Card numbers and OTPs the speech recogniser writes as words are not redacted.
-- The code checks live in `runTurn` (phone calls through CallRelay and `/twilio/turn`). WhatsApp (`whatsapp.ts`) and the
-  browser voice test (`mogi.ts`) run their own loops: they get the prompt rules (via `buildSystemPrompt`) but not the code checks.
+- Code checks run in `runTurn` (phone) and in `whatsapp.ts` (same detection and redaction; the fact check runs on the
+  whole reply instead of per chunk). After an emergency on WhatsApp the booking tools are not blocked, only the prompt
+  says so. The browser voice test (`mogi.ts`) gets the prompt rules only (internal demo).

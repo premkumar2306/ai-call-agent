@@ -1149,6 +1149,27 @@ async function guardrailsScenario(mocks) {
   check(n, 'the card number is not in the transcript or anywhere stored for the call', !!row && !/4111/.test(row.turns), row ? row.turns.slice(-160) : 'no transcript');
   const ev = (await api('GET', `/admin/guardrails/${B}?callSid=${encodeURIComponent(call.callSid)}`)).events?.map(e => e.kind).sort();
   check(n, 'the call is flagged for Operator → Calls', JSON.stringify(ev) === JSON.stringify(['advice', 'blocked_booking', 'blocked_price', 'emergency', 'injection', 'pii']), JSON.stringify(ev));
+
+  // WhatsApp gets the same checks (the orchestrator asked for the patient channel too).
+  const WG = '109000000000555', patient = '919812300311';
+  await setupBusiness({ key: 'in_wa_g', name: 'Guard WhatsApp Clinic', country: 'IN', phone: '+919876500032', number: '+918047100032', provider: 'exotel', vertical: 'clinic' });
+  await api('PUT', '/admin/whatsapp-numbers', { phoneNumberId: WG, businessType: 'in_wa_g', label: 'E2E guardrails' });
+  await api('PUT', '/admin/guardrails/in_wa_g', { enabled: true });
+  const ask = async text => {
+    const t = Date.now();
+    await waPost(waBody(WG, [waText(patient, text)]));
+    return (await waReplies(mocks, patient, t, { min: 1 })).map(textOf).filter(x => !/AI assistant/.test(x)).join(' ');
+  };
+  const wBefore = modelCalls();
+  const w1 = await ask('I have severe chest pain');
+  const w2 = await ask('how much is a root canal');
+  const w3 = await ask('my card number is 4111 1111 1111 1111');
+  check(n, 'WhatsApp: emergency → 112 and staff, no model call', /112/.test(w1) && /staff/.test(w1), w1.slice(0, 100));
+  check(n, 'WhatsApp: made-up price is blocked', !/7500/.test(w2) && /can't confirm that price/.test(w2), w2.slice(0, 100));
+  check(n, 'WhatsApp: card number is refused and not stored', /don't share card numbers/.test(w3) && !/4111/.test(JSON.stringify(sql(`SELECT turns FROM transcripts WHERE business_type = 'in_wa_g'`))), w3.slice(0, 80));
+  const wev = (await api('GET', '/admin/guardrails/in_wa_g')).events.map(e => e.kind).sort();
+  check(n, 'WhatsApp: events flagged', JSON.stringify(wev) === JSON.stringify(['blocked_price', 'emergency', 'pii']), JSON.stringify(wev));
+  void wBefore;
   // The existing business without the switch is untouched.
   const quiet = await api('GET', '/admin/guardrails/in_plivo_en');
   check(n, 'a business that did not opt in has guardrails off and no flags', quiet.enabled === false && quiet.events?.length === 0, JSON.stringify(quiet));

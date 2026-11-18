@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  allowedAmounts, bookingSucceeded, claimsBooking, detectCallerSignal, guardrailPrompt, guardrailReply, guardrailsEnabled,
+  failedFactCheck, allowedAmounts, bookingSucceeded, claimsBooking, detectCallerSignal, guardrailPrompt, guardrailReply, guardrailsEnabled,
   promisesOutcome, redactPII, replyLang, unsupportedAmount, verticalKind,
 } from '../src/services/guardrails';
 import { buildAgentRules } from '../src/services/turn.service';
@@ -147,4 +147,19 @@ describe('guardrails: consent', () => {
     }
   });
   it('plays nothing for a US business that has not opted in', () => expect(callStartNotice({ ...US, guardrails: undefined })).toBeNull());
+});
+
+describe('guardrails: whole-reply fact check (WhatsApp)', () => {
+  const products = [{ priceCents: 50000, originalPriceCents: 50000 }] as Product[];
+  const ok = (t: string, messages: any[] = []) => failedFactCheck(t, products, IN, messages);
+  it('passes a catalog price and ordinary text', () => { expect(ok('Cleaning is ₹500.')).toBeNull(); expect(ok('We open at 9.')).toBeNull(); });
+  it('fails an invented price, an unbacked booking claim, and a promise', () => {
+    expect(ok('A root canal is ₹7,500.')).toBe('price');
+    expect(ok("You're all set for Monday.")).toBe('booking');
+    expect(ok('We guarantee results.')).toBe('promise');
+  });
+  it('allows a booking claim after the booking tool succeeded', () => {
+    const msgs = [{ role: 'assistant', content: [{ type: 'tool_use', id: '1', name: 'book_appointment', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: '1', content: '{}' }] }];
+    expect(ok("You're all set for Monday.", msgs)).toBeNull();
+  });
 });

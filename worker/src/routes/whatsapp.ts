@@ -50,6 +50,7 @@ import { getOrders } from '../services/order.service';
 import { executeTool } from '../services/tool-router.service';
 import { getProducts } from '../services/catalog.service';
 import { agentTools, buildSystemPrompt } from '../services/turn.service';
+import { CORRECTIONS, detectCallerSignal, failedFactCheck, guardrailReply, guardrailsEnabled, recordGuardrailEvent, redactPII, replyLang } from '../services/guardrails';
 import { saveTranscript } from '../services/transcript.service';
 import { whatsappNotice, recordConsent } from '../services/disclosure';
 import { resolveVoiceSettings } from '../services/voice-language';
@@ -384,6 +385,27 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
       });
     }
 
+    // Conversation guardrails (off unless the business opted in; services/guardrails.ts):
+    // redact card numbers, Aadhaar and OTPs, and answer emergencies, self-harm, abuse,
+    // injection and advice requests with a fixed reply, without the model.
+    const guard = guardrailsEnabled(sectorMeta);
+    const waSid = `wa:${phoneHash.slice(0, 8)}`;
+    const flag = (kind: Parameters<typeof recordGuardrailEvent>[1]['kind'], detail?: string) =>
+      recordGuardrailEvent(env, { businessType, callSid: waSid, kind, detail });
+    const stored = guard ? redactPII(utterance).text : utterance;
+    const signal = guard ? detectCallerSignal(utterance) : null;
+    if (signal) {
+      const strike = signal.kind === 'abuse' ? 1 + history.filter(t => t.role === 'user' && detectCallerSignal(t.content)?.kind === 'abuse').length : 0;
+      const fixed = guardrailReply(signal.kind, replyLang(signal, utterance, sectorMeta), sectorMeta, { strike });
+      await flag(signal.kind, strike ? `strike ${strike}` : undefined);
+      const turns = trimHistory([...history, { role: 'user', content: stored }, { role: 'assistant', content: fixed }], 30);
+      await saveWaHistory(env, phoneHash, businessType, turns);
+      await reply(fixed);
+      await saveTranscript(env, { callSid: waSid, customerIdHashed: phoneHash, businessType, turns })
+        .catch(err => console.error('wa transcript error', err.message));
+      return;
+    }
+
     // Same rules, business profile and tools as the phone agent, chat-formatted.
     const systemPrompt: Anthropic.TextBlockParam[] = [
       ...buildSystemPrompt({ businessType, sectorMeta, products, session, orders, channel: 'chat' }),
@@ -394,7 +416,7 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
     const tools = agentTools(businessType, sectorMeta, products.length);
     const messages: Anthropic.MessageParam[] = [
       ...history.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
-      { role: 'user', content: utterance },
+      { role: 'user', content: stored },
     ];
 
     let replyText = '';
@@ -435,10 +457,14 @@ async function handleMessage(env: Env, message: WaMessage, phoneNumberId: string
       break;
     }
     if (!replyText) replyText = cannedReply('error', lang);
+    if (guard) {
+      const bad = failedFactCheck(replyText, products, sectorMeta, messages);
+      if (bad) { await flag(`blocked_${bad}`); replyText = CORRECTIONS[bad]; }
+    }
 
     const updatedHistory = trimHistory([
       ...history,
-      { role: 'user', content: utterance },
+      { role: 'user', content: stored },
       { role: 'assistant', content: replyText },
     ], 30);
     await saveWaHistory(env, phoneHash, businessType, updatedHistory);
