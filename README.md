@@ -1,8 +1,10 @@
 # Avery Platform
 
-AI-powered voice assistant for multi-vertical businesses (auto shop, clinic, real estate). Customers call a phone number and talk to **Avery** — a voice agent that searches services, checks availability, and books appointments.
+AI phone and WhatsApp receptionist (**Avery**, sold as DeskZen) for clinics, dental practices, law firms and other appointment businesses, in India and the US. Callers talk to Avery in English, Hindi/Hinglish, Kannada, Telugu or Tamil; it answers questions from the business's own services and prices, checks availability, books, reminds, and hands over to staff. Billing is in ₹ with GST (Razorpay) or $.
 
-**Live phone number: +1 (312) 685-4305**
+New here, or a Claude session? Read [`CLAUDE.md`](CLAUDE.md) first: stack, checks, rules and how work is organised.
+
+**Live US demo number: +1 (312) 685-4305**
 
 ---
 
@@ -125,8 +127,9 @@ one-time code back to the UI (development only), so no email is needed. A new ac
 goes straight to the onboarding wizard, then to **Home** (recent calls and WhatsApp chats with
 their outcome, today's numbers, and a setup checklist). Owners and staff get a left sidebar (a bottom bar and menu on
 phones): Home, Calls & messages, Calendar (week / list view of appointments and the Google
-Calendar connection), Doctors / Dentists / Lawyers, Services & prices, Try your assistant and, for
-owners, Settings. Light, dark or follow-the-system theme (sidebar footer). The UI is plain React with one stylesheet
+Calendar connection), Doctors / Dentists / Lawyers, Try your assistant and, for
+owners, Settings (business, phone, voice, WhatsApp, privacy, billing, and **Services & prices**: starter lists per
+vertical and paste-a-price-list import). Read-only staff see a view-only Services & prices page instead. Light, dark or follow-the-system theme (sidebar footer). The UI is plain React with one stylesheet
 (`web/src/index.css`) and shared components in `web/src/components/ui.tsx`. To use the operator view instead, pick
 "Operator? Sign in with the admin key" and enter `ADMIN_SECRET` (`dev-admin-key` in
 `.dev.vars.example`); it is kept in `sessionStorage` for the tab only. The operator gets an
@@ -792,11 +795,11 @@ curl -s -X POST "$WORKER/admin/resources" -H "X-Admin-Key: $KEY" -H 'Content-Typ
 | `worker/src/routes/exotel.ts`, `plivo.ts` | Indian carriers: stream URL, auth, transfer-to-staff endpoints |
 | `worker/src/telephony/` | Telephony adapters: each carrier's media-stream protocol (Twilio, Exotel, Plivo) behind one interface |
 | `worker/src/services/phone-numbers.ts` | Called number → business routing (`phone_numbers` table) |
-| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: carrier adapter → Deepgram STT → `runTurn()` → Cartesia TTS |
-| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: STT → `runTurn()` → TTS, barge-in |
+| `worker/src/durable-objects/call-relay.ts` | Per-call Durable Object: carrier adapter → STT → `runTurn()` → TTS; barge-in, keypad digits, reconnects, end-of-call |
 | `worker/src/durable-objects/voice-providers.ts` | STT/TTS provider interface: Deepgram, Cartesia, Sarvam (`stt-sarvam.ts`, `tts-sarvam.ts`) |
 | `worker/src/services/voice-language.ts` | Per-business voice language settings, Hindi word lists, canned lines, prompt language rules |
 | `worker/src/services/turn.service.ts` | Voice agent loop (streaming, prompt caching) |
+| `worker/src/services/guardrails.ts` | Conversation guardrails: emergencies, advice, injection, abuse, PII redaction, price/booking fact checks (see [`docs/guardrails.md`](docs/guardrails.md)) |
 | `worker/src/services/tool-router.service.ts` | AI tool definitions (search, availability, booking) |
 | `worker/src/services/calendar/` | Per-business calendar integration: provider adapters (`google.ts`), connection storage, busy-time and event sync |
 | `worker/src/routes/account.ts`, `worker/src/services/accounts.ts` | Business-owner sign-in codes, owner tokens, memberships, onboarding |
@@ -889,6 +892,16 @@ carrier's docs; they are exercised by the e2e simulators, not yet by a real carr
   `ctx.waitUntil`, so they finish even if the caller has gone.
 - `cache.endCall`: after the current reply (the goodbye) has played, the stream is closed and the call finalised once;
   the caller speaking doesn't cancel it.
+
+### Conversation guardrails (optional, per business)
+
+Off by default; turn on with `PUT /admin/guardrails/:business {"enabled":true}`. Applies to phone calls and
+WhatsApp: emergencies get 112 (India) / 911 (US) and a staff offer, with no booking; no medical or legal advice;
+prices and bookings only from the catalog and booking tools; injection attempts and requests for other people's
+data are refused; abuse gets one warning, then the call ends; card, Aadhaar and OTP numbers are redacted before
+storage. Events are stored per call (`GET /admin/guardrails/:business?callSid=…`). Rules, where each is enforced
+and its tests: [`docs/guardrails.md`](docs/guardrails.md). Helpline numbers and the non-English keyword lists
+need confirming before go-live.
 
 ### How a call turn works
 
