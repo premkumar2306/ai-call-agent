@@ -709,6 +709,110 @@ async function dtmfScenario(mocks) {
   }
 }
 
+// Disconnects: the speech socket drops mid-utterance (recovers; says "one moment"
+// if the gap is long; cannot recover → apology and staff), the voice request fails
+// (retried), the carrier stream drops with no stop event (finalised once), and the
+// caller hangs up while the assistant is booking (no half-written booking).
+async function disconnectScenario(mocks) {
+  const sttCount = () => mocks.log.stt.length;
+  const heard = (since, re) => mocks.log.tts.slice(since).some(t => re.test(t.text));
+
+  console.log('\n▶ Speech socket drops mid-utterance (US business, Twilio)');
+  {
+    const n = 'reconnect twilio';
+    const r = {};
+    const call = await placeCall(mocks, { carrier: 'twilio', number: SCENARIOS[0].number, from: SCENARIOS[0].from, drive: async () => {
+      // 1) a quick drop: reopened at once, the call carries on.
+      let s0 = sttCount(), t0 = mocks.log.tts.length;
+      mocks.dropStt();
+      await sleep(1200);
+      r.quickReopened = sttCount() - s0;
+      r.quickFiller = heard(t0, /^One moment\./);
+      await mocks.say('Thank you, bye.');
+      await sleep(1500);
+      r.quickAnswered = heard(t0, /Goodbye/);
+      // 2) a slow recovery: two refused reconnects, then it works; the gap passes 1.5 s → "one moment".
+      s0 = sttCount(); t0 = mocks.log.tts.length;
+      mocks.faults.sttRefuse = 2;
+      mocks.dropStt();
+      await sleep(3500);
+      r.slowFiller = heard(t0, /^One moment\./);
+      r.slowReopened = sttCount() - s0;
+      const t1 = mocks.log.tts.length;
+      await mocks.say('Thank you, bye.');
+      await sleep(1500);
+      r.slowAnswered = heard(t1, /Goodbye/);
+      // 3) a voice request fails once: retried, the reply is still spoken.
+      const t2 = mocks.log.tts.length;
+      mocks.faults.ttsFail = 1;
+      await mocks.say('Tell me about your services please.');
+      await sleep(2500);
+      r.ttsRetried = heard(t2, /general consultations/);
+    } });
+    check(n, 'speech socket dropped mid-call: reopened, call carries on', r.quickReopened >= 1 && r.quickAnswered && !r.quickFiller, `reopened ${r.quickReopened}, answered ${r.quickAnswered}, filler ${r.quickFiller}`);
+    check(n, 'slow recovery (2 refused attempts): "one moment" is said, then it recovers', r.slowFiller && r.slowReopened >= 1 && r.slowAnswered, `filler ${r.slowFiller}, reopened ${r.slowReopened}, answered ${r.slowAnswered}`);
+    check(n, 'a failed voice request is retried and the reply is still spoken', r.ttsRetried, `${r.ttsRetried}`);
+    check(n, 'the call was never handed off or cut', !call.closedByServer, `closedByServer ${call.closedByServer}`);
+  }
+
+  console.log('\n▶ Speech socket cannot be recovered (Indian business, Exotel)');
+  {
+    const n = 'reconnect failure';
+    const sc = SCENARIOS.find(x => x.key === 'in_exotel');
+    const r = {};
+    const t0 = mocks.log.tts.length;
+    const call = await placeCall(mocks, { carrier: 'exotel', number: sc.number, from: sc.from, drive: async ({ closed }) => {
+      mocks.faults.sttRefuse = 99;
+      const dropped = Date.now();
+      mocks.dropStt();
+      await Promise.race([closed, sleep(12000)]);
+      r.afterMs = Date.now() - dropped;
+    } });
+    mocks.faults.sttRefuse = 0;
+    check(n, 'no recovery within ~5 s: the caller hears an apology', heard(t0, /trouble on my end/), mocks.log.tts.slice(t0).map(t => t.text).join(' | ').slice(-120));
+    check(n, 'then the call is handed to staff, not left silent', call.closedByServer && !!call.transferTo && call.transferTo.replace(/\D/g, '').endsWith(sc.staffPhone.replace(/\D/g, '').slice(-10)), `closedByServer ${call.closedByServer}, dials ${call.transferTo}, after ${r.afterMs}ms`);
+    check(n, 'within about 8 s of the drop', r.afterMs < 9000, `${r.afterMs}ms`);
+  }
+
+  console.log('\n▶ Carrier stream drops without a stop event (Plivo)');
+  {
+    const n = 'carrier drop';
+    const sc = SCENARIOS.find(x => x.key === 'in_plivo_en');
+    const call = await placeCall(mocks, { carrier: 'plivo', number: sc.number, from: sc.from, lines: ["Hi, I'd like to book an appointment."], hangUpEarly: true });
+    await plivoPost('/plivo/hangup', { CallUUID: call.callSid, Event: 'Hangup', CallStatus: 'completed', HangupCause: 'NORMAL_CLEARING' });
+    await sleep(1500);
+    const u = sql(`SELECT COUNT(*) AS c FROM usage_records WHERE source_id = '${call.callSid}'`)[0]?.c;
+    const t = sql(`SELECT COUNT(*) AS c FROM transcripts WHERE call_sid = '${call.callSid}'`)[0]?.c;
+    check(n, 'stream dropped with no stop: usage and the call record are each written exactly once', u === 1 && t === 1, `usage rows ${u}, transcript rows ${t}`);
+  }
+
+  console.log('\n▶ Caller hangs up while the assistant is booking');
+  // Two hang-up moments: while the model is still deciding (nothing may be written) and
+  // just as the booking tool runs (what is written must be complete and announced).
+  for (const h of [{ key: 'in_plivo_en', carrier: 'plivo', ms: 600 }, { key: 'in_exotel', carrier: 'exotel', ms: 1380 }]) {
+    const n = `hangup mid-booking (${h.carrier}, +${h.ms}ms)`;
+    const sc = SCENARIOS.find(x => x.key === h.key);
+    const before = sql(`SELECT COUNT(*) AS c FROM orders WHERE business_type = '${sc.key}'`)[0].c;
+    const notify0 = mocks.log.email.length + mocks.log.sms.length;
+    const call = await placeCall(mocks, { carrier: h.carrier, number: sc.number, from: sc.from, hangUpEarly: true, drive: async ({ quiet }) => {
+      await mocks.say("Hi, I'd like to book an appointment.");
+      await quiet(Date.now() - 1);
+      mocks.faults.llmDelayMs = 600;       // the model is slow, so the hang-up lands while it works
+      await mocks.say('The first one works, please book it.');
+      await sleep(h.ms);
+    } });
+    mocks.faults.llmDelayMs = 0;
+    await sleep(3000);
+    const made = sql(`SELECT COUNT(*) AS c FROM orders WHERE business_type = '${sc.key}'`)[0].c - before;
+    const rows = made ? sql(`SELECT customer_name, scheduled_at FROM orders WHERE business_type = '${sc.key}' ORDER BY created_at DESC LIMIT ${made}`) : [];
+    const notified = mocks.log.email.length + mocks.log.sms.length - notify0;
+    check(n, 'at most one booking, and a written booking is complete (name, time)', made <= 1 && rows.every(o => o.customer_name && o.scheduled_at), `${made} new booking(s): ${JSON.stringify(rows)}`);
+    check(n, 'a booking that was written also reached the front desk (notification sent)', made === 0 || notified >= 1, `${made} booking(s), ${notified} notification(s)`);
+    const u = sql(`SELECT COUNT(*) AS c FROM usage_records WHERE source_id = '${call.callSid}'`)[0]?.c;
+    check(n, 'the call is still finalised once', u === 1, `usage rows ${u}`);
+  }
+}
+
 async function rzpHook(event, payload, eventId = `evt_${randomUUID()}`, signature) {
   const raw = JSON.stringify({ entity: 'event', event, payload, created_at: Math.floor(Date.now() / 1000) });
   const sig = signature ?? createHmac('sha256', SECRETS.RAZORPAY_WEBHOOK_SECRET).update(raw).digest('hex');
@@ -1235,6 +1339,7 @@ try {
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
   if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);
+  if (!only || 'disconnect'.includes(only)) await disconnectScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();
   if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
   if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);

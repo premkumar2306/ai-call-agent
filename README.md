@@ -871,6 +871,25 @@ event (`services/dtmf.ts` decides, `CallRelay.handleDtmf` acts):
 Twilio only sends digits on bidirectional `<Connect><Stream>` (what we use). The wire shapes follow each
 carrier's docs; they are exercised by the e2e simulators, not yet by a real carrier call.
 
+### Disconnects and reconnects
+
+- **Speech (Deepgram, Sarvam) socket drops mid-call**: reopened with backoff (200 / 500 / 1000 ms, at most 3 tries
+  inside 5 s). The carrier stream stays up. If the gap passes 1.5 s the caller hears "One moment." If it can't
+  be recovered, the caller hears an apology and the call goes to staff (business has a staff phone) or is ended
+  politely; never silence. The staff transfer does not check opening hours (the caller can't leave a message
+  when we can't hear them).
+- **Voice (Cartesia, Sarvam TTS)** is one HTTP request per sentence, not a socket. A failed request is retried
+  (200 / 500 ms); two sentences in a row that can't be voiced means the provider is down → staff transfer / hang up.
+  Kannada, Telugu and Tamil callers hear the apology in English until a native speaker supplies the lines.
+- **Carrier stream drops without a stop event**: the call record, usage and follow-up are each written once
+  (in-process flags, plus a unique index on `usage_records (channel, source_id)`). No carrier here offers a way
+  to resume the same media stream, so a dropped call is finalised, not resumed. No resume behaviour was invented.
+- **Hang-up during a booking**: the order is one atomic INSERT (with the slot-free check in the statement), so it is
+  either written whole or not at all. Its side effects (calendar sync, staff notification) now run under
+  `ctx.waitUntil`, so they finish even if the caller has gone.
+- `cache.endCall`: after the current reply (the goodbye) has played, the stream is closed and the call finalised once;
+  the caller speaking doesn't cancel it.
+
 ### How a call turn works
 
 - **Grounding.** The system prompt carries a business profile built from D1 — address, phone, website,

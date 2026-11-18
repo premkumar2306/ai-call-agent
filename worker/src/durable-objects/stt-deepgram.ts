@@ -61,6 +61,8 @@ export interface SttOptions {
    * count. The finalized transcript is still a barge-in backstop. Default 2.
    */
   bargeInMinWords?: number;
+  /** The provider closed the socket (or it errored) while the call was still using it. Not called after our own close(). */
+  onClose?: () => void;
   /**
    * How long an incomplete-looking transcript (see looksIncomplete) waits for
    * the caller to carry on before it's answered anyway. Default 900.
@@ -218,7 +220,7 @@ export async function createDeepgramSTT(
 ): Promise<Stt> {
   const {
     apiKey, model = 'nova-3', language = 'en', debug = false,
-    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, statementHoldMs = 400, isEcho, onActivity,
+    endpointingMs = 250, minConfidence = 0.5, bargeInMinWords = 2, incompleteHoldMs = 900, statementHoldMs = 400, isEcho, onActivity, onClose,
     voiceLanguage: lang = 'en',
   } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
@@ -447,8 +449,9 @@ export async function createDeepgramSTT(
     }
   });
 
-  ws.addEventListener('close', () => { isOpen = false; });
-  ws.addEventListener('error', (e: any) => { isOpen = false; console.error('[dg stt]', e?.message || e); });
+  const dropped = () => { const was = isOpen; isOpen = false; if (was) onClose?.(); };
+  ws.addEventListener('close', dropped);
+  ws.addEventListener('error', (e: any) => { console.error('[dg stt]', e?.message || e); dropped(); });
 
   return {
     sendAudio: (buf: ArrayBuffer) => { if (isOpen) ws.send(buf); },
@@ -471,7 +474,7 @@ export async function createDeepgramFluxSTT(
   onTranscript: (text: string) => void,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
-  const { apiKey, model = 'flux-general-en', debug = false, minConfidence = 0.5, bargeInMinWords = 2, isEcho } = opts;
+  const { apiKey, model = 'flux-general-en', debug = false, minConfidence = 0.5, bargeInMinWords = 2, isEcho, onClose } = opts;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
   const url = 'https://api.deepgram.com/v2/listen?' + new URLSearchParams({
     model, encoding: 'mulaw', sample_rate: '8000',
@@ -522,8 +525,9 @@ export async function createDeepgramFluxSTT(
       console.error('[dg flux] parse error', e?.message || e);
     }
   });
-  ws.addEventListener('close', () => { isOpen = false; });
-  ws.addEventListener('error', (e: any) => { isOpen = false; console.error('[dg flux]', e?.message || e); });
+  const dropped = () => { const was = isOpen; isOpen = false; if (was) onClose?.(); };
+  ws.addEventListener('close', dropped);
+  ws.addEventListener('error', (e: any) => { console.error('[dg flux]', e?.message || e); dropped(); });
 
   return {
     sendAudio: (buf: ArrayBuffer) => {

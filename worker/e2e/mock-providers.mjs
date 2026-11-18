@@ -25,6 +25,9 @@ export async function startMocks({ port = 0 } = {}) {
   const log = { tts: [], stt: [], anthropic: [], razorpay: [], plivo: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
   const failing = new Set();
+  // Faults a scenario switches on: refuse the next N speech-socket upgrades, fail the next N
+  // voice requests, slow every model reply.
+  const faults = { sttRefuse: 0, ttsFail: 0, llmDelayMs: 0 };
   // Plivo account contents for GET Number/ and Application/:id/ (set by the run).
   const plivo = { numbers: [], apps: {} };
 
@@ -38,7 +41,10 @@ export async function startMocks({ port = 0 } = {}) {
         log.other.push({ host, path, method: req.method, failed: true });
         return json(res, 401, { err_msg: `Invalid credentials: ${req.headers.authorization ?? req.headers['x-api-key'] ?? ''}` });
       }
-      if (host === 'api.anthropic.com' && path === '/v1/messages') return anthropic(JSON.parse(body), res, log);
+      if (host === 'api.anthropic.com' && path === '/v1/messages') {
+        if (faults.llmDelayMs) await sleep(faults.llmDelayMs);
+        return anthropic(JSON.parse(body), res, log);
+      }
       if (host === 'ics.mock.test') {
         // A practice-software calendar export: today (IST) is fully booked.
         log.other.push({ host, path, method: req.method });
@@ -48,6 +54,7 @@ export async function startMocks({ port = 0 } = {}) {
       }
       if (host === 'api.cartesia.ai' && path === '/tts/bytes') {
         const b = JSON.parse(body);
+        if (faults.ttsFail > 0) { faults.ttsFail--; log.other.push({ host, path, failed: true }); return json(res, 503, { error: 'unavailable' }); }
         log.tts.push({ provider: 'cartesia', text: b.transcript, format: b.output_format, at: Date.now() });
         return audioResponse(res, b.transcript);
       }
@@ -95,6 +102,7 @@ export async function startMocks({ port = 0 } = {}) {
     const kind = url.pathname.startsWith('/api.deepgram.com/') ? 'deepgram'
       : url.pathname.startsWith('/api.sarvam.ai/speech-to-text') ? 'sarvam' : null;
     if (!kind) { socket.destroy(); return; }
+    if (faults.sttRefuse > 0) { faults.sttRefuse--; log.other.push({ host: kind, path: 'upgrade', failed: true }); socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n'); socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => {
       const entry = { kind, ws, t: 0, query: Object.fromEntries(url.searchParams) };
       log.stt.push({ kind, query: entry.query, at: Date.now() });
@@ -159,7 +167,9 @@ export async function startMocks({ port = 0 } = {}) {
   }
 
   return {
-    url, log, say, cough,
+    url, log, say, cough, faults,
+    /** The provider drops the open speech socket (no close frame), as a network failure would. */
+    dropStt: () => stt?.ws.terminate(),
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
     failing,

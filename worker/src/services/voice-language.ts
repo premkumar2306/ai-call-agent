@@ -194,6 +194,18 @@ function dravidianLines(lang: 'kn' | 'te' | 'ta'): VoiceLines {
   };
 }
 
+/** Said when a speech or voice provider can't be recovered mid-call. Kannada/Telugu/Tamil fall back to English until reviewed by a native speaker. */
+export function troubleLine(lang: VoiceLanguage, transferring: boolean): string {
+  if (lang === 'hi' || lang === 'hi-en') {
+    return transferring
+      ? 'माफ़ कीजिए, लाइन में कुछ दिक्कत आ गई है। मैं आपको हमारी टीम से जोड़ रही हूँ।'
+      : 'माफ़ कीजिए, लाइन में कुछ दिक्कत आ गई है। कृपया थोड़ी देर बाद दोबारा कॉल कीजिए।';
+  }
+  return transferring
+    ? "I'm sorry, I'm having trouble on my end. Let me connect you to our team."
+    : "I'm sorry, I'm having trouble on my end. Please call back in a few minutes.";
+}
+
 export function voiceLines(lang: VoiceLanguage): VoiceLines {
   if (isDravidian(lang)) return dravidianLines(lang);
   return lang === 'en' ? EN_LINES : HI_LINES;
