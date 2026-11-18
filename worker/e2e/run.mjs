@@ -250,7 +250,7 @@ const CARRIERS = {
 
 // ── One simulated call ───────────────────────────────────────────────────────
 
-async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, script }) {
+async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, drive }) {
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
@@ -305,7 +305,7 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
   call.greeting = mocks.log.tts.slice(ttsBefore).map(t => t.text);
   call.turns = [];
   // A scenario that drives the call itself (interruptions, noise) instead of line by line.
-  if (script) await script({ call, quiet, remainingMs: () => Math.max(0, playedUntil - Date.now()) });
+  if (drive) await drive({ call, quiet, remainingMs: () => Math.max(0, playedUntil - Date.now()) });
   for (const line of lines) {
     if (ws.readyState !== WebSocket.OPEN) break;
     const before = mocks.log.tts.length;
@@ -626,7 +626,7 @@ async function bargeInScenario(mocks) {
     let r = {};
     const call = await placeCall(mocks, {
       carrier: b.carrier, number: sc.number, from: sc.from,
-      script: async ({ call, quiet, remainingMs }) => {
+      drive: async ({ call, quiet, remainingMs }) => {
         const waitPlaying = async () => { for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50); };
         const replyAt = Date.now();
         const ttsBefore = mocks.log.tts.length;
