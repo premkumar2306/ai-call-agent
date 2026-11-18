@@ -231,3 +231,24 @@ describe('input validation', () => {
     expect(validateBillingDetails({ gstin: '' })).toEqual({ gstin: null });
   });
 });
+
+describe('Indian clinic call profile (Plivo, Clinic plan)', () => {
+  const profile = (seconds: number) => ({
+    channel: 'voice' as const, provider: 'plivo', durationSeconds: seconds, sttSeconds: seconds, ttsChars: seconds * 8,
+    llmModel: 'claude-haiku-5-5', llm: { input: 3000, output: 100, cacheRead: 2000, cacheWrite: 0 },
+  });
+  it('rounds 2- and 3-minute calls to 2 and 3 billed minutes; every started minute counts', () => {
+    expect([119, 120, 121, 180, 181].map(billableMinutes)).toEqual([2, 2, 3, 3, 4]);
+  });
+  it('carrier cost is billed minutes × $0.006 and scales with them', () => {
+    const carrier = (s: number) => estimateCostUsdMicros({ ...profile(s), sttSeconds: 0, ttsChars: 0, llm: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+    expect(carrier(120)).toBe(12_000);
+    expect(carrier(180)).toBe(18_000);
+    expect(estimateCostUsdMicros(profile(180))).toBeGreaterThan(carrier(180));
+  });
+  it('an 800-minute month: ₹4,999 fee, no overage at 800, ₹6 × minutes over (+18% GST) beyond', () => {
+    const plan = { monthlyFeePaise: 499_900, includedMinutes: 800, overagePaisePerMinute: 600, gstRateBps: 1800 };
+    expect(computeOverage(plan, 800)).toMatchObject({ overageMinutes: 0, totalPaise: 0 });
+    expect(computeOverage(plan, 801)).toMatchObject({ overageMinutes: 1, overagePaise: 600, gstPaise: 108, totalPaise: 708 });
+  });
+});
