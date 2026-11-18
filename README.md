@@ -856,6 +856,21 @@ On barge-in the carrier's queued audio is dropped (Twilio `clear`, Exotel `clear
 the model stream and TTS are aborted, and the cut-off reply is rewritten in history to what the caller
 actually heard (once, with an "interrupted" marker). Covered by the `barge-in` e2e scenario on all three carriers.
 
+### Keypad digits (DTMF)
+
+All three carriers send keypad presses over the media stream; each adapter turns them into one `dtmf`
+event (`services/dtmf.ts` decides, `CallRelay.handleDtmf` acts):
+
+- **0** → asks for staff, same path as "speak to someone" (so closed-hours rules apply). Works whenever the
+  business has a staff phone; no setting.
+- **Digits**, only when the business has `dtmf_input` on (**off by default**; `PUT /admin/sectors/:key/voice
+  {"dtmf_input": true}`) and the assistant just asked for a number or date: collected, submitted after 2.5 s
+  without a press or on `#`, and handed to the turn as the caller's answer ("9 8 1 2 …").
+- Everything else is ignored.
+
+Twilio only sends digits on bidirectional `<Connect><Stream>` (what we use). The wire shapes follow each
+carrier's docs; they are exercised by the e2e simulators, not yet by a real carrier call.
+
 ### How a call turn works
 
 - **Grounding.** The system prompt carries a business profile built from D1 — address, phone, website,

@@ -173,6 +173,7 @@ const CARRIERS = {
       return { kind: 'other' };
     },
     ack: ({ streamSid, name }) => ({ event: 'mark', streamSid, mark: { name } }),
+    dtmf: ({ streamSid, digit }) => ({ event: 'dtmf', streamSid, dtmf: { track: 'inbound_track', digit } }),
     stop: ({ streamSid, callSid }) => ({ event: 'stop', streamSid, stop: { callSid } }),
     async afterStream({ callSid }) {
       const params = { CallSid: callSid, CallStatus: 'in-progress' };
@@ -205,6 +206,7 @@ const CARRIERS = {
       return { kind: 'other' };
     },
     ack: ({ streamSid, name }) => ({ event: 'mark', stream_sid: streamSid, mark: { name } }),
+    dtmf: ({ streamSid, digit }) => ({ event: 'dtmf', stream_sid: streamSid, dtmf: { duration: 200, digit } }),
     stop: ({ streamSid, callSid }) => ({ event: 'stop', stream_sid: streamSid, stop: { call_sid: callSid, reason: 'stopped' } }),
     async afterStream({ callSid }) {
       const q = new URLSearchParams({ CallSid: callSid, key: SECRETS.EXOTEL_WEBHOOK_SECRET });
@@ -238,6 +240,7 @@ const CARRIERS = {
       return { kind: 'other' };
     },
     ack: ({ streamSid, name }) => ({ event: 'playedStream', streamId: streamSid, name }),
+    dtmf: ({ streamSid, digit }) => ({ event: 'dtmf', streamId: streamSid, dtmf: { digit } }),
     stop: ({ streamSid }) => ({ event: 'stop', streamId: streamSid }),
     async afterStream({ callSid, number, from, call }) {
       const res = await plivoPost('/plivo/after-stream', { CallUUID: callSid, From: from.replace(/^\+/, ''), To: number.replace(/^\+/, ''), CallStatus: 'in-progress', Direction: 'inbound' });
@@ -305,7 +308,7 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
   call.greeting = mocks.log.tts.slice(ttsBefore).map(t => t.text);
   call.turns = [];
   // A scenario that drives the call itself (interruptions, noise) instead of line by line.
-  if (drive) await drive({ call, quiet, remainingMs: () => Math.max(0, playedUntil - Date.now()) });
+  if (drive) await drive({ call, quiet, press: digit => ws.send(JSON.stringify(c.dtmf({ streamSid, digit }))), closed, remainingMs: () => Math.max(0, playedUntil - Date.now()) });
   for (const line of lines) {
     if (ws.readyState !== WebSocket.OPEN) break;
     const before = mocks.log.tts.length;
@@ -668,6 +671,41 @@ async function bargeInScenario(mocks) {
     check(n, 'the cut-off reply is in the transcript once, not twice', mine.length === 1, `${mine.length} of ${turns.length} turns: ${mine.map(t => t.content.slice(0, 60)).join(' | ')}`);
     check(n, 'the cut-off reply is recorded only as far as the caller heard it', mine.length === 1 && !/ask me to find a time/.test(mine[0].content), mine[0]?.content?.slice(-80) ?? 'none');
     check(n, 'the assistant then answers the interruption', turns.some(t => t.role === 'user' && /book an appointment/.test(t.content)), `${turns.length} turns`);
+  }
+}
+
+// Keypad digits on every carrier: with input off, digits are ignored and 0 still
+// reaches staff; with dtmf_input on, digits answer a phone-number question.
+async function dtmfScenario(mocks) {
+  for (const b of [{ key: 'us_twilio', carrier: 'twilio' }, { key: 'in_exotel', carrier: 'exotel' }, { key: 'in_plivo_en', carrier: 'plivo' }]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `dtmf ${b.carrier}`;
+    console.log(`\n▶ Keypad digits over ${b.carrier}`);
+    for (const on of [false, true]) {
+      await api('PUT', `/admin/sectors/${b.key}/voice`, { dtmf_input: on });
+      const r = {};
+      const call = await placeCall(mocks, {
+        carrier: b.carrier, number: sc.number, from: sc.from,
+        drive: async ({ quiet, press, closed }) => {
+          const asked = Date.now();
+          await mocks.say('I would like to leave my phone number.');
+          await quiet(asked);
+          const llm0 = mocks.log.anthropic.length;
+          for (const d of '9812345678#') { press(d); await sleep(60); }
+          await sleep(on ? 1500 : 3200);
+          r.digitCalls = mocks.log.anthropic.slice(llm0).filter(a => /9 8 1 2 3 4 5 6 7 8/.test(a.lastUser ?? ''));
+          if (on) { await mocks.say('Thank you.'); await sleep(800); return; }   // stay on the call; no transfer in this leg
+          press('0');
+          await Promise.race([closed, sleep(10000)]);
+        },
+      });
+      if (on) check(n, 'dtmf_input on: digits pressed after the number question reach the model as the answer', r.digitCalls.length >= 1, `${r.digitCalls.length} model call(s) with the digits`);
+      else {
+        check(n, 'dtmf_input off (default): digits are ignored', r.digitCalls.length === 0, `${r.digitCalls.length} model call(s) with the digits`);
+        check(n, '0 on the keypad transfers to staff without any setting', call.closedByServer && !!call.transferTo && call.transferTo.replace(/\D/g, '').endsWith(sc.staffPhone.replace(/\D/g, '').slice(-10)), `closedByServer=${call.closedByServer} dials ${call.transferTo}`);
+      }
+    }
+    await api('PUT', `/admin/sectors/${b.key}/voice`, { dtmf_input: false });
   }
 }
 
@@ -1196,6 +1234,7 @@ try {
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
+  if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();
   if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
   if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);

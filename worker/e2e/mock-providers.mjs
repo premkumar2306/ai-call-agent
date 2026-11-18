@@ -228,6 +228,7 @@ function decide(req) {
   if (/(book|appointment|बुक|अपॉइंटमेंट|ಬುಕ್|ಅಪಾಯಿಂಟ್|బుక్|అపాయింట్|புக்|அப்பாயிண்ட்)/.test(userText) && tools.has('check_availability') && serviceId) {
     return { tool: 'check_availability', input: { service_id: serviceId } };
   }
+  if (/leave my (phone )?number/.test(userText)) return say('What phone number should I use to reach you?');
   if (/(tell me about|your services)/.test(userText)) {
     return say('We offer general consultations, follow-up visits and routine check-ups. Each consultation takes about thirty minutes with one of our doctors. Follow-up visits are shorter and usually take fifteen minutes. We are open every weekday from nine in the morning until six in the evening. You can also book online or ask me to find a time for you right now.');
   }
@@ -237,7 +238,9 @@ function decide(req) {
 
 function anthropic(req, res, log) {
   const d = decide(req);
-  log.anthropic.push({ model: req.model, stream: !!req.stream, decision: d.tool ?? 'text', toolResult: d.toolResult, tools: (req.tools ?? []).length, at: Date.now() });
+  const lastMsg = (req.messages ?? []).at(-1);
+  const lastUser = Array.isArray(lastMsg?.content) ? lastMsg.content.map(b => b.text ?? '').join(' ') : String(lastMsg?.content ?? '');
+  log.anthropic.push({ lastUser, model: req.model, stream: !!req.stream, decision: d.tool ?? 'text', toolResult: d.toolResult, tools: (req.tools ?? []).length, at: Date.now() });
   const usage = { input_tokens: 1200, output_tokens: 40, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 };
   const id = `msg_mock_${Date.now()}`;
   const block = d.tool

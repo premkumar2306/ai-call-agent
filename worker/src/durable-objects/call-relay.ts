@@ -11,6 +11,7 @@ import { saveTranscript } from '../services/transcript.service';
 import { missedCallFollowUp } from '../services/whatsapp-outbound';
 import { callStartNotice, recordConsent } from '../services/disclosure';
 import { assistantNameOf, getVertical } from '../services/verticals';
+import { dtmfAction, digitsUtterance } from '../services/dtmf';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { recordCallOutcome } from '../services/metrics';
 import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
@@ -65,6 +66,9 @@ import { logEvent } from '../utils/telemetry';
 // speak. Guards against the leading edge of our own audio echoing back on a
 // speakerphone and instantly cutting off the reply we just began.
 const BARGE_IN_MIN_SPEAK_MS = 300;
+
+// Keypad digits are submitted as one answer after this long without a press (or on #).
+const DTMF_IDLE_MS = 2500;
 
 // Dead-air watchdog: while a turn is still working and nothing is queued
 // or playing, say something after this much silence — before the first
@@ -159,6 +163,9 @@ export class CallRelay extends DurableObject<Env> {
   private transcriptGen = 0;
   // Utterance from an interrupted turn the caller never heard a reply to.
   private carryOver = '';
+  // Keypad digits pressed as an answer, not yet handed to the turn (services/dtmf.ts).
+  private dtmfDigits = '';
+  private dtmfTimer: ReturnType<typeof setTimeout> | undefined;
   private callStartedAt = Date.now();
   // Silence tracking (see SILENCE_REPROMPT_MS). quietSince is 0 until the
   // stream starts, so the timer only runs on a live call.
@@ -344,6 +351,42 @@ export class CallRelay extends DurableObject<Env> {
     if (this.pendingMarks.size === 0 && now - this.lastAudioEndAt > ECHO_TAIL_MS) return false;
     const spoken = this.spokenLog.filter(s => now - s.at < 20_000).map(s => s.text).join(' ');
     return isEchoOf(text, spoken, this.voice.language);
+  }
+
+  // A keypad press. 0 asks for staff; digits are an answer to a number/date
+  // question when the business turned dtmf_input on; the rest is ignored.
+  // The decision is services/dtmf.ts; what happens next goes through the same
+  // path as speech, so transfer hours, barge-in and the transcript all apply.
+  private handleDtmf(digit: string) {
+    if (!this.session || !this.twWs) return;
+    const meta = this.cache.sectorMeta;
+    const lastAssistant = [...this.spokenLog.slice(-3).map(s => s.text), ''].join(' ').trim()
+      || [...this.cache.history].reverse().find(t => t.role === 'assistant')?.content || '';
+    const action = dtmfAction(digit, {
+      hasStaffLine: !!meta?.phone,
+      inputEnabled: !!meta?.dtmfInput,
+      collecting: this.dtmfDigits.length > 0,
+      lastAssistantText: lastAssistant,
+    });
+    console.log(`[dtmf] ${digit} → ${action}`);
+    if (action === 'ignore') return;
+    if (this.dtmfTimer) { clearTimeout(this.dtmfTimer); this.dtmfTimer = undefined; }
+    if (action === 'transfer') {
+      this.dtmfDigits = '';
+      this.handleTranscript("I'd like to speak to a person, please.");
+      return;
+    }
+    if (action === 'collect') this.dtmfDigits += digit;
+    if (action === 'submit' || this.dtmfDigits.length >= 15) return this.submitDtmf();
+    this.callerActive();
+    this.dtmfTimer = setTimeout(() => this.submitDtmf(), DTMF_IDLE_MS);
+  }
+
+  private submitDtmf() {
+    if (this.dtmfTimer) { clearTimeout(this.dtmfTimer); this.dtmfTimer = undefined; }
+    const digits = this.dtmfDigits;
+    this.dtmfDigits = '';
+    if (digits) this.handleTranscript(digitsUtterance(digits));
   }
 
   private handleTranscript(text: string) {
@@ -826,7 +869,11 @@ export class CallRelay extends DurableObject<Env> {
           .catch(e => console.error('[calendarBusy prefetch]', e?.message || e));
       }
 
+    } else if (ev.type === 'dtmf') {
+      this.handleDtmf(ev.digit);
+
     } else if (ev.type === 'stop') {
+      if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
       this.ctx.waitUntil(this.flushUsage());
@@ -896,6 +943,7 @@ export class CallRelay extends DurableObject<Env> {
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean) {
     this.active?.abort.abort();
+    if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
     this.stt.close();
     this.ctx.waitUntil(this.flushTranscript());
     this.ctx.waitUntil(this.flushUsage());
