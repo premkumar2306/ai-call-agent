@@ -20,6 +20,7 @@ import { customerHashSalt } from '../config';
 import { hashId } from '../utils/identity';
 import { getSector } from './sector.service';
 import { resolveVoiceSettings } from './voice-language';
+import { DATE_WORDS, isDravidian } from './indic-languages';
 import { sendSms, smsConfigured } from './sms';
 import {
   isOptedOut, lastInbound, sendTemplate, sendText, setOptedOut, whatsappNumberOf, withinServiceWindow, type ReplyLanguage,
@@ -80,13 +81,14 @@ export async function setBusinessSettings(env: Env, businessType: string, patch:
 export function formatWhen(scheduledAt: string, lang: ReplyLanguage, todayYmd?: string): string {
   const d = new Date(`${scheduledAt.slice(0, 16)}:00Z`);
   if (Number.isNaN(d.getTime())) return scheduledAt;
-  const locale = lang === 'hi' ? 'hi-IN' : 'en-IN';
+  const locale = lang === 'hi' || isDravidian(lang) ? `${lang}-IN` : 'en-IN';
   const time = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', hour: 'numeric', minute: '2-digit' }).format(d);
   if (todayYmd) {
     const tomorrow = new Date(Date.parse(`${todayYmd}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
     const ymd = scheduledAt.slice(0, 10);
-    const word = ymd === todayYmd ? { en: 'today', hi: 'आज', 'hi-en': 'aaj' } : ymd === tomorrow ? { en: 'tomorrow', hi: 'कल', 'hi-en': 'kal' } : null;
-    if (word) return `${word[lang]}, ${time}`;
+    const dw = isDravidian(lang) ? DATE_WORDS[lang] : null;
+    const word = ymd === todayYmd ? (dw?.today ?? { en: 'today', hi: 'आज', 'hi-en': 'aaj' }[lang as 'en']) : ymd === tomorrow ? (dw?.tomorrow ?? { en: 'tomorrow', hi: 'कल', 'hi-en': 'kal' }[lang as 'en']) : null;
+    if (word) return `${word}, ${time}`;
   }
   const day = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }).format(d);
   return `${day}, ${time}`;
@@ -105,7 +107,7 @@ const langOf = (meta: SectorMeta | null | undefined): ReplyLanguage => resolveVo
 /** What each message would say for this business (owner Settings preview), in its language. */
 export function previews(meta: SectorMeta | null | undefined, businessName: string): Record<WaEvent, string> {
   const lang = langOf(meta);
-  const sample = { en: 'Consultation', hi: 'परामर्श', 'hi-en': 'Consultation' }[lang];
+  const sample = isDravidian(lang) ? DATE_WORDS[lang].sample : { en: 'Consultation', hi: 'परामर्श', 'hi-en': 'Consultation' }[lang as 'en'];
   const when = formatWhen('2026-11-18T10:30', lang, '2026-11-17');
   const p3 = [businessName, sample, when];
   return {
@@ -113,7 +115,16 @@ export function previews(meta: SectorMeta | null | undefined, businessName: stri
     reminder: fillTemplate(defaultFor('reminder').body[lang], p3),
     cancellation: fillTemplate(defaultFor('cancellation').body[lang], [businessName, sample, formatWhen('2026-11-18T10:30', lang)]),
     missed_call: fillTemplate(defaultFor('missed_call').body[lang], [businessName]),
+    recall: fillTemplate(defaultFor('recall').body[lang], [businessName, monthsText(6, lang), sample]),
+    no_show: fillTemplate(defaultFor('no_show').body[lang], p3),
+    review_request: fillTemplate(defaultFor('review_request').body[lang], [businessName, 'https://g.page/r/…/review']),
   };
+}
+
+/** "6 months" in the message language. */
+export function monthsText(n: number, lang: ReplyLanguage): string {
+  if (isDravidian(lang)) return DATE_WORDS[lang].months(n);
+  return lang === 'hi' ? `${n} महीने` : lang === 'hi-en' ? `${n} mahine` : `${n} month${n === 1 ? '' : 's'}`;
 }
 
 // ── Sending ──────────────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ export interface TranscriptRow {
   createdAt: number | string; updatedAt?: number | string;
 }
 export interface BookingRow {
+  visitStatus?: 'completed' | 'no_show' | null; // launch 4: marked by staff
   id: string; businessType: string; customerIdHashed?: string; productName: string; status: string;
   scheduledAt: string | null; endsAt?: string | null; customerName: string | null; vehicle: string | null;
   resourceName?: string | null; details?: Record<string, string> | null; callbackPhone: string | null;

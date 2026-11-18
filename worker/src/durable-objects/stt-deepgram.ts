@@ -27,6 +27,7 @@
 import {
   type VoiceLanguage, wordsOf, endsSentence,
   HINDI_BACKCHANNEL_WORDS, HINDI_DANGLING_WORDS, HINDI_DISCOURSE_WORDS,
+  DRAVIDIAN_BACKCHANNEL_WORDS, DRAVIDIAN_DANGLING_WORDS, DRAVIDIAN_DISCOURSE_WORDS,
 } from '../services/voice-language';
 
 export interface SttOptions {
@@ -117,7 +118,7 @@ export function looksIncomplete(text: string, lang: VoiceLanguage = 'en'): boole
     // unpunctuated, and holding every utterance would add latency to all of
     // them. The STT's own endpointing decides.
     const last = wordsOf(t, lang).pop() ?? '';
-    return !/\d/.test(lastToken) && (DANGLING_WORDS.has(last) || HINDI_DANGLING_WORDS.has(last));
+    return !/\d/.test(lastToken) && (DANGLING_WORDS.has(last) || HINDI_DANGLING_WORDS.has(last) || DRAVIDIAN_DANGLING_WORDS.has(last));
   }
   const last = t.toLowerCase().replace(/[^a-z'\s]/g, ' ').trim().split(/\s+/).pop() ?? '';
   if (!/\d/.test(lastToken) && DANGLING_WORDS.has(last)) return true;
@@ -135,7 +136,7 @@ export function isBackchannel(text: string, lang: VoiceLanguage = 'en'): boolean
     // "हाँ जी", "achha theek hai", "ok ji" — English and Hindi feedback mix freely.
     const words = wordsOf(text.replace(/-/g, ''), lang);
     return words.length > 0 && words.length <= 3
-      && words.every(w => BACKCHANNEL_WORDS.has(w) || HINDI_BACKCHANNEL_WORDS.has(w));
+      && words.every(w => BACKCHANNEL_WORDS.has(w) || HINDI_BACKCHANNEL_WORDS.has(w) || DRAVIDIAN_BACKCHANNEL_WORDS.has(w));
   }
   const words = text.toLowerCase().replace(/[^a-z\s-]/g, '').replace(/-/g, '').split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length <= 3 && words.every(w => BACKCHANNEL_WORDS.has(w));
@@ -149,7 +150,7 @@ export function isDiscourseOnly(text: string, lang: VoiceLanguage = 'en'): boole
   if (lang !== 'en') {
     const words = wordsOf(text, lang);
     return words.length > 0 && words.length <= 3
-      && words.every(w => DISCOURSE_WORDS.has(w) || HINDI_DISCOURSE_WORDS.has(w));
+      && words.every(w => DISCOURSE_WORDS.has(w) || HINDI_DISCOURSE_WORDS.has(w) || DRAVIDIAN_DISCOURSE_WORDS.has(w));
   }
   const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length <= 3 && words.every(w => DISCOURSE_WORDS.has(w));

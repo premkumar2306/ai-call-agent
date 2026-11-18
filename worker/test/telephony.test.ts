@@ -292,6 +292,20 @@ describe('Plivo routes', () => {
     expect((await plivoRouter.request('/hangup', { method: 'POST', body: '' }, env({ CACHE: kv() as any }))).status).toBe(403);
   });
 
+  it('fallback answer URL: no database, rings the staff phone from the signed URL; apology without one', async () => {
+    const p = { CallUUID: 'u9', To: '918047100001', From: '919812345678' };
+    const noDb = penv({ get: async () => { throw new Error('KV down'); } } as any);
+    const res = await signed('/fallback?to=%2B919876500001', p, noDb);
+    const body = await res.text();
+    expect(res.status).toBe(200);
+    expect(body).toContain('<Number>919876500001</Number>');
+    expect(body).toContain('callerId="918047100001"');
+    const bare = await (await signed('/fallback', p, noDb)).text();
+    expect(bare).toContain('<Hangup/>');
+    expect(bare).not.toContain('<Dial');
+    expect((await signed('/fallback?to=%2B919876500001', p, noDb, 'forged')).status).toBe(403);
+  });
+
   it('transfers with our own number as caller ID and a Dial action', async () => {
     const cache = kv();
     cache.m.set('transfer:u2', '+919876500001');

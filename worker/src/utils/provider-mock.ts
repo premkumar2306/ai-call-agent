@@ -22,6 +22,7 @@ export const MOCKED_HOSTS = new Set([
   'api.plivo.com',
   'api.exotel.com',
   'api.in.exotel.com',
+  'ics.mock.test',          // e2e: a practice-software ICS feed (launch 6)
 ]);
 
 /** The URL to fetch instead of `url`, or null to leave it alone. */

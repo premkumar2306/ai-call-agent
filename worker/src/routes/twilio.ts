@@ -9,6 +9,7 @@ import { hashId } from '../utils/identity';
 import { transferKey } from '../services/call-context';
 import { businessForNumber } from '../services/phone-numbers';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
+import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
 
 const twilioRouter = new Hono<HonoEnv>();
 
@@ -104,6 +105,11 @@ twilioRouter.post('/inbound', requireTwilioSig('/twilio/inbound'), withTwilioSes
   const callerHash = await hashId(callerKey, customerHashSalt(c.env));
   const callerPhone = /^\+\d{7,15}$/.test(from) ? from : undefined;
   const streamToken = await signStreamToken(c.env, businessType, callerHash, callerPhone);
+  // Overflow pilot (Twilio sends ForwardedFrom on forwarded calls, carrier permitting).
+  background(c, recordCallRouting(c.env, {
+    carrier: 'twilio', callSid: typeof body.CallSid === 'string' ? body.CallSid : null, businessType,
+    calledNumber: typeof body.To === 'string' ? body.To : null, callerHash, forwardedFrom: forwardedFromParam(body as Record<string, unknown>, '1'),
+  }));
   // When the stream ends Twilio moves on to the next verb: /after-stream
   // either transfers the call to staff (the agent asked for it) or hangs up.
   const afterUrl = `${(c.env.TWILIO_WEBHOOK_URL ?? `https://${host}`).replace(/\/$/, '')}/twilio/after-stream`;

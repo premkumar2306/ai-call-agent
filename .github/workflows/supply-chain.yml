@@ -59,7 +59,7 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ matrix.application }}/package-lock.json
       - name: Install production dependencies
-        run: npm ci --omit=dev --ignore-scripts
+        run: npm ci --ignore-scripts   # full install: npm sbom checks the whole tree; --omit=dev on the next step keeps dev tools out of the SBOM
       - name: Generate CycloneDX SBOM
         run: npm sbom --omit=dev --sbom-format=cyclonedx > ${{ matrix.application }}-sbom.cdx.json
       - name: Upload SBOM

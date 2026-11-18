@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../auth';
 import {
   BUSINESS_KINDS, COMMON_TIMEZONES, CURRENCIES, DEFAULT_HOURS, SCRIPT_NOTE, SERVICE_TEMPLATES,
@@ -18,6 +18,9 @@ interface Props {
 
 interface ServiceRow { name: string; price: string; duration: string; category?: string }
 interface PersonRow { name: string; role: string; fee: string }
+interface PublicPlan { id: string; name: string; monthlyFeePaise: number; includedMinutes: number; overagePaisePerMinute: number; gstRateBps: number; trialDays: number; setupFeePaise: number; isFeatured: boolean; audience: string | null }
+interface PublicOffer { code: string; name: string; description: string | null; freeDays: number; waiveSetupFee: boolean; planIds: string[]; seatsLeft: number | null }
+const rupees = (paise: number) => '₹' + (paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
 // Short steps → POST /account/businesses (then the optional doctors / lawyers
 // → POST /admin/resources/:key). Everything here can be changed later in the
@@ -39,6 +42,22 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
   const [services, setServices] = useState<ServiceRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Plans (Indian businesses only: prices are in INR + GST). Nothing is charged at signup.
+  const [plans, setPlans] = useState<PublicPlan[]>([]);
+  const [offers, setOffers] = useState<PublicOffer[]>([]);
+  const [planId, setPlanId] = useState('');
+  const [offerCode, setOfferCode] = useState('');
+  useEffect(() => {
+    if (countryCode !== 'IN' || plans.length) return;
+    api<{ plans: PublicPlan[]; offers: PublicOffer[] }>(base, '/account/plans', {}).then(d => {
+      setPlans(d.plans); setOffers(d.offers);
+      const featured = d.plans.find(p => p.isFeatured) ?? d.plans[0];
+      if (featured) setPlanId(featured.id);
+      const o = d.offers.find(o => featured && o.planIds.includes(featured.id));
+      if (o) setOfferCode(o.code);
+    }).catch(() => { /* plans are optional at signup */ });
+  }, [countryCode]);
+  const offerFor = (id: string) => offers.find(o => !o.planIds.length || o.planIds.includes(id));
 
   const pickKind = (k: string) => {
     setKind(k);
@@ -92,15 +111,16 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
   const create = async () => {
     setBusy(true); setError('');
     try {
-      const data = await api<{ key: string }>(base, '/account/businesses', auth, {
+      const data = await api<{ key: string; offerError?: string | null }>(base, '/account/businesses', auth, {
         body: {
           name: name.trim(), kind, address: address.trim(), phone: phone.trim(), timezone, currency, country_code: countryCode,
           hours: hoursToApi(hours),
+          ...(countryCode === 'IN' && planId ? { planId, ...(offerCode && offerFor(planId) ? { offerCode } : {}) } : {}),
           services: cleanServices().map(s => ({ name: s.name.trim(), priceCents: toMinorUnits(s.price), durationMinutes: Number(s.duration), ...(s.category ? { category: s.category } : {}) })),
         },
       });
       // Doctors / lawyers sit the business's hours to start with; each can be changed later.
-      let warning: string | undefined;
+      let warning: string | undefined = data.offerError ? `Offer not applied: ${data.offerError}. You can enter it later in Settings → Billing.` : undefined;
       const slot = kind === 'lawyer' ? 30 : kind === 'dental' ? 30 : 15;
       for (const p of cleanPeople()) {
         try {
@@ -279,6 +299,31 @@ export default function Onboarding({ base, auth, onCreated, onCancel }: Props) {
           <div>{cleanServices().length} service{cleanServices().length === 1 ? '' : 's'}: {cleanServices().map(s => s.name).join(', ')}</div>
           {words && cleanPeople().length > 0 && <div>{words.many}: {cleanPeople().map(p => p.name.trim()).join(', ')}</div>}
           <p style={{ ...hint, margin: '8px 0 0' }}>Booking and message notifications go to your sign-in email; change that in Settings → Business details.</p>
+          {countryCode === 'IN' && plans.length > 0 && (
+            <fieldset style={{ border: 0, padding: 0, margin: '12px 0 0', display: 'grid', gap: 8 }}>
+              <legend style={{ ...label, marginBottom: 6 }}>Your plan</legend>
+              {plans.map(p => (
+                <label key={p.id} style={{ ...card, padding: 12, margin: 0, display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer', borderColor: planId === p.id ? 'var(--accent)' : undefined }}>
+                  <input type="radio" name="plan" checked={planId === p.id} onChange={() => { setPlanId(p.id); const o = offerFor(p.id); setOfferCode(o ? o.code : ''); }} />
+                  <span>
+                    <b style={{ color: 'var(--text-strong)' }}>{p.name}</b>{p.isFeatured ? ' · Recommended' : ''}<br />
+                    {rupees(p.monthlyFeePaise)}/month + GST · {p.includedMinutes} minutes included · then {rupees(p.overagePaisePerMinute)}/min + GST
+                    {p.setupFeePaise > 0 ? ` · setup ${rupees(p.setupFeePaise)} + GST` : ''}
+                    {p.audience && <><br /><span style={hint}>{p.audience}</span></>}
+                  </span>
+                </label>
+              ))}
+              <label style={{ display: 'flex', gap: 10, fontSize: 14 }}>
+                <input type="radio" name="plan" checked={planId === ''} onChange={() => { setPlanId(''); setOfferCode(''); }} /> Decide later
+              </label>
+              {planId && offerFor(planId) && (() => { const o = offerFor(planId)!; return (
+                <p style={{ ...hint, margin: 0 }}>
+                  <b>{o.name}:</b> {o.description}{o.seatsLeft != null ? ` (${o.seatsLeft} place${o.seatsLeft === 1 ? '' : 's'} left)` : ''}.{' '}
+                  <label>Code <input style={{ ...input, width: 140, display: 'inline-block' }} value={offerCode} onChange={e => setOfferCode(e.target.value)} maxLength={32} /></label>
+                </p>); })()}
+              <p style={{ ...hint, margin: 0 }}>Nothing is charged now. Your free trial starts today; you subscribe (UPI AutoPay or card) in Settings → Billing, where included minutes used are shown all month.</p>
+            </fieldset>
+          )}
         </div>
       )}
 

@@ -79,6 +79,7 @@ WA_DEFAULT_BUSINESS_TYPE = "advanced_vtech"
 # BILLING_SAC_CODE = ""                                  # printed on invoices if set
 # BILLING_GRACE_DAYS = "7"                               # after a failed payment, before extra minutes pause
 # APP_URL = "https://app.example.com"                    # linked from billing emails
+# WORKER_URL = "https://<worker-host>"                 # public base for front-desk confirm links (launch 6); defaults to PLIVO_/TWILIO_WEBHOOK_URL
 
 # Secrets — run: wrangler secret put <NAME>
 # Required in production (the Worker fails closed without them):

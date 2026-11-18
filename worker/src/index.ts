@@ -1,3 +1,4 @@
+import { pilotRouter } from './routes/pilot';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
@@ -19,6 +20,12 @@ import { calendarAdminRouter, oauthRouter } from './routes/calendar';
 import { billingRouter, billingAdminRouter, razorpayRouter } from './routes/billing';
 import { closePeriod } from './services/billing/service';
 import { runDunning } from './services/billing/lifecycle';
+import { runWeeklySummaries } from './services/metrics';
+import { runClinicFollowUps } from './services/clinic-features';
+import { clinicAdminRouter, clinicRouter } from './routes/clinic';
+import { frontDeskRouter, practiceRouter } from './routes/practice';
+import { runIcsSync } from './services/practice';
+import { metricsRouter, publicReportRouter } from './routes/metrics';
 import type { Env } from './types';
 import { isAllowedOrigin } from './utils/origins';
 import { installProviderMock } from './utils/provider-mock';
@@ -69,11 +76,18 @@ app.route('/admin/billing', billingAdminRouter);
 app.route('/admin/integrations', integrationsAdminRouter);
 app.route('/admin/whatsapp', whatsappAdminRouter);
 app.route('/admin/plivo', plivoAdminRouter);
+app.route('/admin/clinic', clinicAdminRouter);
 app.route('/admin',    adminRouter);
 app.route('/features', featuresRouter);
 app.route('/oauth',    oauthRouter);
 app.route('/whatsapp', whatsappRouter);
 app.route('/billing',  billingRouter);
+app.route('/pilot',    pilotRouter);
+app.route('/metrics',  metricsRouter);
+app.route('/clinic',   clinicRouter);
+app.route('/practice', practiceRouter);
+app.route('/fd',       frontDeskRouter);
+app.route('/report',   publicReportRouter);
 app.route('/razorpay', razorpayRouter);
 
 // ── Health check ───────────────────────────────────────────────────────────
@@ -147,12 +161,30 @@ async function scheduled(event: ScheduledController, env: Env, ctx: ExecutionCon
         .then(r => { if (r.length) console.log('[billing] dunning', JSON.stringify(r)); })
         .catch(e => console.error('[billing] dunning failed', e?.message || e)),
     );
+    // Weekly pilot summary (Mondays, only for businesses that turned it on).
+    ctx.waitUntil(
+      runWeeklySummaries(env)
+        .then(r => { if (r.length) console.log('[metrics] weekly', JSON.stringify(r)); })
+        .catch(e => console.error('[metrics] weekly failed', e?.message || e)),
+    );
     return;
   }
   ctx.waitUntil(
     runReminders(env)
       .then(r => { if (r.length) console.log('[wa] reminders', JSON.stringify(r.map(x => x.outcome))); })
       .catch(e => console.error('[wa] reminders failed', e?.message || e)),
+  );
+  // Clinic follow-ups: recalls, no-show recovery, review requests (each off until a clinic turns it on).
+  ctx.waitUntil(
+    runClinicFollowUps(env)
+      .then(r => { if (r.length) console.log('[clinic] follow-ups', JSON.stringify(r.map(x => `${x.job}:${x.outcome}`))); })
+      .catch(e => console.error('[clinic] follow-ups failed', e?.message || e)),
+  );
+  // Practice software: refresh imported ICS busy times (only businesses that turned it on).
+  ctx.waitUntil(
+    runIcsSync(env)
+      .then(r => { if (r.length) console.log('[practice] ics', JSON.stringify(r)); })
+      .catch(e => console.error('[practice] ics sync failed', e?.message || e)),
   );
   ctx.waitUntil(
     refreshHealth(env)

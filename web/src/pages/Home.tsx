@@ -4,6 +4,7 @@ import { practitionerWords } from '../business';
 import type { SectorLocale } from '../locale';
 import { Button, Card, EmptyState, Notice } from '../components/ui';
 import { Feed, TranscriptDialog } from '../components/Activity';
+import PilotResults from '../components/PilotResults';
 import { buildActivity, isToday, loadBusinessData, type Activity, type BusinessData } from '../lib/activity';
 
 // Home: recent calls and chats first, today's numbers, then (owners only) the
@@ -94,6 +95,8 @@ export default function Home({ sector, name, locale, base, auth, isOwner, operat
       </header>
 
       {error && <Notice tone="error">{error}</Notice>}
+
+      {locale?.countryCode === 'IN' && <PilotResults base={base} auth={auth} sector={sector} isOwner={isOwner} />}
 
       <Card
         className="card-flush"

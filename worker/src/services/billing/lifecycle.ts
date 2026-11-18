@@ -246,6 +246,7 @@ export async function ownerPlans(env: Env) {
   return plans.map(p => ({
     id: p.id, name: p.name, currency: p.currency, monthlyFeePaise: p.monthlyFeePaise, includedMinutes: p.includedMinutes,
     overagePaisePerMinute: p.overagePaisePerMinute, gstRateBps: p.gstRateBps, checkoutReady: !!p.razorpayPlanId,
+    trialDays: p.trialDays, setupFeePaise: p.setupFeePaise, isFeatured: p.isFeatured, audience: p.audience,
   }));
 }
 

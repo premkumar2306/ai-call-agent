@@ -6,6 +6,7 @@
 // Meta's throttling gets one polite retry.
 
 import { HTTP_TIMEOUT_MS } from '../config';
+import { CANNED as INDIC_CANNED } from './indic-languages';
 import type { Env } from '../types';
 
 /**
@@ -114,9 +115,9 @@ export function inboundMessages(payload: any): WaInbound[] {
   return out;
 }
 
-export type ReplyLanguage = 'en' | 'hi' | 'hi-en';
+export type ReplyLanguage = 'en' | 'hi' | 'hi-en' | 'kn' | 'te' | 'ta';
 
-const CANNED: Record<string, Record<ReplyLanguage, string>> = {
+const CANNED_BASE: Record<string, Record<'en' | 'hi' | 'hi-en', string>> = {
   unsupported: {
     en: "Sorry, I can't open that kind of message. Please type your question, or send a voice note.",
     hi: 'माफ़ कीजिए, मैं इस तरह का मैसेज नहीं खोल सकती। कृपया अपना सवाल लिखकर भेजें, या वॉइस नोट भेजें।',
@@ -153,6 +154,10 @@ const CANNED: Record<string, Record<ReplyLanguage, string>> = {
     'hi-en': 'Abhi technical problem hai. Please thodi der mein phir try karein.',
   },
 };
+
+const CANNED: Record<keyof typeof CANNED_BASE, Record<ReplyLanguage, string>> = Object.fromEntries(
+  Object.entries(CANNED_BASE).map(([k, v]) => [k, { ...v, ...(INDIC_CANNED[k as keyof typeof INDIC_CANNED] ?? {}) }]),
+) as any;
 
 export function cannedReply(kind: keyof typeof CANNED, lang: ReplyLanguage = 'en'): string {
   return CANNED[kind][lang] ?? CANNED[kind].en;
@@ -359,7 +364,7 @@ export async function isOptedOut(env: Env, phoneHash: string, businessType?: str
 /** Template language code for a business's language, unless WA_TEMPLATE_LANGUAGE pins one. */
 export function templateLanguage(env: Pick<Env, 'WA_TEMPLATE_LANGUAGE'>, lang: ReplyLanguage): string {
   if (env.WA_TEMPLATE_LANGUAGE) return env.WA_TEMPLATE_LANGUAGE;
-  return lang === 'hi' ? 'hi' : 'en';
+  return lang === 'hi' || lang === 'kn' || lang === 'te' || lang === 'ta' ? lang : 'en';
 }
 
 /**

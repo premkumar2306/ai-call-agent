@@ -330,7 +330,8 @@ async function placeCall(mocks, { carrier, number, from, lines, hangUpEarly = fa
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
 
-const NOTICE = { en: /AI assistant.*transcribed/i, hi: /AI सहायक/ };
+const NOTICE = { en: /AI assistant.*transcribed/i, hi: /AI सहायक/, kn: /AI ಸಹಾಯಕ/, te: /AI సహాయకుడితో/, ta: /AI உதவியாளருடன்/ };
+const SARVAM_LANG = { hi: 'hi-IN', kn: 'kn-IN', te: 'te-IN', ta: 'ta-IN' };
 
 async function callScenario(mocks, s) {
   console.log(`\n▶ ${s.name}`);
@@ -356,7 +357,8 @@ async function callScenario(mocks, s) {
   const stt = mocks.log.stt.slice(sttStart).at(-1);
   check(n, `speech recognition is ${s.stt}`, stt?.kind === s.stt, JSON.stringify(stt?.query ?? {}).slice(0, 120));
   if (s.stt === 'deepgram') check(n, 'Deepgram gets µ-law 8 kHz audio', stt?.query?.encoding === 'mulaw' && stt?.query?.sample_rate === '8000' && mocks.log.sttAudio.deepgram > audioStart.deepgram, `${mocks.log.sttAudio.deepgram - audioStart.deepgram} bytes`);
-  if (s.stt === 'sarvam') check(n, 'Sarvam gets 16 kHz PCM in hi-IN', stt?.query?.['language-code'] === 'hi-IN' && [...mocks.log.sarvamSttFormats].some(f => f.endsWith('@16000')) && mocks.log.sttAudio.sarvam > audioStart.sarvam, `${[...mocks.log.sarvamSttFormats].join(',')}`);
+  const sl = SARVAM_LANG[s.voice?.voice_language ?? 'hi'] ?? 'hi-IN';
+  if (s.stt === 'sarvam') check(n, `Sarvam gets 16 kHz PCM in ${sl}`, stt?.query?.['language-code'] === sl && [...mocks.log.sarvamSttFormats].some(f => f.endsWith('@16000')) && mocks.log.sttAudio.sarvam > audioStart.sarvam, `${[...mocks.log.sarvamSttFormats].join(',')}`);
   // The opener may be synthesized in the default voice before the business's
   // voice is known (then dropped); from the first line in its voice, all are.
   const first = heard.findIndex(t => t.provider === s.tts);
@@ -364,7 +366,8 @@ async function callScenario(mocks, s) {
   const tts = voiced[0];
   if (first > 0) check(n, 'default-voice opener requests before the switch (cost only, not heard)', true, `${first} request(s): ${heard.slice(0, first).map(t => t.provider).join(', ')}`);
   if (s.tts === 'cartesia') check(n, 'Cartesia asked for raw µ-law 8 kHz', voiced.length > 0 && voiced.every(t => t.provider === 'cartesia' && t.format?.encoding === 'pcm_mulaw' && t.format?.sample_rate === 8000), JSON.stringify(tts?.format));
-  if (s.tts === 'sarvam') check(n, 'Sarvam TTS asked for µ-law 8 kHz in hi-IN', voiced.length > 0 && voiced.every(t => t.provider === 'sarvam' && t.format?.codec === 'mulaw' && t.format?.sample_rate === 8000 && t.format?.language === 'hi-IN'), JSON.stringify(tts?.format));
+  if (s.tts === 'sarvam') check(n, `Sarvam TTS asked for µ-law 8 kHz in ${sl}`, voiced.length > 0 && voiced.every(t => t.provider === 'sarvam' && t.format?.codec === 'mulaw' && t.format?.sample_rate === 8000 && t.format?.language === sl), JSON.stringify(tts?.format));
+  if (s.script) check(n, 'greeting and replies are spoken in the business language (native script)', voiced.some(t => s.script.test(t.text) && /Avery|ಅಸಿಸ್ಟೆಂಟ್|అసిస్టెంట్|அசிஸ்டன்ட்/.test(t.text)), voiced.find(t => s.script.test(t.text))?.text?.slice(0, 80));
 
   const bookings = await api('GET', `/admin/bookings/${s.key}`);
   const booked = (Array.isArray(bookings) ? bookings : bookings?.bookings ?? []).find(b => (b.customerName ?? b.customer_name) === 'Priya Sharma');
@@ -390,6 +393,176 @@ async function callScenario(mocks, s) {
     const rows = (Array.isArray(notices) ? notices : []).filter(r => (r.call_sid ?? r.callSid) === call.callSid);
     check(n, 'notice is in the consent audit trail', rows.length === 1, rows[0] ? `heard_fully=${rows[0].heard_fully}` : 'missing');
   }
+}
+
+// Overflow-only pilot on the clinic's own number (launch item 2): the clinic's
+// carrier forwards busy/no-answer calls to the Avery number; calls are tagged
+// overflow and ForwardedFrom is captured; "test your forwarding" completes.
+async function pilotScenario() {
+  const n = 'Overflow pilot';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en', CLINIC = '+918041234567';
+  const off = await api('GET', `/pilot/${B}`);
+  check(n, 'off by default: no pilot config, not active', off?.config === null && off.active === false, JSON.stringify({ config: off?.config, active: off?.active }));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const bad = await fetch(`${BASE}/pilot/${B}`, { method: 'PUT', headers: { 'X-Admin-Key': ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  check(n, 'a pilot needs start and end dates', bad.status === 400, `${bad.status}`);
+  await api('PUT', `/pilot/${B}`, { enabled: true, startsOn: today, endsOn: '2099-12-31', clinicNumber: '080 4123 4567', clinicLine: 'airtel' });
+  const test = await api('POST', `/pilot/${B}/forwarding-test`);
+  check(n, 'test your forwarding: waiting for a forwarded call', test?.status === 'waiting', test?.status);
+  const sid = `pl-fwd-${randomUUID()}`;
+  const res = await plivoPost('/plivo/answer', { CallUUID: sid, From: '919812300001', To: '918047100002', ForwardedFrom: CLINIC.slice(1), Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' });
+  const xml = await res.text();
+  await new Promise(r => setTimeout(r, 300));
+  const after = await api('GET', `/pilot/${B}/forwarding-test`);
+  check(n, 'a forwarded Plivo call is answered with the stream as usual', res.status === 200 && xml.includes('<Stream'), `${res.status}`);
+  check(n, 'test your forwarding: received, ForwardedFrom matches the clinic number', after?.status === 'received' && after.call?.forwardedFrom === CLINIC && after.call.forwardedFromMatches === true, JSON.stringify(after?.call));
+  const sid2 = `pl-ovf-${randomUUID()}`;
+  await plivoPost('/plivo/answer', { CallUUID: sid2, From: '919812300002', To: '918047100002', Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' });
+  await new Promise(r => setTimeout(r, 300));
+  const st = await api('GET', `/pilot/${B}`);
+  const r1 = st?.recent?.find(r => r.forwardedFrom === CLINIC), r2 = st?.recent?.find(r => r.reason === 'pilot_overflow');
+  check(n, 'calls tagged overflow: carrier_forwarded (with number) and pilot_overflow (no number sent)', st?.active === true && r1?.isOverflow === true && r1.reason === 'carrier_forwarded' && r2?.isOverflow === true, JSON.stringify(st?.recent?.slice(0, 2)));
+  const us = await api('GET', '/pilot/us_twilio');
+  check(n, 'the US business is unchanged: no pilot, no routing rows', us?.config === null && us.recent.length === 0, `${us?.recent?.length} rows`);
+  await api('PUT', `/pilot/${B}`, { enabled: false, startsOn: null, endsOn: null, clinicNumber: null });
+}
+
+// Pilot metrics (launch item 3): a real simulated overflow call that books,
+// then the dashboard numbers, the share link and the weekly summary default.
+async function metricsScenario(mocks) {
+  const n = 'Pilot metrics';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en';
+  const before = await api('GET', `/metrics/${B}?days=7`);
+  check(n, 'weekly summary and share link are off by default', before?.settings?.weeklySummary === false && before.settings.shareEnabled === false && before.settings.shareToken === null, JSON.stringify(before?.settings));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  await api('PUT', `/pilot/${B}`, { enabled: true, startsOn: today, endsOn: '2099-12-31', clinicNumber: '+918041234567', clinicLine: 'jio' });
+  const call = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300077', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await new Promise(r => setTimeout(r, 1500));
+  const m = (await api('GET', `/metrics/${B}?pilot=1`))?.metrics;
+  check(n, 'an overflow call that books counts as a recovered booking', call.webhook?.ok && m?.calls >= 1 && m.overflowCalls >= 1 && m.answered >= 1 && m.recoveredBookings >= 1 && m.answerRate > 0,
+    JSON.stringify(m));
+  check(n, 'no-show is reported as not tracked (no made-up figure)', m?.noShow?.status === 'not_tracked', JSON.stringify(m?.noShow));
+  const on = await api('PUT', `/metrics/${B}/settings`, { shareEnabled: true });
+  const page = await fetch(`${BASE}/report/${on?.shareToken}`);
+  const html = await page.text();
+  const json = await (await fetch(`${BASE}/report/${on?.shareToken}?format=json`)).json();
+  check(n, 'opt-in share link: read-only report with the same figures, no patient numbers', page.status === 200 && /Recovered bookings/.test(html) && json?.data?.metrics?.recoveredBookings === m?.recoveredBookings && !/9812300077/.test(html), `${page.status}, recovered ${json?.data?.metrics?.recoveredBookings}`);
+  await api('PUT', `/metrics/${B}/settings`, { shareEnabled: false });
+  const gone = await fetch(`${BASE}/report/${on?.shareToken}`);
+  check(n, 'turning sharing off kills the link', gone.status === 404, `${gone.status}`);
+  await api('PUT', `/pilot/${B}`, { enabled: false, startsOn: null, endsOn: null, clinicNumber: null });
+}
+
+// Clinic features (launch item 4): procedure-duration slots, no-show recovery,
+// review requests and recalls — all off by default, run by the hourly job.
+async function clinicScenario(mocks) {
+  const n = 'Clinic features';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en';
+  const off = await api('GET', `/clinic/${B}`);
+  check(n, 'every clinic feature is off by default', !off.durationBooking && !off.recalls && !off.noShowRecovery && !off.reviewRequests, JSON.stringify(off));
+  const tpl = await api('GET', '/admin/whatsapp/templates');
+  const fams = ['avery_recall', 'avery_missed_appointment', 'avery_review_request'];
+  check(n, 'recall, no-show and review templates exist in en, hi and Hinglish (opt-out line in each)',
+    fams.every(f => { const d = tpl.defaults.find(x => x.family === f); return d && ['en', 'hi', 'hi-en'].every(v => /STOP/.test(d.body[v])); }), tpl.defaults.map(d => d.family).join(', '));
+
+  // Duration booking: the second caller is never offered a time inside the first visit.
+  await api('PUT', `/clinic/${B}`, { durationBooking: true });
+  const first = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300101', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(800);
+  const b1 = sql(`SELECT o.id, o.scheduled_at, o.ends_at, p.duration_minutes FROM orders o JOIN products p ON p.id = o.product_id WHERE o.business_type = '${B}' AND o.callback_phone = '+919812300101' ORDER BY o.created_at DESC LIMIT 1`)[0];
+  // Make the first visit a 2-hour procedure: under the old rule (same start time only) the next
+  // caller would be offered the very next half hour, inside this visit.
+  const longEnd = new Date(Date.parse(`${b1?.scheduled_at?.slice(0, 16)}:00Z`) + 120 * 60e3).toISOString().slice(0, 16);
+  sql(`UPDATE orders SET ends_at = '${longEnd}' WHERE id = '${b1?.id}'`);
+  await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300102', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(800);
+  const b2 = sql(`SELECT scheduled_at, ends_at FROM orders WHERE business_type = '${B}' AND callback_phone = '+919812300102' ORDER BY created_at DESC LIMIT 1`)[0];
+  check(n, 'duration booking: a visit stores its end, and the next patient is booked after a 2-hour visit, not inside it', first.webhook?.ok && !!b1?.ends_at && !!b2?.scheduled_at
+    && b2.scheduled_at.slice(0, 16) >= longEnd && !!b2.ends_at,
+    `first ${b1?.scheduled_at?.slice(0, 16)}–${longEnd}, next ${b2?.scheduled_at?.slice(0, 16)}–${b2?.ends_at}`);
+  await api('PUT', `/clinic/${B}`, { durationBooking: false });
+
+  // Follow-ups: seed visits (no WhatsApp number on this business → SMS fallback).
+  const pid = sql(`SELECT id FROM products WHERE business_type = '${B}' LIMIT 1`)[0]?.id;
+  const ins = (id, phone, at) => sql(`INSERT INTO orders (id, customer_id_hashed, business_type, product_id, vendor_name, product_name, status, price_cents, payment_method, scheduled_at, callback_phone, created_at, updated_at)
+    VALUES ('${id}', 'h-${id}', '${B}', '${pid}', 'x', 'Check-up', 'CONFIRMED', 50000, 'cash', '${at}', '${phone}', 0, 0)`);
+  const now = new Date();
+  const ymd = d => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+  const sixAgo = new Date(now); sixAgo.setMonth(sixAgo.getMonth() - 6);
+  ins('e2e-noshow', '+919812300201', `${ymd(new Date(now - 86400e3))}T10:00`);
+  ins('e2e-done', '+919812300202', `${ymd(new Date(now - 86400e3))}T11:00`);
+  ins('e2e-recall', '+919812300203', `${ymd(sixAgo)}T10:00`);
+  const quiet = (await api('POST', '/admin/clinic/run')).filter(r => r.businessType === B);
+  await post(`/clinic/${B}/visits/e2e-noshow`, { status: 'no_show' });
+  await post(`/clinic/${B}/visits/e2e-done`, { status: 'completed' });
+  await post(`/clinic/${B}/visits/e2e-recall`, { status: 'completed' });
+  const stillQuiet = (await api('POST', '/admin/clinic/run')).filter(r => r.businessType === B);
+  check(n, 'nothing is sent while the switches are off, even for marked visits', quiet.length === 0 && stillQuiet.length === 0, `${quiet.length + stillQuiet.length} sends`);
+
+  const badLink = await fetch(`${BASE}/clinic/${B}`, { method: 'PUT', headers: { 'X-Admin-Key': ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewRequests: true }) });
+  await api('PUT', `/clinic/${B}`, { noShowRecovery: true, reviewRequests: true, reviewUrl: 'https://g.page/r/e2e-clinic/review', recalls: true, recallMonths: 6 });
+  const t = Date.now();
+  const r1 = (await api('POST', '/admin/clinic/run', { now: new Date(now.getTime() + 3 * 3600e3).toISOString() })).filter(r => r.businessType === B);
+  const smsTo = num => mocks.log.sms.filter(m => m.at >= t && m.to === num);
+  const smsLike = (num, re) => smsTo(num).find(m => re.test(m.body))?.body ?? '';
+  const task = sql(`SELECT message FROM call_messages WHERE business_type = '${B}' AND callback_phone = '+919812300201'`)[0];
+  check(n, 'review requests need the Google link', badLink.status === 400, `${badLink.status}`);
+  check(n, 'no-show: rebook message (SMS fallback, STOP line) + a call-back task for staff',
+    r1.some(r => r.orderId === 'e2e-noshow' && r.job === 'no_show' && r.outcome === 'sms') && /missed you/.test(smsTo('+919812300201')[0]?.body ?? '') && /STOP/.test(smsTo('+919812300201')[0]?.body ?? '') && /call to rebook/.test(task?.message ?? ''),
+    `${JSON.stringify(r1.map(r => `${r.orderId}:${r.job}:${r.outcome}`))}; task "${task?.message}"`);
+  check(n, 'review: completed visit gets the Google link, no rating gate', r1.some(r => r.orderId === 'e2e-done' && r.job === 'review') && (smsTo('+919812300202')[0]?.body ?? '').includes('https://g.page/r/e2e-clinic/review'), smsTo('+919812300202')[0]?.body?.slice(0, 90));
+  check(n, 'recall: 6 months after a completed visit, with no later booking', r1.some(r => r.orderId === 'e2e-recall' && r.job === 'recall') && !r1.some(r => r.orderId === 'e2e-recall' && r.job === 'review') && !!smsLike('+919812300203', /6 months since your last/), smsLike('+919812300203', /months/).slice(0, 90));
+  const r2 = (await api('POST', '/admin/clinic/run', { now: new Date(now.getTime() + 4 * 3600e3).toISOString() })).filter(r => r.businessType === B);
+  check(n, 'each follow-up is sent once', r2.length === 0, `${r2.length} repeats`);
+  const ns = (await api('GET', `/metrics/${B}?days=7`))?.metrics?.noShow;
+  check(n, 'no-show rate now shows in pilot metrics (from marked visits)', ns?.status === 'ok' && ns.after > 0, JSON.stringify(ns));
+  await api('PUT', `/clinic/${B}`, { noShowRecovery: false, reviewRequests: false, recalls: false });
+}
+
+// Practice software (launch 6): front-desk confirmation mode and read-only
+// ICS availability import, both off by default.
+async function practiceScenario(mocks) {
+  const n = 'Practice software';
+  console.log(`\n▶ ${n}`);
+  const B = 'in_plivo_en', DESK = '+919845000001';
+  const off = await api('GET', `/practice/${B}`);
+  check(n, 'front-desk mode and ICS import are off by default', off.confirmationMode === false && off.icsImport === false, JSON.stringify(off));
+  await api('PUT', `/practice/${B}`, { software: 'practo', confirmationMode: true, frontDeskPhone: DESK });
+  const t = Date.now();
+  const call = await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300301', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(1000);
+  const said = mocks.log.tts.filter(x => x.at >= t).map(x => x.text).join(' ');
+  const deskSms = mocks.log.sms.find(m => m.at >= t && m.to === DESK);
+  const token = (/\/fd\/([0-9a-f]{48})/.exec(deskSms?.body ?? '') ?? [])[1];
+  const row = sql(`SELECT status, front_desk_status FROM orders WHERE business_type = '${B}' AND callback_phone = '+919812300301' ORDER BY created_at DESC LIMIT 1`)[0];
+  check(n, 'the caller is told the booking is pending until the front desk confirms', call.webhook?.ok && /pending until the front desk confirms/.test(said), said.slice(-160));
+  check(n, 'the front desk gets a one-tap link (SMS); the booking is pending', !!token && row?.status === 'PENDING' && row.front_desk_status === 'pending', deskSms?.body?.slice(0, 120));
+  check(n, 'the patient gets "pending", not "confirmed"', mocks.log.sms.some(m => m.at >= t && m.to === '+919812300301' && /pending until the clinic confirms/.test(m.body)) && !mocks.log.sms.some(m => m.at >= t && m.to === '+919812300301' && /you're booked/.test(m.body)), '');
+  const page = await fetch(`${BASE}/fd/${token}`);
+  const html = await page.text();
+  const still = sql(`SELECT status FROM orders WHERE front_desk_token = '${token}'`)[0];
+  check(n, 'opening the link shows Confirm / Suggest and changes nothing', page.status === 200 && /Confirm/.test(html) && /Suggest this time/.test(html) && still?.status === 'PENDING', `${page.status}, ${still?.status}`);
+  const t2 = Date.now();
+  const conf = await fetch(`${BASE}/fd/${token}/confirm`, { method: 'POST', redirect: 'manual' });
+  await sleep(500);
+  const done = sql(`SELECT status, front_desk_status FROM orders WHERE front_desk_token = '${token}'`)[0];
+  check(n, 'Confirm (one tap): booking confirmed, the patient gets the confirmation', conf.status === 303 && done?.status === 'CONFIRMED' && done.front_desk_status === 'confirmed' && mocks.log.sms.some(m => m.at >= t2 && m.to === '+919812300301' && /booked/.test(m.body)), JSON.stringify(done));
+  await api('PUT', `/practice/${B}`, { confirmationMode: false });
+
+  // ICS import: today is fully booked in the practice software → nothing is offered today.
+  await api('PUT', `/practice/${B}`, { icsImport: true, icsUrl: 'https://ics.mock.test/clinic.ics' });
+  const sync = await api('POST', `/practice/${B}/ics/sync`);
+  const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+  const t3 = Date.now();
+  await placeCall(mocks, { carrier: 'plivo', number: '+918047100002', from: '+919812300302', lines: ["Hello, I'd like to book an appointment.", 'The first one works.'] });
+  await sleep(800);
+  const b3 = sql(`SELECT scheduled_at FROM orders WHERE business_type = '${B}' AND callback_phone = '+919812300302' ORDER BY created_at DESC LIMIT 1`)[0];
+  check(n, 'ICS import (read-only): busy times block slots; nothing is written back', sync?.ok === true && sync.busy === 1 && !!b3?.scheduled_at && !b3.scheduled_at.startsWith(today)
+    && !mocks.log.other.some(o => o.host === 'ics.mock.test' && o.method !== 'GET' && o.at >= t3), `synced ${sync?.busy}, booked ${b3?.scheduled_at}`);
+  await api('PUT', `/practice/${B}`, { icsImport: false });
 }
 
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
@@ -452,6 +625,26 @@ async function razorpayScenario(mocks) {
   await api('PUT', '/admin/billing/accounts/in_plivo_hi', { planId: 'in_starter' });
   const trial = await api('GET', '/billing/in_plivo_hi');
   check(n, 'trial: a new plan starts a 14-day free trial, next action Subscribe', trial?.state === 'trialing' && trial.trialDaysLeft === 14 && trial.nextAction === 'subscribe', `state=${trial?.state}, ${trial?.trialDaysLeft} days, ${trial?.nextAction}`);
+
+  // Clinic plan (headline) and the founding offer.
+  const pub = await api('GET', '/account/plans', undefined, { 'X-Admin-Key': '' });
+  const clinic = pub?.plans?.find(p => p.id === 'in_clinic'), starter = pub?.plans?.find(p => p.id === 'in_starter');
+  check(n, 'pricing: Clinic is the headline (₹4,999 + GST, 800 min, ₹6/min); Starter ₹2,999 for 300 min',
+    clinic?.monthlyFeePaise === 499900 && clinic.includedMinutes === 800 && clinic.overagePaisePerMinute === 600 && clinic.isFeatured === true
+    && starter?.monthlyFeePaise === 299900 && starter.includedMinutes === 300 && !starter.isFeatured,
+    `clinic ${clinic?.monthlyFeePaise}/${clinic?.includedMinutes}/${clinic?.overagePaisePerMinute}, starter ${starter?.monthlyFeePaise}/${starter?.includedMinutes}`);
+  const founding = pub?.offers?.find(o => o.code === 'FOUNDING25');
+  check(n, 'pricing: founding offer is public with 25 places (free setup, first month free)', founding?.seatsLeft === 25 && founding.freeDays === 30 && founding.waiveSetupFee === true, JSON.stringify(founding));
+  const wrongPlan = await post('/billing/in_plivo_hi/offer', { code: 'FOUNDING25' }, { 'X-Admin-Key': ADMIN });
+  check(n, 'founding offer: refused on Starter (Clinic only)', wrongPlan.status === 400, `${wrongPlan.status}`);
+  await api('PUT', '/admin/billing/accounts/in_plivo_hi', { planId: 'in_clinic' });
+  await api('POST', '/admin/billing/accounts/in_plivo_hi/offer', { code: 'founding25' });
+  const fc = await api('GET', '/billing/in_plivo_hi');
+  const seats = (await api('GET', '/account/plans'))?.offers?.find(o => o.code === 'FOUNDING25')?.seatsLeft;
+  check(n, 'founding offer: Clinic + FOUNDING25 → 30 free days, price unchanged, 24 places left, included minutes shown',
+    fc?.state === 'trialing' && fc.trialDaysLeft === 30 && fc.offer?.code === 'FOUNDING25' && fc.plan?.monthly?.amountPaise === 499900
+    && fc.usage?.includedMinutes === 800 && fc.usage?.includedMinutesLeft === 800 - fc.usage?.minutes && fc.usage?.includedMinutesUsed === fc.usage?.minutes && seats === 24,
+    `state=${fc?.state}, ${fc?.trialDaysLeft} days, offer ${fc?.offer?.code}, ₹${fc?.plan?.monthly?.amountPaise / 100}, left ${fc?.usage?.includedMinutesLeft}, seats ${seats}`);
 
   // A no-trial plan with every minute billed as overage, so month-end has something to bill.
   await api('PUT', '/admin/billing/plans/e2e_metered', { name: 'E2E Metered', monthlyFeePaise: 100000, includedMinutes: 0, overagePaisePerMinute: 700, trialDays: 0, gstRateBps: 1800 });
@@ -684,12 +877,12 @@ async function whatsappProdScenario(mocks) {
 
   // Templates: create Avery's defaults on Meta, then approval arrives by webhook / sync.
   const t0 = await api('GET', '/admin/whatsapp/templates');
-  check(n, 'templates page: WABA configured, no event has an approved template yet', t0.wabaConfigured && t0.events.every(e => !e.ready) && t0.defaults.length === 4, JSON.stringify(t0.events.map(e => e.event)));
+  check(n, 'templates page: WABA configured, no event has an approved template yet', t0.wabaConfigured && t0.events.every(e => !e.ready) && t0.defaults.length === 7, JSON.stringify(t0.events.map(e => e.event)));
   const created = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
   await api('POST', '/admin/whatsapp/templates', { event: 'missed_call' });
   const again = await api('POST', '/admin/whatsapp/templates', { event: 'reminder' });
   const onMeta = [...mocks.wa.templates.values()];
-  check(n, 'template create: en, hi and Hinglish, UTILITY, sent to the WABA with examples', created.length === 3 && created.every(t => t.status === 'PENDING')
+  check(n, 'template create: en, hi, Hinglish, kn, te and ta, UTILITY, sent to the WABA with examples', created.length === 6 && created.every(t => t.status === 'PENDING') && ['kn', 'te', 'ta'].every(l => onMeta.some(t => t.name === REM && t.language === l))
     && onMeta.some(t => t.name === REM && t.language === 'hi') && onMeta.some(t => t.name === `${REM}_hinglish` && t.language === 'en')
     && onMeta.every(t => t.category === 'UTILITY' && t.components[0].example?.body_text?.[0]?.length >= 1)
     && mocks.log.whatsapp.some(w => w.method === 'POST' && w.path.endsWith(`/${SECRETS.WA_BUSINESS_ACCOUNT_ID}/message_templates`)) && again.length === 0,
@@ -896,6 +1089,28 @@ const SCENARIOS = [
     expectNotice: true, noticeLang: 'hi', transfer: true,
     lines: ['नमस्ते, मुझे अपॉइंटमेंट बुक करना है।', 'पहला वाला ठीक है।', 'क्या मैं किसी से बात कर सकता हूँ?'],
   },
+  // Kannada, Telugu and Tamil (launch 5): Sarvam in and out, the scripted brain understands each.
+  {
+    name: 'Indian business over Exotel (Kannada, Sarvam)', key: 'in_kn', carrier: 'exotel', country: 'IN',
+    number: '+918047100021', from: '+919812345621', staffPhone: '+919876500021', stt: 'sarvam', tts: 'sarvam',
+    voice: { voice_language: 'kn', stt_provider: 'sarvam', tts_provider: 'sarvam' }, script: /[\u0C80-\u0CFF]/,
+    expectNotice: true, noticeLang: 'kn', transfer: true,
+    lines: ['ನಮಸ್ಕಾರ, ನನಗೆ ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ಬುಕ್ ಮಾಡಬೇಕು.', 'ಮೊದಲನೆಯದು ಸರಿ.', 'ನಾನು ಯಾರಾದರೂ ಜೊತೆ ಮಾತನಾಡಬಹುದಾ?'],
+  },
+  {
+    name: 'Indian business over Exotel (Telugu, Sarvam)', key: 'in_te', carrier: 'exotel', country: 'IN',
+    number: '+918047100022', from: '+919812345622', staffPhone: '+919876500022', stt: 'sarvam', tts: 'sarvam',
+    voice: { voice_language: 'te', stt_provider: 'sarvam', tts_provider: 'sarvam' }, script: /[\u0C00-\u0C7F]/,
+    expectNotice: true, noticeLang: 'te', transfer: true,
+    lines: ['నమస్కారం, నాకు అపాయింట్‌మెంట్ బుక్ చేయాలి.', 'మొదటిది సరే.', 'నేను ఎవరితోనైనా మాట్లాడవచ్చా?'],
+  },
+  {
+    name: 'Indian business over Exotel (Tamil, Sarvam)', key: 'in_ta', carrier: 'exotel', country: 'IN',
+    number: '+918047100023', from: '+919812345623', staffPhone: '+919876500023', stt: 'sarvam', tts: 'sarvam',
+    voice: { voice_language: 'ta', stt_provider: 'sarvam', tts_provider: 'sarvam' }, script: /[\u0B80-\u0BFF]/,
+    expectNotice: true, noticeLang: 'ta', transfer: true,
+    lines: ['வணக்கம், எனக்கு அப்பாயிண்ட்மென்ட் புக் செய்ய வேண்டும்.', 'முதல் நேரம் சரி.', 'நான் யாரிடமாவது பேசலாமா?'],
+  },
 ];
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -917,10 +1132,19 @@ try {
   // The Razorpay scenario bills the Exotel business's call minutes, so `-- razorpay` places that call too.
   for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
+  if (!only || 'pilot'.includes(only)) await pilotScenario();
+  if (!only || 'metrics'.includes(only)) await metricsScenario(mocks);
+  if (!only || 'clinic'.includes(only)) await clinicScenario(mocks);
+  if (!only || 'practice'.includes(only)) await practiceScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
   if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);
+  // E2E_HOLD=1: keep the Worker running on its seeded data (for screenshots) until Ctrl-C.
+  if (process.env.E2E_HOLD) {
+    console.log(`\nHOLDING: Worker on ${BASE} (admin key ${ADMIN}); Ctrl-C to stop`);
+    await new Promise(r => { process.on('SIGINT', r); process.on('SIGTERM', r); });
+  }
 } catch (e) {
   console.error('\n✗ e2e run failed:', e.stack || e);
   results.push({ scenario: 'run', name: 'harness', ok: false, detail: String(e.message || e) });

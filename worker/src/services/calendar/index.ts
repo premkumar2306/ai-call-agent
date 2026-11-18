@@ -19,6 +19,7 @@
  * the booking flow pick it up unchanged.
  */
 import { eq } from 'drizzle-orm';
+import { icsBusy } from '../practice';
 import { SignJWT, jwtVerify } from 'jose';
 import { getDb } from '../../db/client';
 import { calendarConnections, orders as ordersTable } from '../../db/schema';
@@ -221,6 +222,14 @@ function usable(env: Env, conn: CalendarConnection | null): conn is CalendarConn
  * slots and may retry on a later turn.
  */
 export async function getCalendarBusy(env: Env, businessType: string): Promise<BusyInterval[] | null> {
+  // Busy times imported from the practice software's ICS feed (launch 6; empty unless turned on).
+  const imported = await icsBusy(env, businessType);
+  const google = await getGoogleBusy(env, businessType);
+  if (!imported.length) return google;
+  return [...(google ?? []), ...imported];
+}
+
+async function getGoogleBusy(env: Env, businessType: string): Promise<BusyInterval[] | null> {
   if (!env.CALENDAR_TOKEN_KEY) return [];
   try {
     const conn = await getConnection(env, businessType);
@@ -247,6 +256,7 @@ export function bookingInterval(scheduledAt: string, durationMinutes: number, ti
 
 /** Booking-time re-check of one slot. Fails open: an unreachable calendar never blocks a booking. */
 export async function isSlotFreeInCalendar(env: Env, businessType: string, start: Date, end: Date): Promise<boolean> {
+  if (overlapsBusy(start.getTime(), end.getTime(), await icsBusy(env, businessType))) return false;
   if (!env.CALENDAR_TOKEN_KEY) return true;
   try {
     const conn = await getConnection(env, businessType);

@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, ne, or, isNull, sql, desc } from 'drizzle-orm';
 import { getDb } from '../../db/client';
-import { billingAccounts, billingInvoices, billingPlans, sectors, usageRecords } from '../../db/schema';
+import { billingAccounts, billingInvoices, billingOffers, billingPlans, sectors, usageRecords } from '../../db/schema';
 import type { Env } from '../../types';
 import { getSector } from '../sector.service';
 import { sendEmail } from '../notify.service';
@@ -95,6 +95,7 @@ export interface PlanInput {
   name: string; currency?: string; monthlyFeePaise: number; includedMinutes: number;
   overagePaisePerMinute: number; trialDays?: number; gstRateBps?: number; isActive?: boolean; isDefault?: boolean;
   razorpayPlanId?: string | null;
+  setupFeePaise?: number; isFeatured?: boolean; audience?: string | null;
 }
 
 export function validatePlanInput(b: any): PlanInput | string {
@@ -104,7 +105,7 @@ export function validatePlanInput(b: any): PlanInput | string {
   for (const k of ['monthlyFeePaise', 'includedMinutes', 'overagePaisePerMinute']) {
     if (!int(b[k])) return `${k} must be a non-negative integer`;
   }
-  for (const k of ['trialDays', 'gstRateBps']) {
+  for (const k of ['trialDays', 'gstRateBps', 'setupFeePaise']) {
     if (b[k] !== undefined && !int(b[k])) return `${k} must be a non-negative integer`;
   }
   if (b.currency !== undefined && !/^[A-Z]{3}$/.test(b.currency)) return 'currency must be an ISO code like INR';
@@ -115,6 +116,9 @@ export function validatePlanInput(b: any): PlanInput | string {
     isActive: typeof b.isActive === 'boolean' ? b.isActive : undefined,
     isDefault: typeof b.isDefault === 'boolean' ? b.isDefault : undefined,
     razorpayPlanId: typeof b.razorpayPlanId === 'string' || b.razorpayPlanId === null ? b.razorpayPlanId : undefined,
+    setupFeePaise: b.setupFeePaise,
+    isFeatured: typeof b.isFeatured === 'boolean' ? b.isFeatured : undefined,
+    audience: typeof b.audience === 'string' ? b.audience.trim().slice(0, 120) || null : b.audience === null ? null : undefined,
   };
 }
 
@@ -127,6 +131,9 @@ export async function upsertPlan(env: Env, id: string, p: PlanInput): Promise<Pl
     trialDays: p.trialDays ?? 0, gstRateBps: p.gstRateBps ?? 1800, isActive: p.isActive ?? true,
     ...(p.razorpayPlanId !== undefined ? { razorpayPlanId: p.razorpayPlanId } : {}),
     ...(p.isDefault !== undefined ? { isDefault: p.isDefault } : {}),
+    ...(p.setupFeePaise !== undefined ? { setupFeePaise: p.setupFeePaise } : {}),
+    ...(p.isFeatured !== undefined ? { isFeatured: p.isFeatured } : {}),
+    ...(p.audience !== undefined ? { audience: p.audience } : {}),
     updatedAt: now,
   };
   // At most one default plan.
@@ -156,6 +163,14 @@ export async function syncPlanToRazorpay(env: Env, id: string): Promise<Plan> {
 export async function getAccount(env: Env, businessType: string): Promise<Account | null> {
   const [row] = await getDb(env.DB).select().from(billingAccounts).where(eq(billingAccounts.businessType, businessType));
   return row ?? null;
+}
+
+/** The one-off setup fee due with the first payment (excl. GST): 0 when the applied offer waives it. */
+export async function setupFeeDue(env: Env, plan: Plan, offerCode: string | null | undefined): Promise<number> {
+  if (plan.setupFeePaise <= 0) return 0;
+  if (!offerCode) return plan.setupFeePaise;
+  const [offer] = await getDb(env.DB).select().from(billingOffers).where(eq(billingOffers.code, offerCode));
+  return offer?.waiveSetupFee ? 0 : plan.setupFeePaise;
 }
 
 /**
@@ -193,13 +208,14 @@ export async function assignPlan(env: Env, businessType: string, planId: string 
  * it shows up in billing from day one. Nothing is charged until the owner
  * subscribes. No default plan (the starting state) = billing stays off.
  */
-export async function assignDefaultPlan(env: Env, businessType: string): Promise<Account | null> {
+export async function assignDefaultPlan(env: Env, businessType: string, chosenPlanId?: string | null): Promise<Account | null> {
   // Plans are in INR with GST: only Indian businesses start on one. A US
   // business stays exactly as it was (billing off).
   const country = (await getSector(env, businessType))?.countryCode ?? 'US';
   if (country !== 'IN') return null;
+  // The plan the owner picked at signup (active plans only), else the operator's default.
   const [plan] = await getDb(env.DB).select().from(billingPlans)
-    .where(and(eq(billingPlans.isDefault, true), eq(billingPlans.isActive, true))).limit(1);
+    .where(and(chosenPlanId ? eq(billingPlans.id, chosenPlanId) : eq(billingPlans.isDefault, true), eq(billingPlans.isActive, true))).limit(1);
   if (!plan || await getAccount(env, businessType)) return null;
   return assignPlan(env, businessType, plan.id);
 }
@@ -406,6 +422,9 @@ export async function billingSummary(env: Env, businessType: string, viewer: Vie
   const bigger = plan ? plans.find(p => p.isActive && p.monthlyFeePaise > plan.monthlyFeePaise) : null;
   const alertLevel = plan ? usageAlertLevel(usage.minutes, plan.includedMinutes) : 0;
   const tax = await listTaxInvoices(env, businessType);
+  const [offer] = account?.offerCode
+    ? await getDb(env.DB).select().from(billingOffers).where(eq(billingOffers.code, account.offerCode)) : [];
+  const setupDue = plan ? await setupFeeDue(env, plan, account?.offerCode) : 0;
 
   // When Razorpay charges next: the trial's end for a mandate set up during
   // the trial, else the end of the current cycle. Nothing after cancellation.
@@ -448,7 +467,10 @@ export async function billingSummary(env: Env, businessType: string, viewer: Vie
       overagePaisePerMinute: plan.overagePaisePerMinute, trialDays: plan.trialDays, gstRateBps: plan.gstRateBps,
       monthly: gstBreakdown(plan.monthlyFeePaise, plan.gstRateBps),
       checkoutReady: !!plan.razorpayPlanId,
+      isFeatured: plan.isFeatured, audience: plan.audience,
+      setupFee: plan.setupFeePaise > 0 ? { ...gstBreakdown(plan.setupFeePaise, plan.gstRateBps), waived: setupDue === 0 } : null,
     },
+    offer: offer && { code: offer.code, name: offer.name, description: offer.description, freeDays: offer.freeDays, waiveSetupFee: offer.waiveSetupFee, appliedAt: account?.offerAppliedAt ?? null },
     account: account && {
       trialEndsAt: account.trialEndsAt, subscriptionId: account.razorpaySubscriptionId,
       subscriptionStatus: account.subscriptionStatus, currentPeriodEnd: account.currentPeriodEnd,
@@ -460,6 +482,8 @@ export async function billingSummary(env: Env, businessType: string, viewer: Vie
     usage: {
       period, minutes: usage.minutes, calls: usage.calls, whatsappConversations: usage.whatsappConversations,
       includedMinutes: plan?.includedMinutes ?? null,
+      includedMinutesUsed: plan ? Math.min(usage.minutes, plan.includedMinutes) : null,
+      includedMinutesLeft: plan ? Math.max(0, plan.includedMinutes - usage.minutes) : null,
       alertLevel,
       overageSoFar: overage && plan && { minutes: overage.overageMinutes, ...gstBreakdown(overage.overagePaise, plan.gstRateBps) },
     },
@@ -528,9 +552,12 @@ export async function startSubscription(env: Env, businessType: string): Promise
   const now = nowSec();
   // First charge after the trial; Razorpay needs start_at comfortably in the future.
   const startAt = account.trialEndsAt && account.trialEndsAt > now + 3600 ? account.trialEndsAt : undefined;
+  const setupFee = await setupFeeDue(env, plan, account.offerCode);
   const sub = await razorpay.createSubscription(env, {
     planId: plan.razorpayPlanId, totalCount: SUBSCRIPTION_CYCLES, startAt,
-    notes: { business_type: businessType, avery_plan_id: plan.id },
+    notes: { business_type: businessType, avery_plan_id: plan.id, ...(account.offerCode ? { offer: account.offerCode } : {}) },
+    // One-off setup fee (incl. GST), charged with the first payment.
+    addons: setupFee > 0 ? [{ name: 'Setup', amountPaise: withGst(setupFee, plan.gstRateBps), currency: plan.currency }] : undefined,
   });
   // A halted subscription can't be revived by Checkout: it is replaced (Razorpay keeps its history).
   if (account.razorpaySubscriptionId && account.subscriptionStatus === 'halted') {

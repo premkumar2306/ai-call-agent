@@ -39,6 +39,16 @@ export default function Appointments({ sector, locale, base, auth, canEdit, oper
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [open, setOpen] = useState<BookingRow | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
+  const [visitMsg, setVisitMsg] = useState('');
+  // Visit outcome (clinic features: no-show recovery, review requests, recalls, no-show rate).
+  const markVisit = async (b: BookingRow, status: 'completed' | 'no_show' | null) => {
+    setVisitMsg('');
+    try {
+      await api(base, `/clinic/${encodeURIComponent(sector)}/visits/${encodeURIComponent(b.id)}`, auth, { method: 'POST', body: { status } });
+      setRows(r => r && r.map(x => (x.id === b.id ? { ...x, visitStatus: status } : x)));
+      setOpen(o => o && { ...o, visitStatus: status });
+    } catch (e: any) { setVisitMsg(e.message); }
+  };
 
   useEffect(() => {
     let live = true;
@@ -137,7 +147,15 @@ export default function Appointments({ sector, locale, base, auth, canEdit, oper
             {open.notes && <><dt>Notes</dt><dd>{open.notes}</dd></>}
             {open.calendarSync && <><dt>Google Calendar</dt><dd>{open.calendarSync === 'synced' ? 'Added' : 'Not added (sync failed)'}</dd></>}
             <dt>Booked</dt><dd>{new Date(toMs(open.createdAt)).toLocaleString(loc || undefined, { dateStyle: 'medium', timeStyle: 'short' })}</dd>
+            {open.visitStatus && <><dt>Visit</dt><dd><Badge tone={open.visitStatus === 'completed' ? 'success' : 'danger'}>{open.visitStatus === 'completed' ? 'Came' : 'No-show'}</Badge></dd></>}
           </dl>
+          {locale?.countryCode === 'IN' && open.status !== 'CANCELLED' && open.scheduledAt && open.scheduledAt.slice(0, 10) <= ymd(new Date()) && (
+            <div className="row">
+              <Button size="sm" variant={open.visitStatus === 'completed' ? 'primary' : 'secondary'} onClick={() => markVisit(open, open.visitStatus === 'completed' ? null : 'completed')}>Came</Button>
+              <Button size="sm" variant={open.visitStatus === 'no_show' ? 'primary' : 'secondary'} onClick={() => markVisit(open, open.visitStatus === 'no_show' ? null : 'no_show')}>No-show</Button>
+              {visitMsg && <span className="muted small">{visitMsg}</span>}
+            </div>
+          )}
         </Dialog>
       )}
     </>

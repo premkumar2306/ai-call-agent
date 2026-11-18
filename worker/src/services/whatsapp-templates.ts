@@ -15,11 +15,12 @@
 //   Latin script and Meta has no code for it, so it is <family>_hinglish in en.
 
 import type { Env } from '../types';
+import { TEMPLATE_BODIES as INDIC_BODIES } from './indic-languages';
 import { graphFetch, type ReplyLanguage } from './whatsapp-api';
 
-export const EVENTS = ['confirmation', 'reminder', 'cancellation', 'missed_call'] as const;
+export const EVENTS = ['confirmation', 'reminder', 'cancellation', 'missed_call', 'recall', 'no_show', 'review_request'] as const;
 export type WaEvent = typeof EVENTS[number];
-export const VARIANTS: ReplyLanguage[] = ['en', 'hi', 'hi-en'];
+export const VARIANTS: ReplyLanguage[] = ['en', 'hi', 'hi-en', 'kn', 'te', 'ta'];
 
 export const isEvent = (x: unknown): x is WaEvent => typeof x === 'string' && (EVENTS as readonly string[]).includes(x);
 
@@ -36,8 +37,10 @@ export interface TemplateDef {
   body: Record<ReplyLanguage, string>;
 }
 
+type BaseDef = Omit<TemplateDef, 'body'> & { body: Record<'en' | 'hi' | 'hi-en', string> };
+
 // {{1}} business name; {{2}} service; {{3}} date and time.
-export const DEFAULT_TEMPLATES: TemplateDef[] = [
+const BASE_TEMPLATES: BaseDef[] = [
   {
     event: 'confirmation', family: 'avery_booking_confirmation',
     example: ['Sharma Dental Clinic', 'Dental check-up', 'Mon, 18 Nov, 10:30 am'],
@@ -74,7 +77,39 @@ export const DEFAULT_TEMPLATES: TemplateDef[] = [
       'hi-en': 'Sorry, {{1}} par aapki call poori nahi ho paayi. Is message ka reply karein, hum yahin WhatsApp par help karenge: booking, reschedule ya koi sawaal. Messages band karne ke liye STOP likhein.',
     },
   },
+  // Launch 4 (clinic features; each off until the business turns it on).
+  // Hindi and Hinglish wording needs a native speaker's review (docs/translations-review.md).
+  {
+    event: 'recall', family: 'avery_recall',
+    example: ['Sharma Dental Clinic', '6 months', 'dental cleaning'],
+    body: {
+      en: 'Hello from {{1}}. It has been about {{2}} since your last {{3}}. Reply here to book your next visit, and we will find you a time. Reply STOP to opt out.',
+      hi: 'नमस्ते, {{1}} की ओर से। लगभग {{2}} हो गए हैं आपके पिछले {{3}} को। अगली विज़िट बुक करने के लिए यहीं जवाब दें, हम आपके लिए समय ढूँढ देंगे। मैसेज बंद करने के लिए STOP लिखें।',
+      'hi-en': 'Namaste, {{1}} se. Lagbhag {{2}} ho gaye hain aapke pichhle {{3}} ko. Agli visit book karne ke liye yahin reply karein, hum aapke liye time dhoondh denge. Messages band karne ke liye STOP likhein.',
+    },
+  },
+  {
+    event: 'no_show', family: 'avery_missed_appointment',
+    example: ['Sharma Dental Clinic', 'Dental check-up', 'Mon, 18 Nov, 10:30 am'],
+    body: {
+      en: 'Hello from {{1}}. We missed you at your {{2}} on {{3}}. Reply here to book a new time, or reply CALL and the clinic will call you back. Reply STOP to opt out.',
+      hi: 'नमस्ते, {{1}} की ओर से। आपके {{2}} ({{3}}) पर हम आपसे नहीं मिल पाए। नया समय बुक करने के लिए यहीं जवाब दें, या CALL लिखें, क्लिनिक आपको कॉल करेगा। मैसेज बंद करने के लिए STOP लिखें।',
+      'hi-en': 'Namaste, {{1}} se. Aapke {{2}} ({{3}}) par hum aapse nahi mil paaye. Naya time book karne ke liye yahin reply karein, ya CALL likhein, clinic aapko call karega. Messages band karne ke liye STOP likhein.',
+    },
+  },
+  {
+    event: 'review_request', family: 'avery_review_request',
+    example: ['Sharma Dental Clinic', 'https://g.page/r/example/review'],
+    body: {
+      en: 'Thank you for visiting {{1}}. If you have a minute, we would value your review on Google: {{2}} You can also reply here to tell the clinic how it went. Reply STOP to opt out.',
+      hi: 'नमस्ते, {{1}} आने के लिए धन्यवाद। अगर आपके पास एक मिनट हो, तो Google पर अपना रिव्यू दें: {{2}} आप यहीं जवाब देकर भी क्लिनिक को बता सकते हैं कि अनुभव कैसा रहा। मैसेज बंद करने के लिए STOP लिखें।',
+      'hi-en': 'Namaste, {{1}} aane ke liye thank you. Agar aapke paas ek minute ho, toh Google par apna review dein: {{2}} Aap yahin reply karke bhi clinic ko bata sakte hain ki experience kaisa raha. Messages band karne ke liye STOP likhein.',
+    },
+  },
 ];
+
+// Kannada, Telugu and Tamil bodies (launch 5) come from indic-languages.ts.
+export const DEFAULT_TEMPLATES: TemplateDef[] = BASE_TEMPLATES.map(t => ({ ...t, body: { ...t.body, ...INDIC_BODIES[t.event] } }));
 
 export const defaultFor = (event: WaEvent) => DEFAULT_TEMPLATES.find(t => t.event === event)!;
 
@@ -126,7 +161,8 @@ function classify(name: string, language: string): { purpose: WaEvent | null; va
   const hinglish = name.endsWith('_hinglish');
   const family = hinglish ? name.slice(0, -'_hinglish'.length) : name;
   const def = DEFAULT_TEMPLATES.find(d => d.family === family);
-  const variant: ReplyLanguage | null = hinglish ? 'hi-en' : language.startsWith('hi') ? 'hi' : language.startsWith('en') ? 'en' : null;
+  const base = language.slice(0, 2);
+  const variant: ReplyLanguage | null = hinglish ? 'hi-en' : (['hi', 'en', 'kn', 'te', 'ta'] as const).find(l => l === base) ?? null;
   return { purpose: def?.event ?? null, variant };
 }
 
@@ -199,7 +235,7 @@ export async function createTemplate(env: Env, t: { name: string; variant: Reply
   if (problem) throw new TemplateError(problem);
   const params = paramCount(t.body);
   if (t.example.length < params || t.example.slice(0, params).some(e => !e?.trim())) throw new TemplateError(`Give an example for each of the ${params} parameter(s)`);
-  const { name, language } = t.variant === 'hi-en' && !t.name.endsWith('_hinglish') ? variantName(t.name, 'hi-en') : { name: t.name, language: t.variant === 'hi' ? 'hi' : 'en' };
+  const { name, language } = t.variant === 'hi-en' && !t.name.endsWith('_hinglish') ? variantName(t.name, 'hi-en') : { name: t.name, language: t.variant === 'hi-en' ? 'en' : t.variant };
   const r = await graphFetch<any>(env, `${waba}/message_templates`, {
     body: {
       name, language, category: 'UTILITY',

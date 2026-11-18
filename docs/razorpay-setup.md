@@ -74,30 +74,69 @@ so on. The series restarts every financial year (April). The invoice is emailed 
 billing email (Resend) and can be downloaded from Settings → Billing. Owners add their own GSTIN
 and address under **Billing details**.
 
-## 6. Plans
+## 6. Plans and offers
 
-Plans live in the database: prices in paise, **excluding GST**. The Starter plan is seeded at
-₹2,999/month, 300 minutes, ₹7/minute after that, with a 14-day trial. To add or change a plan:
+Plans live in the database: prices in paise, **excluding GST**. Two plans are seeded:
+
+| Plan id | Name | Price (excl. GST) | Included | After that | Trial | Role |
+|---|---|---|---|---|---|---|
+| `in_clinic` | **Clinic** (headline, `isFeatured`) | ₹4,999/month (₹5,898.82 incl. 18% GST) | 800 minutes | ₹6/minute | 14 days | Most clinics (migration 0022) |
+| `in_starter` | Starter | ₹2,999/month (₹3,538.82 incl. GST) | 300 minutes | ₹7/minute | 14 days | Single-chair clinics (migration 0016) |
+
+Neither exists in Razorpay until you sync it. **Sync both** (once in test mode, again in live mode):
 
 ```sh
 W=https://<worker-host>; H="X-Admin-Key: $ADMIN_SECRET"
-curl -X PUT $W/admin/billing/plans/in_growth -H "$H" -H 'content-type: application/json' \
-  -d '{"name":"Growth","monthlyFeePaise":599900,"includedMinutes":800,"overagePaisePerMinute":600,"trialDays":14}'
-curl -X POST $W/admin/billing/plans/in_growth/razorpay -H "$H"   # creates it in Razorpay (fee incl. GST)
+curl -X POST $W/admin/billing/plans/in_clinic/razorpay  -H "$H"   # Razorpay plan: ₹5,898.82/month incl. GST
+curl -X POST $W/admin/billing/plans/in_starter/razorpay -H "$H"   # Razorpay plan: ₹3,538.82/month incl. GST
+curl $W/admin/billing/plans -H "$H"                                # each now has a razorpayPlanId
 ```
 
-You can also do this in the admin UI (Operator → **Plans & billing**): there you choose the plan new
-businesses start on, give a business a plan, and create the plan in Razorpay.
+To add or change a plan (all fields; `setupFeePaise`, `isFeatured`, `audience` are optional):
 
-Razorpay plans can't be edited. After a price change, sync again: new subscriptions use the new
-plan and existing ones keep the old price.
+```sh
+curl -X PUT $W/admin/billing/plans/in_clinic -H "$H" -H 'content-type: application/json' \
+  -d '{"name":"Clinic","monthlyFeePaise":499900,"includedMinutes":800,"overagePaisePerMinute":600,"trialDays":14,"setupFeePaise":0,"isFeatured":true}'
+```
+
+`setupFeePaise` is a one-off fee charged with the first payment (sent to Razorpay as an upfront
+add-on on the subscription). It is **0 on both seeded plans**: set it if you charge for setup.
+
+You can also do this in the admin UI (Operator → **Plans & billing**): there you choose the plan new
+businesses start on, give a business a plan, and create the plan in Razorpay. Owners also choose
+Clinic or Starter on the last step of signup (Indian businesses only; nothing is charged then).
+
+Razorpay plans can't be edited. After a price change, clear the stored id
+(`"razorpayPlanId": null` in the PUT) and sync again: new subscriptions use the new plan and
+existing ones keep the old price.
+
+### Offers (the founding offer)
+
+An offer is a code, not a price: it never changes the plan's monthly fee. It can give a longer
+free period (`freeDays`, which replaces a shorter trial; Razorpay's first charge is moved to its
+end with `start_at`) and waive the plan's setup fee (`waiveSetupFee`). Seats are capped
+(`maxRedemptions`) and claimed atomically.
+
+Seeded by migration 0022: **`FOUNDING25`**: first 25 clinics, Clinic plan only, free setup and the
+first month free (30 days).
+
+```sh
+curl $W/admin/billing/offers -H "$H"                                   # every offer with seats used
+curl -X POST $W/admin/billing/accounts/<business>/offer -H "$H" -H 'content-type: application/json' -d '{"code":"FOUNDING25"}'
+curl -X PUT $W/admin/billing/offers/FOUNDING25 -H "$H" -H 'content-type: application/json' \
+  -d '{"name":"Founding clinic","freeDays":30,"waiveSetupFee":true,"planIds":"in_clinic","maxRedemptions":25,"isActive":false}'   # close it
+```
+
+Owners can enter a code on the signup plan step or under Settings → Billing until they subscribe.
+One offer per business.
 
 ## 7. Test-mode run
 
 With **test** keys:
 
-1. Operator → Plans & billing: set **New businesses start on** to Starter. Create a test business as
-   an owner. Its Billing page shows **Free trial: 14 days left**.
+1. Sync both plans (step 6). Create a test business as an owner and pick **Clinic** with the
+   `FOUNDING25` code on the last signup step. Its Billing page shows **Free trial: 30 days left**,
+   the founding offer, and **Included minutes used: 0 of 800**.
 2. **Subscribe** opens Razorpay Checkout. Pay with:
    - **UPI:** `success@razorpay` succeeds and `failure@razorpay` fails.
    - **Card:** use a card from Razorpay's *Test card details* page that supports recurring
@@ -125,7 +164,7 @@ Once KYC is approved:
 1. Generate **live** API keys and replace both secrets (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`).
 2. Add the webhook again **in live mode** (same URL and events, new secret) and replace
    `RAZORPAY_WEBHOOK_SECRET`.
-3. Re-create each plan in Razorpay: clear the stored test plan id, then sync:
+3. Re-create each plan (`in_clinic` and `in_starter`) in Razorpay: clear the stored test plan id, then sync:
    `curl -X PUT $W/admin/billing/plans/in_starter -H "$H" -H 'content-type: application/json' -d '{…same fields…, "razorpayPlanId": null}'`
    then `curl -X POST $W/admin/billing/plans/in_starter/razorpay -H "$H"`.
 4. Businesses that subscribed in test mode have test subscription ids. Turn their billing off and

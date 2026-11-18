@@ -12,6 +12,7 @@ import { missedCallFollowUp } from '../services/whatsapp-outbound';
 import { callStartNotice, recordConsent } from '../services/disclosure';
 import { assistantNameOf, getVertical } from '../services/verticals';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
+import { recordCallOutcome } from '../services/metrics';
 import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
 import { DEFAULT_VOICE, isDefaultVoice, resolveVoiceSettings, sttDiffers, voiceLines, type VoiceSettings } from '../services/voice-language';
@@ -591,6 +592,13 @@ export class CallRelay extends DurableObject<Env> {
     } catch (e: any) {
       console.error('[follow-up]', e?.message || e);
     }
+    // Pilot metrics: one outcome row per call (telemetry; never throws).
+    await recordCallOutcome(this.env, {
+      carrier: this.telephony.provider, callSid: this.callSid, businessType: this.session.businessType,
+      callerHash: this.session.sub, startedAt: Math.floor(this.streamStartedAt / 1000), endedAt: Math.floor(Date.now() / 1000),
+      userTurns: h.filter(t => t.role === 'user').length, transferred: !!this.cache.transferTo, messageTaken: !!this.cache.messageId,
+      isTest: this.session.sub.startsWith('synthetic-'),
+    });
   }
 
   // One usage record per call: AI-handled minutes (stream start → end; a
