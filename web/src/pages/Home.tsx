@@ -153,7 +153,7 @@ export default function Home({ sector, name, locale, base, auth, isOwner, operat
         </div>
       ))}
 
-      {open && <TranscriptDialog a={open} showLatency={operator} onClose={() => setOpen(null)} />}
+      {open && <TranscriptDialog a={open} showLatency={operator} base={base} auth={auth} onClose={() => setOpen(null)} />}
     </>
   );
 }
