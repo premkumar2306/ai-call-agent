@@ -62,12 +62,11 @@ describe('voice settings', () => {
     expect(sttDiffers(HINGLISH_DG)).toBe(true);
   });
 
-  it('validates admin input and fails closed on Sarvam without a key', () => {
+  it('validates admin input and saves Sarvam as pending without a key', () => {
     expect(parseVoiceInput({ voice_language: 'hi', stt_provider: 'sarvam', tts_provider: 'sarvam' }, DEFAULT_VOICE, true))
       .toEqual({ ok: true, value: { language: 'hi', sttProvider: 'sarvam', ttsProvider: 'sarvam' } });
     const noKey = parseVoiceInput({ stt_provider: 'sarvam' }, DEFAULT_VOICE, false);
-    expect(noKey.ok).toBe(false);
-    expect(!noKey.ok && noKey.error).toMatch(/SARVAM_API_KEY/);
+    expect(noKey).toMatchObject({ ok: true, pending: 'indian_voice' });
     expect(parseVoiceInput({ voice_language: 'ta' }, DEFAULT_VOICE, true).ok).toBe(false);
     expect(parseVoiceInput({ voice_id: 'bad id!' }, DEFAULT_VOICE, true).ok).toBe(false);
     // Hindi on Cartesia needs a Hindi-native voice.
