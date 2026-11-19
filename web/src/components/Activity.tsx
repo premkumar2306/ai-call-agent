@@ -106,7 +106,16 @@ interface TimelineTurn {
   tools: { name: string; start: number; end: number; ok: boolean }[];
   stt_audio_s: number; tts_chars: number; barge_in: boolean; reply_used_cached_audio: boolean;
   stt_provider: string; tts_provider: string; llm_model: string;
+  llm_in: number; llm_out: number; llm_cache_read: number; llm_cache_write: number;
+  cost: Cost;
 }
+// AI cost (listening + model + speaking) at billing rates; the phone line is billed per call minute, not per turn.
+interface Cost { total_usd_micros: number; total_inr_paise: number; stt_usd_micros: number; tts_usd_micros: number; llm_usd_micros: number }
+interface CallTotal extends Cost { stt_seconds: number; tts_chars: number; llm_in: number; llm_out: number }
+
+const usd = (micros: number) => `$${(micros / 1e6).toFixed(4)}`;
+const inr = (micros: number, rate: number) => { const r = (micros / 1e6) * rate; return `₹${r.toFixed(r < 1 ? 3 : 2)}`; };
+const num = (n: number) => n.toLocaleString('en-IN');
 
 // Where one reply's time went, in ms after the caller stopped speaking.
 const STAGES = [
@@ -132,12 +141,17 @@ const median = (v: number[]) => { const a = [...v].sort((x, y) => x - y); return
 // Bar widths are data, so they are the one place a style attribute is used (as in LatencyChart).
 function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Record<string, string>; callSid: string; texts?: string[] }) {
   const [turns, setTurns] = useState<TimelineTurn[] | null | 'none'>(null);
+  const [meta, setMeta] = useState<{ total: CallTotal; rate: number } | null>(null);
   const [openTurn, setOpenTurn] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
     fetch(`${base}/admin/calls/${encodeURIComponent(callSid)}/turns`, { headers: auth })
       .then(r => (r.ok ? r.json() : null))
-      .then(j => { if (live) setTurns(j?.data?.turns?.length ? j.data.turns : 'none'); })
+      .then(j => {
+        if (!live) return;
+        setMeta(j?.data?.total ? { total: j.data.total, rate: j.data.usd_to_inr ?? 88 } : null);
+        setTurns(j?.data?.turns?.length ? j.data.turns : 'none');
+      })
       .catch(() => { if (live) setTurns('none'); });
     return () => { live = false; };
   }, [base, callSid]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -162,6 +176,16 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
           <div><span className={`tl-num ${slowest.st.total > 1500 ? 'bad' : ''}`}>{sec(slowest.st.total)}</span><span className="small muted">slowest, turn {slowest.r.turn_n}</span></div>
           <div><span className="tl-num">{biggest.label}</span><span className="small muted">biggest share, {sec(avg(biggest.key))} avg</span></div>
         </div>
+      )}
+      {meta && (
+        <>
+          <div className="tl-sum">
+            <div><span className="tl-num">{meta.total.stt_seconds.toFixed(1)}s</span><span className="small muted">listening · {inr(meta.total.stt_usd_micros, meta.rate)}</span></div>
+            <div><span className="tl-num">{num(meta.total.llm_in + meta.total.llm_out)}</span><span className="small muted">tokens ({num(meta.total.llm_in)} in, {num(meta.total.llm_out)} out) · {inr(meta.total.llm_usd_micros, meta.rate)}</span></div>
+            <div><span className="tl-num">{num(meta.total.tts_chars)}</span><span className="small muted">characters spoken · {inr(meta.total.tts_usd_micros, meta.rate)}</span></div>
+          </div>
+          <p className="small"><strong>AI cost of this call: {inr(meta.total.total_usd_micros, meta.rate)}</strong> <span className="muted">({usd(meta.total.total_usd_micros)}) · speech and model only, not the phone line</span></p>
+        </>
       )}
       <div className="tl-legend small muted">
         {STAGES.map(s => <span key={s.key}><i className={`lat-key ${s.cls}`} /> {s.label}</span>)}
@@ -188,7 +212,10 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
                   <dt>Audio ready</dt><dd>{r.t_first_tts ?? '—'} ms</dd>
                   <dt>Sent to carrier</dt><dd>{r.t_first_sent ?? '—'} ms</dd>
                   <dt>Playback finished*</dt><dd>{r.t_playback_done === null ? '—' : `${r.t_playback_done} ms (spoke for about ${sec(r.t_playback_done - (r.t_first_sent ?? 0))})`}</dd>
-                  <dt>Caller audio / voice</dt><dd>{r.stt_audio_s}s heard · {r.tts_chars} characters spoken{r.reply_used_cached_audio ? ' · cached audio' : ''}</dd>
+                  <dt>Listened</dt><dd>{r.stt_audio_s}s of caller audio · {inr(r.cost.stt_usd_micros, meta?.rate ?? 88)}</dd>
+                  <dt>Model</dt><dd>{num(r.llm_in + r.llm_cache_read + r.llm_cache_write)} tokens in{r.llm_cache_read ? ` (${num(r.llm_cache_read)} cached)` : ''}, {num(r.llm_out)} out · {inr(r.cost.llm_usd_micros, meta?.rate ?? 88)}</dd>
+                  <dt>Spoke</dt><dd>{num(r.tts_chars)} characters · {inr(r.cost.tts_usd_micros, meta?.rate ?? 88)}{r.reply_used_cached_audio ? ' · cached audio' : ''}</dd>
+                  <dt>This turn</dt><dd><strong>{inr(r.cost.total_usd_micros, meta?.rate ?? 88)}</strong> ({usd(r.cost.total_usd_micros)})</dd>
                 </dl>
               )}
             </li>
