@@ -844,6 +844,15 @@ what ships.
 | `VOICE_SILENCE_REPROMPT_MS` | 8000 | Caller silence after the assistant finishes before "Are you still there?"; the same again ends the call with a goodbye. |
 | `DG_DEBUG` | off | Set `1` to log every Deepgram Results/UtteranceEnd message. |
 
+### Per-turn latency timeline
+
+Every caller turn is stored in D1 (`call_turn_metrics`, written after the call, off the call's path)
+with a timeline, tool timings and cost counters: `GET /admin/calls/:callSid/turns`; percentiles per
+segment and carrier: `GET /admin/latency?business=&from=&to=`. One `turn.timeline` JSON line per turn
+goes to `wrangler tail`. `t_playback_done` is carrier-confirmed playback *finished*, not first audible
+sound. What the caller actually hears is measured with a handset recording:
+[docs/latency-handset-test.md](docs/latency-handset-test.md).
+
 ### Barge-in (caller talks over the assistant)
 
 There is no "final-only" mode; three signals can stop the assistant, all through `bargeIn()` in

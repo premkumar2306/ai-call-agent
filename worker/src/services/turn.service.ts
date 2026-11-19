@@ -380,6 +380,8 @@ export interface RunTurnOptions {
   onLap?: (label: string, ms: number) => void;
   /** Token usage of every model call, for billing cost estimates (services/billing/meter.ts). */
   onUsage?: (model: string, usage: Anthropic.Usage) => void;
+  /** Every tool call: name, performance.now() at start and end, and whether it succeeded (turn timeline). */
+  onTool?: (name: string, startAbs: number, endAbs: number, ok: boolean) => void;
 }
 
 export async function runTurn(
@@ -616,6 +618,7 @@ export async function runTurn(
       const executed = await Promise.all(toolBlocks.map(async (tb) => {
         console.log(`[${tag}] tool: ${tb.name} ${JSON.stringify(tb.input).slice(0, 200)}`);
         const toolT0 = Date.now();
+        const toolPerf0 = performance.now();
         // After an emergency the assistant never books or offers slots.
         const result = emergencyActive && (tb.name === 'book_appointment' || tb.name === 'check_availability')
           ? { success: false, error: 'EMERGENCY', spoken_response: guardrailReply('emergency', 'en', sectorMeta) } as ToolResult
@@ -630,6 +633,7 @@ export async function runTurn(
           background,
         );
         lap(`tool:${tb.name} total`);
+        opts.onTool?.(tb.name, toolPerf0, performance.now(), result.success);
         return { tb, result };
       }));
       lap(`tools#${i} (${toolBlocks.map(t => t.name).join(',')})`);

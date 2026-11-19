@@ -206,6 +206,10 @@ export function fixPhoneNumbers(text: string): string {
     .replace(/\b([12]),(\d{3})\b(?!,\d)/g, (m, a, b) => (/^(19|20)\d\d$/.test(a + b) ? a + b : m));
 }
 
+/** Which STT signal ended the caller's speech, and when it arrived (performance.now()). For the per-turn latency timeline. */
+export interface EndInfo { signal: string; at: number }
+export type OnTranscript = (text: string, end?: EndInfo) => void;
+
 export interface Stt {
   sendAudio(buf: ArrayBuffer): void;
   close(): void;
@@ -215,7 +219,7 @@ const STABLE_MS = 1000;
 
 export async function createDeepgramSTT(
   opts: SttOptions,
-  onTranscript: (text: string) => void,
+  onTranscript: OnTranscript,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
   const {
@@ -291,6 +295,7 @@ export async function createDeepgramSTT(
 
   // A fragment waiting for the rest of its sentence (see looksIncomplete).
   let held = '';
+  let endInfo: EndInfo | undefined;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   const releaseHeld = () => {
     holdTimer = undefined;
@@ -298,7 +303,7 @@ export async function createDeepgramSTT(
     held = '';
     if (text) {
       console.log(`[dg stt] releasing held text: "${text}"`);
-      onTranscript(text);
+      onTranscript(text, endInfo);
     }
   };
 
@@ -317,6 +322,7 @@ export async function createDeepgramSTT(
       speechAnnounced = false;
       return;
     }
+    endInfo = { signal: reason, at: performance.now() };
     const ms = utteranceStart ? Date.now() - utteranceStart : -1;
     console.log(`[dg stt] ⏱ transcript-finalized (${reason}): ${ms}ms — "${text}"`);
     lastText = '';
@@ -340,7 +346,7 @@ export async function createDeepgramSTT(
       return;
     }
     held = '';
-    onTranscript(combined);
+    onTranscript(combined, endInfo);
   };
 
   ws.addEventListener('message', (event: MessageEvent) => {
@@ -471,7 +477,7 @@ const FLUX_CHUNK_BYTES = 640;
 
 export async function createDeepgramFluxSTT(
   opts: SttOptions & { eotThreshold?: number; eotTimeoutMs?: number },
-  onTranscript: (text: string) => void,
+  onTranscript: OnTranscript,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
   const { apiKey, model = 'flux-general-en', debug = false, minConfidence = 0.5, bargeInMinWords = 2, isEcho, onClose } = opts;
@@ -519,7 +525,7 @@ export async function createDeepgramFluxSTT(
           return;
         }
         console.log(`[dg flux] ⏱ end-of-turn (${msg.trigger ?? 'model'}): ${ms}ms — "${text}"`);
-        onTranscript(text);
+        onTranscript(text, { signal: `flux_${msg.trigger ?? 'eot'}`, at: performance.now() });
       }
     } catch (e: any) {
       console.error('[dg flux] parse error', e?.message || e);

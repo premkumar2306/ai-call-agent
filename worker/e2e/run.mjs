@@ -392,6 +392,7 @@ async function callScenario(mocks, s) {
       check(n, 'after the staff call: hang up if answered, apologise if not', action === `${BASE}/plivo/after-dial` && !/<Speak>/.test(answered) && /nobody was able to pick up/.test(missed), action);
     }
   }
+  await timelineChecks(n, call, s);
   const usage = await api('GET', `/admin/billing/usage/${s.key}`);
   const rec = (Array.isArray(usage) ? usage : usage?.records ?? []).find(r => (r.sourceId ?? r.source_id) === call.callSid);
   check(n, 'call is metered for billing', rec && (rec.provider === s.carrier), rec ? `${rec.provider}, ${rec.durationSeconds ?? rec.duration_seconds}s, cost ${rec.costUsdMicros ?? rec.cost_usd_micros}µ$` : 'no usage record');
@@ -400,6 +401,27 @@ async function callScenario(mocks, s) {
     const rows = (Array.isArray(notices) ? notices : []).filter(r => (r.call_sid ?? r.callSid) === call.callSid);
     check(n, 'notice is in the consent audit trail', rows.length === 1, rows[0] ? `heard_fully=${rows[0].heard_fully}` : 'missing');
   }
+}
+
+// Per-turn latency timeline (services/turn-timeline.ts): every field present and ordered, counters,
+// tool timing, and the carrier-confirmed playback stamp. `turn.timeline` log lines are not asserted here.
+async function timelineChecks(n, call, s) {
+  let data;
+  try { data = await api('GET', `/admin/calls/${call.callSid}/turns`); } catch (e) { return check(n, 'turn timeline is stored for the call', false, e.message); }
+  const turns = data.turns ?? [];
+  check(n, 'turn timeline is stored for the call', turns.length >= 2 && data.provider === s.carrier, `${turns.length} turns, carrier ${data.provider}`);
+  const ordered = turns.every(t => [t.t_speech_end, t.t_final, t.t_first_phrase, t.t_first_tts, t.t_first_sent].every(v => Number.isFinite(v))
+    && t.t_speech_end <= t.t_final && t.t_final <= t.t_first_phrase && t.t_first_phrase <= t.t_first_tts && t.t_first_tts <= t.t_first_sent);
+  check(n, 'every turn: speech_end ≤ final ≤ first_phrase ≤ first_tts ≤ first_sent', ordered, turns.map(t => `${t.t_final}/${t.t_first_phrase}/${t.t_first_tts}/${t.t_first_sent}`).join(' | '));
+  check(n, 'end-of-speech signal is recorded', turns.every(t => t.end_signal), turns.map(t => t.end_signal).join(','));
+  check(n, 'counters: STT audio seconds and TTS characters are > 0', turns.every(t => t.stt_audio_s > 0 && t.tts_chars > 0), turns.map(t => `${t.stt_audio_s}s/${t.tts_chars}c`).join(' '));
+  check(n, 'provider names are recorded', turns.every(t => t.stt_provider === s.stt && t.tts_provider === s.tts && t.llm_model), `${turns[0]?.stt_provider}/${turns[0]?.tts_provider}/${turns[0]?.llm_model}`);
+  const tooled = turns.filter(t => t.tools.length);
+  check(n, 'a tool turn records tool start, end and outcome', tooled.length > 0 && tooled.every(t => t.tools.every(x => x.name && x.end >= x.start && typeof x.ok === 'boolean')), tooled.map(t => t.tools.map(x => `${x.name}:${x.end - x.start}ms`).join(',')).join(' | '));
+  // No pre-rendered audio store exists in the codebase (every greeting and filler is synthesized), so the flag is false.
+  check(n, 'cached-audio flag is present (false: no audio cache exists yet)', turns.every(t => t.reply_used_cached_audio === false && t.audio_cache === null));
+  const played = turns.filter(t => t.t_playback_done !== null);
+  check(n, `${s.carrier} carrier-confirmed playback finished is recorded (≥ first audio sent)`, played.length > 0 && played.every(t => t.t_playback_done >= t.t_first_sent), played.map(t => `${t.t_first_sent}→${t.t_playback_done}`).join(' | '));
 }
 
 // Overflow-only pilot on the clinic's own number (launch item 2): the clinic's
@@ -1530,6 +1552,23 @@ async function guardrailsScenario(mocks) {
   check(n, 'a business that did not opt in has guardrails off and no flags', quiet.enabled === false && quiet.events?.length === 0, JSON.stringify(quiet));
 }
 
+// GET /admin/latency over everything the scenarios above just recorded.
+async function latencyApiScenario() {
+  console.log('\n▶ latency report API');
+  const r = await api('GET', '/admin/latency');
+  const carriers = Object.keys(r.by_carrier ?? {});
+  check('latency', 'p50/p90/p95 per segment, overall and per carrier', r.turns > 0 && carriers.length >= 2 && r.segments.speech_end_to_first_sent.p50 !== null && r.segments.speech_end_to_first_sent.p90 >= r.segments.speech_end_to_first_sent.p50, `${r.turns} turns, carriers ${carriers.join(',')}`);
+  const one = await api('GET', `/admin/latency?business=us_twilio`);
+  check('latency', 'filter by business', one.turns > 0 && one.turns < r.turns && Object.keys(one.by_carrier).join() === 'twilio', `${one.turns} turns`);
+  const bad = await fetch(`${BASE}/admin/latency?from=nonsense`, { headers: { 'X-Admin-Key': ADMIN } });
+  check('latency', 'bad date is a 400', bad.status === 400);
+  const noKey = await fetch(`${BASE}/admin/latency`);
+  check('latency', 'needs the operator key', noKey.status === 401 || noKey.status === 403, String(noKey.status));
+  // Simulator numbers only: local mocks, no real network, STT/TTS/LLM answer instantly.
+  console.log('  SIMULATOR p50 ms (not production):', JSON.stringify(Object.fromEntries(Object.entries(r.segments).map(([k, v]) => [k, v.p50]))));
+  for (const c of carriers) console.log(`    ${c}: speech_end→first_sent p50=${r.by_carrier[c].segments.speech_end_to_first_sent.p50} p90=${r.by_carrier[c].segments.speech_end_to_first_sent.p90} (${r.by_carrier[c].turns} turns)`);
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 const mocks = await startMocks();
@@ -1547,8 +1586,9 @@ try {
     await api('PUT', '/admin/whatsapp-numbers', { phoneNumberId: WA.pnidHi, businessType: 'in_wa_hi', label: 'E2E Hindi clinic' });
   }
   // The Razorpay scenario bills the Exotel business's call minutes, so `-- razorpay` places that call too.
-  for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel')) await callScenario(mocks, s);
+  for (const s of SCENARIOS) if (!only || s.name.toLowerCase().includes(only) || s.carrier === only || (only === 'razorpay' && s.key === 'in_exotel') || only === 'latency') await callScenario(mocks, s);
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
+  if (!only || 'latency'.includes(only)) await latencyApiScenario();
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
   if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);
   if (!only || 'disconnect'.includes(only)) await disconnectScenario(mocks);

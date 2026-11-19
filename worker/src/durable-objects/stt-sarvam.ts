@@ -24,7 +24,7 @@
 //    encoding "audio/wav" on audio messages.
 //  • No per-transcript confidence, so there is no low-confidence filter.
 
-import type { SpeechStartReason, Stt } from './stt-deepgram';
+import type { EndInfo, OnTranscript, SpeechStartReason, Stt } from './stt-deepgram';
 import { isBackchannel, looksIncomplete } from './stt-deepgram';
 import { MulawUpsampler, bytesToBase64, pcm16ToBytes } from './audio';
 import type { VoiceLanguage } from '../services/voice-language';
@@ -75,7 +75,7 @@ export function sarvamSttUrl(opts: Pick<SarvamSttOptions, 'language' | 'model' |
 
 export async function createSarvamSTT(
   opts: SarvamSttOptions,
-  onTranscript: (text: string) => void,
+  onTranscript: OnTranscript,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
   const { apiKey, language: lang, debug = false, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho, onActivity, onClose } = opts;
@@ -93,6 +93,8 @@ export async function createSarvamSTT(
   let pending = new Uint8Array(0);
   let utteranceStart = 0;
   let speechEndAt = 0;
+  let speechEndPerf = 0;
+  let endInfo: EndInfo | undefined;
 
   // A fragment ending on a dangling word, waiting for the rest of its sentence.
   let held = '';
@@ -103,7 +105,7 @@ export async function createSarvamSTT(
     held = '';
     if (text) {
       console.log(`[sarvam stt] releasing held text: "${text}"`);
-      onTranscript(text);
+      onTranscript(text, endInfo);
     }
   };
 
@@ -111,8 +113,10 @@ export async function createSarvamSTT(
     const text = raw.trim();
     const ms = utteranceStart ? Date.now() - utteranceStart : -1;
     const afterEnd = speechEndAt ? Date.now() - speechEndAt : -1;
+    endInfo = { signal: speechEndPerf ? 'END_SPEECH' : 'transcript', at: speechEndPerf || performance.now() };
     utteranceStart = 0;
     speechEndAt = 0;
+    speechEndPerf = 0;
     if (!text) return;
     console.log(`[sarvam stt] ⏱ transcript-finalized: ${ms}ms (${afterEnd}ms after END_SPEECH) — "${text}"`);
     onActivity?.();
@@ -130,7 +134,7 @@ export async function createSarvamSTT(
       return;
     }
     held = '';
-    onTranscript(combined);
+    onTranscript(combined, endInfo);
   };
 
   ws.addEventListener('message', (event: MessageEvent) => {
@@ -148,6 +152,7 @@ export async function createSarvamSTT(
           onSpeechStart?.('vad');
         } else if (signal === 'END_SPEECH') {
           speechEndAt = Date.now();
+          speechEndPerf = performance.now();
         }
         return;
       }
