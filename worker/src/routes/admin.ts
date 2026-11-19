@@ -12,6 +12,7 @@ import {
 import { parseHoursRanges } from '../services/tool-router.service';
 import { parseVoiceInput, resolveVoiceSettings } from '../services/voice-language';
 import { getDb } from '../db/client';
+import { fromDb, latencyReport } from '../services/turn-timeline';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
 import { COUNTRIES, isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
@@ -563,6 +564,35 @@ adminRouter.get('/transcripts/:businessType', withBusinessAccess('staff'), async
     rows = rows.filter(r => r.callSid?.startsWith('wa:'));
   }
   return c.json({ success: true, data: rows });
+});
+
+// GET /admin/calls/:callSid/turns — the per-turn latency timeline and counters for one call
+// (services/turn-timeline.ts). Operator key only.
+adminRouter.get('/calls/:callSid/turns', withAdminKey, async (c) => {
+  const callSid = c.req.param('callSid') ?? '';
+  const { results } = await c.env.DB.prepare('SELECT * FROM call_turn_metrics WHERE call_sid = ? ORDER BY turn_n').bind(callSid).all();
+  if (!results.length) return c.json({ success: false, error: 'No turn metrics for that call' }, 404);
+  const turns = results.map(fromDb);
+  return c.json({ success: true, data: { call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, turns } });
+});
+
+// GET /admin/latency?business=&from=&to= — p50/p90/p95 per segment, overall and per carrier.
+// from/to are ISO dates or epoch ms; default the last 7 days. Newest 20,000 turns at most.
+adminRouter.get('/latency', withAdminKey, async (c) => {
+  const toMs = (v: string | undefined, dflt: number) => {
+    if (!v) return dflt;
+    const t = /^\d+$/.test(v) ? Number(v) : Date.parse(v);
+    return Number.isFinite(t) ? t : NaN;
+  };
+  const now = Date.now();
+  const from = toMs(c.req.query('from'), now - 7 * 86_400_000);
+  const to = toMs(c.req.query('to'), now);
+  if (Number.isNaN(from) || Number.isNaN(to)) return c.json({ success: false, error: 'from/to must be an ISO date or epoch ms' }, 400);
+  const business = c.req.query('business');
+  const { results } = await c.env.DB.prepare(
+    `SELECT * FROM call_turn_metrics WHERE started_at >= ? AND started_at <= ?${business ? ' AND business_type = ?' : ''} ORDER BY started_at DESC LIMIT 20000`,
+  ).bind(...(business ? [from, to, business] : [from, to])).all();
+  return c.json({ success: true, data: { business: business ?? null, from, to, ...latencyReport(results.map(fromDb)) } });
 });
 
 export const SYNTHETIC_CALLER = 'synthetic-latency-test';

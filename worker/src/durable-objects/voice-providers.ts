@@ -16,7 +16,7 @@
 
 import type { Env } from '../types';
 import type { VoiceSettings } from '../services/voice-language';
-import { createDeepgramSTT, createDeepgramFluxSTT, type SpeechStartReason, type Stt, type SttOptions } from './stt-deepgram';
+import { createDeepgramSTT, createDeepgramFluxSTT, type OnTranscript, type SpeechStartReason, type Stt, type SttOptions } from './stt-deepgram';
 import { createSarvamSTT } from './stt-sarvam';
 import { cartesiaStart } from './tts-cartesia';
 import { sarvamTtsStart } from './tts-sarvam';
@@ -54,7 +54,7 @@ export function createStt(
   env: Env,
   voice: VoiceSettings,
   common: SttCommon,
-  onTranscript: (text: string) => void,
+  onTranscript: OnTranscript,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
   if (voice.sttProvider === 'sarvam') {

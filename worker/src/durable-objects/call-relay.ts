@@ -15,12 +15,13 @@ import { dtmfAction, digitsUtterance } from '../services/dtmf';
 import { troubleLine } from '../services/voice-language';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { recordCallOutcome } from '../services/metrics';
-import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type Stt } from './stt-deepgram';
+import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type EndInfo, type Stt } from './stt-deepgram';
+import { TurnTimeline, saveTurnRows, timelineLog, toRow, type TurnRowContext } from '../services/turn-timeline';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
 import { DEFAULT_VOICE, isDefaultVoice, resolveVoiceSettings, sttDiffers, voiceLines, type VoiceSettings } from '../services/voice-language';
 import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
 import { callerIdentity, getOrCreateCustomer } from '../utils/identity';
-import { customerHashSalt, isProduction } from '../config';
+import { customerHashSalt, isProduction, voiceModel } from '../config';
 import { cartesiaDrain } from './tts-cartesia';
 import {
   createTelephonyAdapter, isTelephonyProvider, PREAUTH_HEADER, PROVIDER_HEADER,
@@ -106,7 +107,7 @@ const CONTINUATION_MS = 2000;
 // that audio's echo.
 const ECHO_TAIL_MS = 1500;
 
-interface SpokenChunk { text: string; played: boolean; filler: boolean }
+interface SpokenChunk { text: string; played: boolean; filler: boolean; tl?: TurnTimeline }
 
 // One caller turn's timing, saved with the transcript (transcripts.metrics).
 // All ms. `at` is when the final transcript arrived, from call start; laps are
@@ -140,6 +141,8 @@ interface ActiveTurn {
   // The caller cut in so soon that they were still mid-turn: the reply is
   // withdrawn, not recorded as interrupted (see CONTINUATION_MS).
   retracted?: boolean;
+  // Latency timeline for this caller turn (not the greeting).
+  tl?: TurnTimeline;
 }
 
 export class CallRelay extends DurableObject<Env> {
@@ -200,6 +203,13 @@ export class CallRelay extends DurableObject<Env> {
   private spokenLog: { text: string; at: number }[] = [];
   private lastAudioEndAt = 0;
   private metrics: TurnMetric[] = [];
+  // Per-turn latency timelines (services/turn-timeline.ts), written once after the call.
+  private timelines: TurnTimeline[] = [];
+  private timelinesFlushed = false;
+  // Caller audio bytes (μ-law 8 kHz = 8000 B/s) sent to STT since the last turn began.
+  private sttBytes = 0;
+  // Wall clock of the first keypad digit: the sync marker for scripts/latency-from-recording.mjs.
+  private syncDtmfAt: number | null = null;
   // Billing: provider usage counted in memory during the call and written
   // once after it (flushUsage, via waitUntil) — never on a turn's path.
   private meter = new UsageMeter();
@@ -269,7 +279,7 @@ export class CallRelay extends DurableObject<Env> {
         statementHoldMs: numEnv(this.env.DG_STATEMENT_HOLD_MS),
         debug: /^(1|true)$/i.test(this.env.DG_DEBUG ?? ''),
       },
-      (text) => { this.handleTranscript(fixPhoneNumbers(text)); },
+      (text, end) => { this.handleTranscript(fixPhoneNumbers(text), end); },
       (reason) => { this.handleSpeechStart(reason); },
     );
   }
@@ -389,6 +399,7 @@ export class CallRelay extends DurableObject<Env> {
     const turn = this.active;
     if (turn && !turn.closed) {
       turn.closed = true;
+      if (turn.tl) turn.tl.bargeIn = true;
       // Cut in almost as soon as the reply began: they weren't finished.
       if (!turn.greeting && (!turn.firstAudioAt || Date.now() - turn.firstAudioAt < CONTINUATION_MS)) {
         turn.retracted = true;
@@ -476,7 +487,8 @@ export class CallRelay extends DurableObject<Env> {
     if (digits) this.handleTranscript(digitsUtterance(digits));
   }
 
-  private handleTranscript(text: string) {
+  private handleTranscript(text: string, end?: EndInfo) {
+    const finalAt = performance.now();
     if (!this.session || !this.twWs || this.endCallWhenDone) return;
     if (this.looksLikeEcho(text)) {
       console.log(`[turn] ignoring echo of our own audio: "${text.slice(0, 60)}"`);
@@ -516,7 +528,7 @@ export class CallRelay extends DurableObject<Env> {
     const gen = ++this.transcriptGen;
     const receivedAt = Date.now();
     this.turnChain = this.turnChain
-      .then(() => this.runOneTurn(text, gen, receivedAt))
+      .then(() => this.runOneTurn(text, gen, receivedAt, finalAt, end))
       .catch(e => console.error('[turn chain]', e?.message || e));
   }
 
@@ -545,11 +557,21 @@ export class CallRelay extends DurableObject<Env> {
     if (!chunk.filler && !turn.firstAudioAt) turn.firstAudioAt = now;
     this.spokenLog = this.spokenLog.filter(s => now - s.at < 20_000);
     this.spokenLog.push({ text: chunk.text, at: now });
-    await cartesiaDrain(res, (audio) => this.sendToCarrier(this.telephony.audio(audio)), signal);
+    await cartesiaDrain(res, (audio) => {
+      const frames = this.telephony.audio(audio);
+      const ok = this.sendToCarrier(frames);
+      const tl = turn.tl;
+      if (tl) {
+        if (!chunk.filler) tl.once('firstTts');
+        if (ok && frames.length) tl.once(chunk.filler ? 'firstFillerSent' : 'firstSent');
+      }
+      return ok;
+    }, signal);
     if (signal.aborted || ws.readyState !== WebSocket.OPEN) return;
     const name = `m${++this.markSeq}`;
     this.pendingMarks.set(name, chunk);
-    this.sendToCarrier(this.telephony.mark(name));
+    // Adapters that buffer audio until the mark (Exotel) only write it here.
+    if (this.sendToCarrier(this.telephony.mark(name)) && turn.tl) turn.tl.once(chunk.filler ? 'firstFillerSent' : 'firstSent');
   }
 
   private startTurn(greeting: boolean): ActiveTurn {
@@ -566,7 +588,7 @@ export class CallRelay extends DurableObject<Env> {
     if (this.active === turn) this.turnInFlight = false;
   }
 
-  private async runOneTurn(text: string, gen: number, receivedAt = Date.now()): Promise<void> {
+  private async runOneTurn(text: string, gen: number, receivedAt = Date.now(), finalAt = performance.now(), end?: EndInfo): Promise<void> {
     // Newer speech arrived while this one was queued — fold it forward.
     if (gen !== this.transcriptGen) {
       this.carryOver = joinUtterances(this.carryOver, text);
@@ -584,6 +606,11 @@ export class CallRelay extends DurableObject<Env> {
       queued: t0 - receivedAt, laps: [], fillers: 0, outcome: 'done',
     };
     if (this.metrics.length < 100) this.metrics.push(metric);
+    const tl = new TurnTimeline(finalAt, end);
+    tl.sttAudioS = this.sttBytes / 8000;
+    this.sttBytes = 0;
+    turn.tl = tl;
+    if (this.timelines.length < 100) this.timelines.push(tl);
 
     // Chunks stream in from runTurn() as they become ready. Synthesis for a
     // chunk is kicked off the instant it arrives, so its TTFB overlaps with
@@ -596,8 +623,10 @@ export class CallRelay extends DurableObject<Env> {
 
     const queue = (textToSay: string, filler: boolean) => {
       if (signal.aborted) return;
-      const chunk: SpokenChunk = { text: textToSay, played: false, filler };
+      const chunk: SpokenChunk = { text: textToSay, played: false, filler, tl };
       turn.chunks.push(chunk);
+      tl.ttsChars += textToSay.length;
+      if (!filler) tl.once('firstPhrase');
       unsent++;
       const queuedAt = Date.now();
       const started = this.ttsProvider.start(textToSay, signal).catch((e) => {
@@ -649,10 +678,11 @@ export class CallRelay extends DurableObject<Env> {
         heardText: () => this.heardText(turn),
         onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
         onUsage: (model, usage) => this.meter.addLlm(model, usage),
+        onTool: (name, start, endAt, ok) => tl.tool(name, start, endAt, ok),
         // Booking side effects (calendar, staff notification) finish even if the caller hangs up mid-tool.
         background: (p) => this.ctx.waitUntil(p),
       });
-      metric.outcome = !result.committed ? 'dropped' : result.interrupted ? 'interrupted' : 'done';
+      tl.outcome = metric.outcome = !result.committed ? 'dropped' : result.interrupted ? 'interrupted' : 'done';
       if (!result.committed) {
         // Caller heard nothing of the reply — keep their words for the next turn.
         this.carryOver = joinUtterances(utterance, this.carryOver);
@@ -671,6 +701,30 @@ export class CallRelay extends DurableObject<Env> {
     } finally {
       clearInterval(watchdog);
       this.endTurn(turn);
+      if (tl.bargeIn && tl.outcome === 'done') tl.outcome = 'interrupted';
+      try { console.log(JSON.stringify({ evt: 'turn.timeline', ...timelineLog(toRow(tl, this.turnContext(this.timelines.indexOf(tl) + 1))) })); } catch { /* telemetry only */ }
+    }
+  }
+
+  private turnContext(turnN: number): TurnRowContext {
+    const sttProvider = this.voice.sttProvider;
+    const flux = /^flux/.test(this.env.DG_MODEL ?? '');
+    return {
+      callSid: this.callSid, businessType: this.session?.businessType ?? '', provider: this.telephony.provider, turnN,
+      sttProvider, ttsProvider: this.ttsProvider.name, llmModel: voiceModel(this.env),
+      endpointingMs: sttProvider === 'sarvam' || flux ? null : numEnv(this.env.DG_ENDPOINTING_MS) ?? 250,
+      syncDtmfAt: this.syncDtmfAt,
+    };
+  }
+
+  // The one D1 write for the call's turn timelines; run under waitUntil, never on a turn's path.
+  private async flushTurnMetrics(): Promise<void> {
+    if (this.timelinesFlushed || !this.timelines.length) return;
+    this.timelinesFlushed = true;
+    try {
+      await saveTurnRows(this.env, this.timelines.map((tl, i) => toRow(tl, this.turnContext(i + 1))));
+    } catch (e: any) {
+      console.error('[turn metrics flush]', e?.message || e);
     }
   }
 
@@ -787,6 +841,7 @@ export class CallRelay extends DurableObject<Env> {
       console.log(`[call] ${this.callSid.slice(-8)} handing off to staff`);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushTurnMetrics());
       this.ctx.waitUntil(this.flushUsage());
       this.ctx.waitUntil(this.flushFollowUp());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'transfer');
@@ -799,6 +854,7 @@ export class CallRelay extends DurableObject<Env> {
       console.log(`[call] ${this.callSid.slice(-8)} ending call (endCall)`);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushTurnMetrics());
       this.ctx.waitUntil(this.flushUsage());
       this.ctx.waitUntil(this.flushFollowUp());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'call ended');
@@ -811,6 +867,7 @@ export class CallRelay extends DurableObject<Env> {
       console.log(`[call] ${this.callSid.slice(-8)} hanging up after caller silence`);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushTurnMetrics());
       this.ctx.waitUntil(this.flushUsage());
       this.ctx.waitUntil(this.flushFollowUp());
       if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'caller silent');
@@ -914,6 +971,7 @@ export class CallRelay extends DurableObject<Env> {
 
     if (ev.type === 'media') {
       // Always forward — even while the assistant speaks — so STT can detect barge-in.
+      this.sttBytes += ev.audio.byteLength;
       this.stt.sendAudio(ev.audio.buffer.slice(ev.audio.byteOffset, ev.audio.byteOffset + ev.audio.byteLength) as ArrayBuffer);
       this.checkSilence();
 
@@ -922,6 +980,8 @@ export class CallRelay extends DurableObject<Env> {
       const chunk = this.pendingMarks.get(ev.name);
       if (chunk) {
         chunk.played = true;
+        // Carrier-confirmed: the last real chunk's echo wins (marks echo in order).
+        if (chunk.tl && !chunk.filler) chunk.tl.stamps.playbackDone = chunk.tl.rel();
         this.pendingMarks.delete(ev.name);
         if (this.pendingMarks.size === 0) this.lastAudioEndAt = Date.now();
       }
@@ -981,12 +1041,14 @@ export class CallRelay extends DurableObject<Env> {
       }
 
     } else if (ev.type === 'dtmf') {
+      this.syncDtmfAt ??= Date.now();
       this.handleDtmf(ev.digit);
 
     } else if (ev.type === 'stop') {
       if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
       this.stt.close();
       this.ctx.waitUntil(this.flushTranscript());
+      this.ctx.waitUntil(this.flushTurnMetrics());
       this.ctx.waitUntil(this.flushUsage());
       this.ctx.waitUntil(this.flushFollowUp());
     }
@@ -1057,6 +1119,7 @@ export class CallRelay extends DurableObject<Env> {
     if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
     this.stt.close();
     this.ctx.waitUntil(this.flushTranscript());
+    this.ctx.waitUntil(this.flushTurnMetrics());
     this.ctx.waitUntil(this.flushUsage());
     this.ctx.waitUntil(this.flushFollowUp());
   }
