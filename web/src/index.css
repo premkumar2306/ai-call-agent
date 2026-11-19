@@ -398,6 +398,12 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .lat-speech { background: var(--success); }
 .lat-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-left: 6px; }
 
+/* Turn timeline table in the transcript dialog. */
+.tl-scroll { overflow-x: auto; }
+.tl { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.tl th, .tl td { padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+.tl th:first-child, .tl td:first-child, .tl td:nth-child(7) { text-align: left; }
+
 .card-flush { gap: 0; }
 .card-flush > .card-head { padding: var(--s4) var(--s4) var(--s3); }
 .card-flush > .empty { padding-bottom: var(--s4); }

@@ -86,7 +86,7 @@ export default function Calls({ base, auth, sectors, operator = false }: Props) 
           : <Feed items={shown} onOpen={setOpen} />}
       </Card>
 
-      {open && <TranscriptDialog a={open} showLatency={operator} onClose={() => setOpen(null)} />}
+      {open && <TranscriptDialog a={open} showLatency={operator} base={base} auth={auth} onClose={() => setOpen(null)} />}
     </>
   );
 }
