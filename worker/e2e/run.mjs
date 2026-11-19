@@ -415,6 +415,11 @@ async function timelineChecks(n, call, s) {
   check(n, 'every turn: speech_end ≤ final ≤ first_phrase ≤ first_tts ≤ first_sent', ordered, turns.map(t => `${t.t_final}/${t.t_first_phrase}/${t.t_first_tts}/${t.t_first_sent}`).join(' | '));
   check(n, 'end-of-speech signal is recorded', turns.every(t => t.end_signal), turns.map(t => t.end_signal).join(','));
   check(n, 'counters: STT audio seconds and TTS characters are > 0', turns.every(t => t.stt_audio_s > 0 && t.tts_chars > 0), turns.map(t => `${t.stt_audio_s}s/${t.tts_chars}c`).join(' '));
+  const modelled = turns.filter(t => t.llm_out > 0);
+  check(n, 'LLM tokens are recorded for turns that called the model', modelled.length > 0 && modelled.every(t => t.llm_in + t.llm_cache_read + t.llm_cache_write > 0), modelled.map(t => `${t.llm_in}+${t.llm_cache_read}c in/${t.llm_out} out`).join(' | '));
+  const sumUsd = turns.reduce((x, t) => x + t.cost.total_usd_micros, 0);
+  const costOk = turns.every(t => t.cost.total_usd_micros > 0) && data.total.total_usd_micros === sumUsd && data.total.total_inr_paise > 0 && data.usd_to_inr > 0;
+  check(n, 'every turn has an AI cost in USD and INR; the call total adds up', costOk, `USD ${(sumUsd / 1e6).toFixed(5)}, INR ${(data.total.total_inr_paise / 100).toFixed(3)}, ${data.total.stt_seconds}s, ${data.total.llm_in}+${data.total.llm_out} tokens, ${data.total.tts_chars} chars`);
   check(n, 'provider names are recorded', turns.every(t => t.stt_provider === s.stt && t.tts_provider === s.tts && t.llm_model), `${turns[0]?.stt_provider}/${turns[0]?.tts_provider}/${turns[0]?.llm_model}`);
   const tooled = turns.filter(t => t.tools.length);
   check(n, 'a tool turn records tool start, end and outcome', tooled.length > 0 && tooled.every(t => t.tools.every(x => x.name && x.end >= x.start && typeof x.ok === 'boolean')), tooled.map(t => t.tools.map(x => `${x.name}:${x.end - x.start}ms`).join(',')).join(' | '));

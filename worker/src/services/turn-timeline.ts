@@ -15,6 +15,7 @@
 //                     It is when playback ended, NOT when the first sound became audible.
 
 import type { Env } from '../types';
+import { costRates, estimateCostUsdMicros, usdMicrosToPaise, type CostRates } from './billing/pricing';
 
 export type Stamp = 'final' | 'firstPhrase' | 'firstTts' | 'firstSent' | 'firstFillerSent' | 'playbackDone';
 
@@ -32,6 +33,7 @@ export class TurnTimeline {
   ttsChars = 0;
   bargeIn = false;
   outcome = 'done';
+  llm = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   cachedAudio = false;
   audioCache: string | null = null;
 
@@ -46,6 +48,15 @@ export class TurnTimeline {
 
   /** Records the stamp the first time only. */
   once(k: Stamp, perfNow = performance.now()) { if (this.stamps[k] === undefined) this.stamps[k] = this.rel(perfNow); }
+
+  /** Adds one model call's Anthropic `usage` (a turn can make several). */
+  addLlm(u: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null | undefined) {
+    if (!u) return;
+    this.llm.input += u.input_tokens ?? 0;
+    this.llm.output += u.output_tokens ?? 0;
+    this.llm.cacheRead += u.cache_read_input_tokens ?? 0;
+    this.llm.cacheWrite += u.cache_creation_input_tokens ?? 0;
+  }
 
   tool(name: string, startAbs: number, endAbs: number, ok: boolean) {
     if (this.tools.length < 20) this.tools.push({ name, start: this.rel(startAbs), end: this.rel(endAbs), ok });
@@ -66,6 +77,7 @@ export interface TurnRow {
   t_first_sent: number | null; t_first_filler_sent: number | null; t_playback_done: number | null;
   tools: ToolTiming[];
   stt_audio_s: number; tts_chars: number; reply_used_cached_audio: boolean; audio_cache: string | null;
+  llm_in: number; llm_out: number; llm_cache_read: number; llm_cache_write: number;
   barge_in: boolean; outcome: string;
   stt_provider: string; tts_provider: string; llm_model: string; sync_dtmf_at: number | null;
 }
@@ -82,6 +94,7 @@ export function toRow(tl: TurnTimeline, c: TurnRowContext): TurnRow {
     tools: tl.tools,
     stt_audio_s: Math.round(tl.sttAudioS * 100) / 100, tts_chars: tl.ttsChars,
     reply_used_cached_audio: tl.cachedAudio, audio_cache: tl.audioCache,
+    llm_in: tl.llm.input, llm_out: tl.llm.output, llm_cache_read: tl.llm.cacheRead, llm_cache_write: tl.llm.cacheWrite,
     barge_in: tl.bargeIn, outcome: tl.outcome,
     stt_provider: c.sttProvider, tts_provider: c.ttsProvider, llm_model: c.llmModel, sync_dtmf_at: c.syncDtmfAt,
   };
@@ -114,7 +127,7 @@ export function timelineLog(r: TurnRow) {
 const COLS = ['id', 'call_sid', 'business_type', 'provider', 'turn_n', 'started_at', 'end_signal', 'endpointing_ms',
   't_speech_end', 't_final', 't_first_phrase', 't_first_tts', 't_first_sent', 't_first_filler_sent', 't_playback_done',
   'tools', 'stt_audio_s', 'tts_chars', 'cached_audio', 'audio_cache', 'barge_in', 'outcome',
-  'stt_provider', 'tts_provider', 'llm_model', 'sync_dtmf_at', 'created_at'] as const;
+  'stt_provider', 'tts_provider', 'llm_model', 'sync_dtmf_at', 'llm_in', 'llm_out', 'llm_cache_read', 'llm_cache_write', 'created_at'] as const;
 
 /** Writes a call's turn rows in one D1 batch. Callers run it under waitUntil and swallow errors. */
 export async function saveTurnRows(env: Env, rows: TurnRow[]): Promise<void> {
@@ -125,7 +138,7 @@ export async function saveTurnRows(env: Env, rows: TurnRow[]): Promise<void> {
     `${r.call_sid}:${r.turn_n}`, r.call_sid, r.business_type, r.provider, r.turn_n, r.started_at, r.end_signal, r.endpointing_ms,
     r.t_speech_end, r.t_final, r.t_first_phrase, r.t_first_tts, r.t_first_sent, r.t_first_filler_sent, r.t_playback_done,
     JSON.stringify(r.tools), r.stt_audio_s, r.tts_chars, r.reply_used_cached_audio ? 1 : 0, r.audio_cache, r.barge_in ? 1 : 0, r.outcome,
-    r.stt_provider, r.tts_provider, r.llm_model, r.sync_dtmf_at, now,
+    r.stt_provider, r.tts_provider, r.llm_model, r.sync_dtmf_at, r.llm_in, r.llm_out, r.llm_cache_read, r.llm_cache_write, now,
   )));
 }
 
@@ -139,6 +152,7 @@ export function fromDb(d: Record<string, any>): TurnRow {
     t_speech_end: d.t_speech_end, t_final: d.t_final ?? null, t_first_phrase: d.t_first_phrase ?? null, t_first_tts: d.t_first_tts ?? null,
     t_first_sent: d.t_first_sent ?? null, t_first_filler_sent: d.t_first_filler_sent ?? null, t_playback_done: d.t_playback_done ?? null,
     tools, stt_audio_s: d.stt_audio_s, tts_chars: d.tts_chars, reply_used_cached_audio: !!d.cached_audio, audio_cache: d.audio_cache ?? null,
+    llm_in: d.llm_in ?? 0, llm_out: d.llm_out ?? 0, llm_cache_read: d.llm_cache_read ?? 0, llm_cache_write: d.llm_cache_write ?? 0,
     barge_in: !!d.barge_in, outcome: d.outcome,
     stt_provider: d.stt_provider, tts_provider: d.tts_provider, llm_model: d.llm_model, sync_dtmf_at: d.sync_dtmf_at ?? null,
   };
@@ -178,3 +192,22 @@ export function latencyReport(rows: TurnRow[]) {
     by_carrier: Object.fromEntries(carriers.map(c => [c, { turns: rows.filter(r => r.provider === c).length, segments: stats(rows.filter(r => r.provider === c)) }])),
   };
 }
+
+export interface TurnCost { total_usd_micros: number; total_inr_paise: number; stt_usd_micros: number; tts_usd_micros: number; llm_usd_micros: number }
+
+/**
+ * The AI cost of one turn (speech in, model, speech out) at the same rates as billing. The phone line is
+ * billed per call minute, not per turn, so it is not included here.
+ */
+export function turnCost(r: TurnRow, rates: CostRates): TurnCost {
+  const base = { channel: 'voice' as const, durationSeconds: 0, sttProvider: r.stt_provider, ttsProvider: r.tts_provider, llmModel: r.llm_model };
+  const llm = { input: r.llm_in, output: r.llm_out, cacheRead: r.llm_cache_read, cacheWrite: r.llm_cache_write };
+  const none = { sttSeconds: 0, ttsChars: 0, llm: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+  const stt = estimateCostUsdMicros({ ...base, ...none, sttSeconds: r.stt_audio_s }, rates);
+  const tts = estimateCostUsdMicros({ ...base, ...none, ttsChars: r.tts_chars }, rates);
+  const llmCost = estimateCostUsdMicros({ ...base, ...none, llm }, rates);
+  const total = stt + tts + llmCost;
+  return { total_usd_micros: total, total_inr_paise: usdMicrosToPaise(total, rates), stt_usd_micros: stt, tts_usd_micros: tts, llm_usd_micros: llmCost };
+}
+
+export { costRates };

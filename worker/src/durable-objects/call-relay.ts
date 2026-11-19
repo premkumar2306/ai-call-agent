@@ -677,7 +677,7 @@ export class CallRelay extends DurableObject<Env> {
         signal,
         heardText: () => this.heardText(turn),
         onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
-        onUsage: (model, usage) => this.meter.addLlm(model, usage),
+        onUsage: (model, usage) => { this.meter.addLlm(model, usage); tl.addLlm(usage); },
         onTool: (name, start, endAt, ok) => tl.tool(name, start, endAt, ok),
         // Booking side effects (calendar, staff notification) finish even if the caller hangs up mid-tool.
         background: (p) => this.ctx.waitUntil(p),
