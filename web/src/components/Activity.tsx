@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Badge, Dialog } from './ui';
 import { CHANNEL_ICON, CHANNEL_NAME, OUTCOME, formatDuration, formatWhen, type Activity, type TurnMetric } from '../lib/activity';
 
@@ -48,7 +48,7 @@ export function TranscriptDialog({ a, showLatency, base, auth, onClose }: { a: A
       {showLatency && t.callSid && base && auth && (
         <details className="more">
           <summary>Turn timeline</summary>
-          <TurnTimeline base={base} auth={auth} callSid={t.callSid} />
+          <TurnTimeline base={base} auth={auth} callSid={t.callSid} texts={t.metrics?.map(m => m.text)} />
         </details>
       )}
       <div className="chat">
@@ -108,11 +108,31 @@ interface TimelineTurn {
   stt_provider: string; tts_provider: string; llm_model: string;
 }
 
-// Per-turn timeline from GET /admin/calls/:callSid/turns (operator key). Times are ms after the
-// STT end-of-speech signal. "Played" is when the carrier confirmed playback FINISHED, not when
-// the caller first heard anything. Only calls after the timeline shipped have rows.
-function TurnTimeline({ base, auth, callSid }: { base: string; auth: Record<string, string>; callSid: string }) {
+// Where one reply's time went, in ms after the caller stopped speaking.
+const STAGES = [
+  { key: 'stt', label: 'Transcript', hint: 'waiting for the words', cls: 'tl-stt' },
+  { key: 'model', label: 'Model', hint: 'thinking up the reply', cls: 'tl-model' },
+  { key: 'tools', label: 'Tools', hint: 'looking things up', cls: 'tl-tools' },
+  { key: 'voice', label: 'Voice', hint: 'turning it into audio', cls: 'tl-voice' },
+] as const;
+type StageKey = typeof STAGES[number]['key'];
+
+function stagesOf(r: TimelineTurn): (Record<StageKey, number> & { total: number }) | null {
+  if (r.t_final === null || r.t_first_phrase === null || r.t_first_sent === null) return null;
+  const think = Math.max(0, r.t_first_phrase - r.t_final);
+  const tools = Math.min(think, r.tools.reduce((n, x) => n + Math.max(0, x.end - x.start), 0));
+  return { stt: r.t_final, model: think - tools, tools, voice: Math.max(0, r.t_first_sent - r.t_first_phrase), total: r.t_first_sent };
+}
+
+const sec = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+const median = (v: number[]) => { const a = [...v].sort((x, y) => x - y); return a.length ? a[Math.floor((a.length - 1) / 2)] : 0; };
+
+// Per-turn timeline from GET /admin/calls/:callSid/turns (operator key). Each reply is one bar split into
+// where the time went; tap a turn for the exact numbers. Only calls made after timelines shipped have rows.
+// Bar widths are data, so they are the one place a style attribute is used (as in LatencyChart).
+function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Record<string, string>; callSid: string; texts?: string[] }) {
   const [turns, setTurns] = useState<TimelineTurn[] | null | 'none'>(null);
+  const [openTurn, setOpenTurn] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
     fetch(`${base}/admin/calls/${encodeURIComponent(callSid)}/turns`, { headers: auth })
@@ -123,34 +143,61 @@ function TurnTimeline({ base, auth, callSid }: { base: string; auth: Record<stri
   }, [base, callSid]);   // eslint-disable-line react-hooks/exhaustive-deps
   if (turns === null) return <p className="muted small" role="status">Loading…</p>;
   if (turns === 'none') return <p className="muted small">No timeline for this call (it was made before timelines were recorded).</p>;
-  const ms = (v: number | null) => (v === null ? '—' : String(v));
+
+  const rows = turns.map(r => ({ r, st: stagesOf(r) }));
+  const replied = rows.filter((x): x is { r: TimelineTurn; st: NonNullable<ReturnType<typeof stagesOf>> } => x.st !== null);
+  const max = Math.max(1, ...rows.map(x => x.st?.total ?? x.r.t_final ?? 0));
+  const slowest = replied.reduce<typeof replied[number] | null>((m, x) => (!m || x.st.total > m.st.total ? x : m), null);
+  const avg = (k: StageKey) => (replied.length ? replied.reduce((n, x) => n + x.st[k], 0) / replied.length : 0);
+  const biggest = STAGES.reduce((m, s) => (avg(s.key) > avg(m.key) ? s : m), STAGES[0]);
   const first = turns[0];
+  const w = (ms: number) => ({ width: `${(ms / max) * 100}%` });
+
   return (
     <div className="stack-sm">
-      <p className="small muted">
-        {first.provider} · STT {first.stt_provider} · voice {first.tts_provider} · {first.llm_model}
-      </p>
-      <div className="tl-scroll">
-        <table className="tl">
-          <thead>
-            <tr><th>#</th><th>Final</th><th>Phrase</th><th>TTS</th><th>Sent</th><th>Played*</th><th>Tools</th><th>STT s</th><th>TTS ch</th></tr>
-          </thead>
-          <tbody>
-            {turns.map(r => (
-              <tr key={r.turn_n} title={`ended by ${r.end_signal}${r.barge_in ? ' · interrupted' : ''}${r.reply_used_cached_audio ? ' · cached audio' : ''}`}>
-                <td>{r.turn_n}{r.barge_in ? '✂' : ''}</td>
-                <td>{ms(r.t_final)}</td><td>{ms(r.t_first_phrase)}</td><td>{ms(r.t_first_tts)}</td>
-                <td><strong>{ms(r.t_first_sent)}</strong></td><td>{ms(r.t_playback_done)}</td>
-                <td>{r.tools.length ? r.tools.map(x => `${x.name} ${x.end - x.start}${x.ok ? '' : '!'}`).join(', ') : '—'}</td>
-                <td>{r.stt_audio_s}</td><td>{r.tts_chars}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <p className="small muted">{first.provider} · speech {first.stt_provider} · voice {first.tts_provider} · {first.llm_model}</p>
+      {replied.length > 0 && slowest && (
+        <div className="tl-sum">
+          <div><span className="tl-num">{sec(median(replied.map(x => x.st.total)))}</span><span className="small muted">typical reply</span></div>
+          <div><span className={`tl-num ${slowest.st.total > 1500 ? 'bad' : ''}`}>{sec(slowest.st.total)}</span><span className="small muted">slowest, turn {slowest.r.turn_n}</span></div>
+          <div><span className="tl-num">{biggest.label}</span><span className="small muted">biggest share, {sec(avg(biggest.key))} avg</span></div>
+        </div>
+      )}
+      <div className="tl-legend small muted">
+        {STAGES.map(s => <span key={s.key}><i className={`lat-key ${s.cls}`} /> {s.label}</span>)}
       </div>
+      <ul className="tl-list">
+        {rows.map(({ r, st }) => {
+          const open = openTurn === r.turn_n;
+          const text = texts?.[r.turn_n - 1];
+          return (
+            <li key={r.turn_n}>
+              <button type="button" className="tl-row" aria-expanded={open} onClick={() => setOpenTurn(open ? null : r.turn_n)}>
+                <span className="tl-label small">{r.turn_n}. {text ? `“${text}”` : ''}{r.barge_in ? ' · cut off' : ''}</span>
+                <span className="tl-bar">
+                  {st ? STAGES.map(s => <span key={s.key} className={s.cls} title={`${s.label} ${Math.round(st[s.key])}ms`} style={w(st[s.key])} />)
+                    : <span className="tl-stt" title={`Transcript ${r.t_final ?? 0}ms`} style={w(r.t_final ?? 0)} />}
+                </span>
+                <span className={`tl-total small ${st && st.total > 1500 ? 'bad' : ''}`}>{st ? sec(st.total) : 'no reply'}</span>
+              </button>
+              {open && (
+                <dl className="tl-detail small">
+                  <dt>Words ready</dt><dd>{r.t_final ?? '—'} ms{st ? ` (${r.end_signal})` : ''}</dd>
+                  <dt>First phrase</dt><dd>{r.t_first_phrase ?? '—'} ms</dd>
+                  {r.tools.map((x, i) => <Fragment key={i}><dt>Tool</dt><dd>{x.name} · {x.end - x.start} ms{x.ok ? '' : ' · failed'}</dd></Fragment>)}
+                  <dt>Audio ready</dt><dd>{r.t_first_tts ?? '—'} ms</dd>
+                  <dt>Sent to carrier</dt><dd>{r.t_first_sent ?? '—'} ms</dd>
+                  <dt>Playback finished*</dt><dd>{r.t_playback_done === null ? '—' : `${r.t_playback_done} ms (spoke for about ${sec(r.t_playback_done - (r.t_first_sent ?? 0))})`}</dd>
+                  <dt>Caller audio / voice</dt><dd>{r.stt_audio_s}s heard · {r.tts_chars} characters spoken{r.reply_used_cached_audio ? ' · cached audio' : ''}</dd>
+                </dl>
+              )}
+            </li>
+          );
+        })}
+      </ul>
       <p className="small muted">
-        ms after the end-of-speech signal. Sent = first audio written to the carrier. *Played = carrier-confirmed
-        playback finished, not when the caller first heard it.
+        Time from when the caller stopped speaking to the first audio leaving our server. *Playback finished is when the
+        carrier confirmed the reply was played out, not when the caller first heard it.
       </p>
     </div>
   );
