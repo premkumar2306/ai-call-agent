@@ -373,9 +373,9 @@ export class CallRelay extends DurableObject<Env> {
     if (isDefaultVoice(voice) || this.twWs?.readyState !== WebSocket.OPEN) return;
     const missing = missingVoiceSecret(this.env, voice);
     if (missing) {
-      // Fail closed: a Hindi line must not quietly run on English providers.
-      console.error(`[call] ${this.callSid.slice(-8)} voice config needs ${missing} — ending call`);
-      this.reject(`missing ${missing}`);
+      // The owner's choice is saved, but until the secret exists the call
+      // stays on the default English Deepgram/Cartesia path.
+      console.warn(`[call] ${this.callSid.slice(-8)} voice config needs ${missing}; using default voice`);
       return;
     }
     console.log(`[call] ${this.callSid.slice(-8)} voice ${voice.language} stt=${voice.sttProvider} tts=${voice.ttsProvider}`);

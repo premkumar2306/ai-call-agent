@@ -170,7 +170,7 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     vertical:     body.vertical === null ? null : body.vertical ?? undefined,
     voice:        voice.value,
   });
-  return c.json({ success: true, data: { key: body.key, name: body.name } });
+  return c.json({ success: true, data: { key: body.key, name: body.name }, ...(voice.pending ? { pending: voice.pending } : {}) });
 });
 
 // GET /admin/sectors/:key/voice — phone-line language + STT/TTS providers
@@ -198,7 +198,7 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
   if (typeof dtmf === 'boolean') await updateSector(c.env, key, { dtmfInput: dtmf });
   const updated = { ...current, ...voice.value };
   if ('voiceId' in voice.value && !voice.value.voiceId) delete updated.voiceId;
-  return c.json({ success: true, data: updated });
+  return c.json({ success: true, data: updated, ...(voice.pending ? { pending: voice.pending } : {}) });
 });
 
 // GET /admin/sectors/:key — get one sector

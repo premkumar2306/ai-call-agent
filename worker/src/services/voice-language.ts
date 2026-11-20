@@ -57,14 +57,15 @@ const VOICE_ID_RE = /^[A-Za-z0-9_.:-]{1,100}$/;
 
 /**
  * Validates the voice fields of an admin request (snake_case, as POSTed).
- * Returns only the fields that were given, or an error message. `hasSarvamKey`
- * makes selecting Sarvam fail closed when SARVAM_API_KEY isn't configured.
+ * Returns only the fields that were given, or an error message. Without
+ * `hasSarvamKey` a Sarvam choice is still valid: it is saved as the owner's
+ * preference and flagged `pending`; live calls stay on the fallback until the key exists.
  */
 export function parseVoiceInput(
   body: Record<string, unknown>,
   current: VoiceSettings,
   hasSarvamKey: boolean,
-): { ok: true; value: Partial<VoiceSettings> } | { ok: false; error: string } {
+): { ok: true; value: Partial<VoiceSettings>; pending?: 'indian_voice' } | { ok: false; error: string } {
   const out: Partial<VoiceSettings> = {};
   if (body.voice_language !== undefined) {
     if (!(VOICE_LANGUAGES as readonly unknown[]).includes(body.voice_language)) return { ok: false, error: `voice_language must be one of ${VOICE_LANGUAGES.join(', ')}` };
@@ -85,9 +86,6 @@ export function parseVoiceInput(
   }
   const merged = { ...current, ...out };
   if ('voiceId' in out && out.voiceId === undefined) delete merged.voiceId;
-  if (usesSarvam(merged) && !hasSarvamKey) {
-    return { ok: false, error: 'Sarvam needs the SARVAM_API_KEY secret (wrangler secret put SARVAM_API_KEY)' };
-  }
   // Kannada, Telugu and Tamil: Sarvam for both directions (kn-IN, te-IN, ta-IN).
   if (isDravidian(merged.language) && (merged.sttProvider !== 'sarvam' || merged.ttsProvider !== 'sarvam')) {
     return { ok: false, error: 'Kannada, Telugu and Tamil need Sarvam for both speech recognition and voice (stt_provider and tts_provider = sarvam)' };
@@ -96,7 +94,7 @@ export function parseVoiceInput(
   if (merged.ttsProvider === 'cartesia' && merged.language !== 'en' && !merged.voiceId) {
     return { ok: false, error: 'Hindi on Cartesia needs voice_id: a Hindi-native Cartesia voice id' };
   }
-  return { ok: true, value: out };
+  return usesSarvam(merged) && !hasSarvamKey ? { ok: true, value: out, pending: 'indian_voice' } : { ok: true, value: out };
 }
 
 // ── Text normalisation ──────────────────────────────────────────────────────

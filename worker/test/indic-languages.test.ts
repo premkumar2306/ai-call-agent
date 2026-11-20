@@ -15,12 +15,21 @@ import { DRAVIDIAN, LANGUAGE_NAMES, LINES, BACKCHANNEL, DISCOURSE, DANGLING, DIS
 
 const SCRIPT: Record<string, RegExp> = { kn: /[ಀ-೿]/, te: /[ఀ-౿]/, ta: /[஀-௿]/ };
 
+describe('Sarvam choice without SARVAM_API_KEY', () => {
+  it('saves as a preference (ok + pending), never an error naming a secret', () => {
+    const r = parseVoiceInput({ voice_language: 'hi-en', stt_provider: 'sarvam', tts_provider: 'sarvam' }, DEFAULT_VOICE, false);
+    expect(r).toMatchObject({ ok: true, pending: 'indian_voice', value: { language: 'hi-en', sttProvider: 'sarvam', ttsProvider: 'sarvam' } });
+    expect(parseVoiceInput({ voice_language: 'hi-en', stt_provider: 'sarvam', tts_provider: 'sarvam' }, DEFAULT_VOICE, true)).not.toHaveProperty('pending');
+    expect(parseVoiceInput({ voice_language: 'en' }, DEFAULT_VOICE, false)).not.toHaveProperty('pending');
+  });
+});
+
 describe('Kannada, Telugu, Tamil voice settings', () => {
   it('need Sarvam for both directions; the Sarvam codes are kn-IN, te-IN, ta-IN', () => {
     for (const lang of DRAVIDIAN) {
       expect(parseVoiceInput({ voice_language: lang }, DEFAULT_VOICE, true)).toMatchObject({ ok: false });
       expect(parseVoiceInput({ voice_language: lang, stt_provider: 'sarvam', tts_provider: 'cartesia' }, DEFAULT_VOICE, true)).toMatchObject({ ok: false });
-      expect(parseVoiceInput({ voice_language: lang, stt_provider: 'sarvam', tts_provider: 'sarvam' }, DEFAULT_VOICE, false)).toMatchObject({ ok: false });
+      expect(parseVoiceInput({ voice_language: lang, stt_provider: 'sarvam', tts_provider: 'sarvam' }, DEFAULT_VOICE, false)).toMatchObject({ ok: true, pending: 'indian_voice' });
       expect(parseVoiceInput({ voice_language: lang, stt_provider: 'sarvam', tts_provider: 'sarvam' }, DEFAULT_VOICE, true)).toMatchObject({ ok: true });
       expect(sarvamSttLanguage(lang)).toEqual({ languageCode: `${lang}-IN`, mode: 'transcribe' });
       expect(sarvamTtsLanguage(lang)).toBe(`${lang}-IN`);

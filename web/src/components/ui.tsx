@@ -66,10 +66,10 @@ export function Notice({ tone, children }: { tone?: 'success' | 'error' | 'warni
 
 // The one way owner pages say a feature depends on a service the Avery team
 // hasn't set up yet: calm, no setting names, nothing for the owner to do.
-export function NotAvailable({ feature, children }: { feature: ReactNode; children?: ReactNode }) {
+export function NotAvailable({ feature, plural, children }: { feature: ReactNode; plural?: boolean; children?: ReactNode }) {
   return (
     <Notice tone="info">
-      <span className="strong">{feature} isn't available yet.</span>{' '}
+      <span className="strong">{feature} {plural ? "aren't" : "isn't"} available yet.</span>{' '}
       {children ?? "The Avery team is setting it up. You'll be able to use it here once it's ready."}
     </Notice>
   );
