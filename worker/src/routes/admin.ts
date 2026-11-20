@@ -177,10 +177,10 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
 adminRouter.get('/sectors/:key/voice', withBusinessAccess('staff', 'key'), async (c) => {
   const meta = await getSector(c.env, c.req.param('key') ?? '');
   if (!meta) return c.json({ success: false, error: 'Sector not found' }, 404);
-  return c.json({ success: true, data: { ...resolveVoiceSettings(meta), sarvamConfigured: !!c.env.SARVAM_API_KEY } });
+  return c.json({ success: true, data: { ...resolveVoiceSettings(meta), naturalFillers: !!meta.naturalFillers, sarvamConfigured: !!c.env.SARVAM_API_KEY } });
 });
 
-// PUT /admin/sectors/:key/voice { voice_language?, stt_provider?, tts_provider?, voice_id?, dtmf_input? }
+// PUT /admin/sectors/:key/voice { voice_language?, stt_provider?, tts_provider?, voice_id?, dtmf_input?, natural_fillers? }
 // Changes only the voice settings (POST /admin/sectors replaces the whole sector).
 adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async (c) => {
   const key = c.req.param('key') ?? '';
@@ -194,9 +194,13 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
   // dtmf_input: keypad digits as answers (0028), off by default.
   const dtmf = (body as Record<string, unknown>).dtmf_input;
   if (dtmf !== undefined && typeof dtmf !== 'boolean') return c.json({ success: false, error: 'dtmf_input must be true or false' }, 400);
+  // natural_fillers: cached acknowledgements instead of dead air (0032), off by default.
+  const fillers = (body as Record<string, unknown>).natural_fillers;
+  if (fillers !== undefined && typeof fillers !== 'boolean') return c.json({ success: false, error: 'natural_fillers must be true or false' }, 400);
   await updateSectorVoice(c.env, key, voice.value);
   if (typeof dtmf === 'boolean') await updateSector(c.env, key, { dtmfInput: dtmf });
-  const updated = { ...current, ...voice.value };
+  if (typeof fillers === 'boolean') await updateSector(c.env, key, { naturalFillers: fillers });
+  const updated = { ...current, ...voice.value, naturalFillers: typeof fillers === 'boolean' ? fillers : !!meta.naturalFillers };
   if ('voiceId' in voice.value && !voice.value.voiceId) delete updated.voiceId;
   return c.json({ success: true, data: updated, ...(voice.pending ? { pending: voice.pending } : {}) });
 });

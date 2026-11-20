@@ -140,9 +140,31 @@ export const HINDI_DANGLING_WORDS = new Set([
 
 // ── Canned lines ────────────────────────────────────────────────────────────
 
+/** What a tool is doing, as far as a filler line is concerned. */
+export type FillerGroup = 'availability' | 'booking' | 'change' | 'lookup' | 'other';
+
+export function fillerGroup(tool: string): FillerGroup {
+  if (tool === 'check_availability') return 'availability';
+  if (tool === 'book_appointment' || tool === 'place_order') return 'booking';
+  if (/^(reschedule|update|cancel)_/.test(tool)) return 'change';
+  if (/^(get|list|search|check)_/.test(tool)) return 'lookup';
+  return 'other';
+}
+
+/** The filler at rotation `n` in `pool` that isn't `last` (the one just said). */
+export function pickFiller(pool: string[], n: number, last: string): string {
+  for (let i = 0; i < pool.length; i++) {
+    const c = pool[(n + i) % pool.length];
+    if (c !== last) return c;
+  }
+  return pool[n % pool.length];
+}
+
 export interface VoiceLines {
   opener: string;
   fillers: string[];
+  /** Fillers that fit what the tool is doing (natural fillers); never claim an outcome. */
+  fillersBy: Record<FillerGroup, string[]>;
   stillWorking: string[];
   stillThere: string;
   goodbye: (bizName?: string) => string;
@@ -155,6 +177,13 @@ export interface VoiceLines {
 const EN_LINES: VoiceLines = {
   opener: 'Thanks for calling!',
   fillers: ['One moment.', 'Let me check.', 'Just a second.'],
+  fillersBy: {
+    availability: ['Let me check the slots for you.', 'Checking the calendar now.', 'One moment, looking at the schedule.'],
+    booking: ['Let me get that booked for you.', 'One moment, getting that set up.'],
+    change: ['Let me update that for you.', 'One moment, working on that.'],
+    lookup: ['Let me look that up.', 'Let me pull that up for you.'],
+    other: ['Let me check that for you.', 'One moment.', 'Just a second.'],
+  },
   stillWorking: ['Still checking, thanks for waiting.', 'Almost there.'],
   stillThere: 'Are you still there?',
   goodbye: (name) => `I haven't heard anything, so I'll hang up now. Thanks for calling${name ? ` ${name}` : ''}. Goodbye!`,
@@ -173,6 +202,14 @@ const EN_LINES: VoiceLines = {
 const HI_LINES: VoiceLines = {
   opener: 'नमस्ते! कॉल करने के लिए धन्यवाद।',
   fillers: ['एक पल।', 'जी, देख रहे हैं।', 'बस एक सेकंड।'],
+  // Gender-neutral ("हम"), like the rest of these lines, so any voice can say them.
+  fillersBy: {
+    availability: ['एक मिनट, स्लॉट देख रहे हैं।', 'जी, कैलेंडर देख रहे हैं।'],
+    booking: ['जी, बुकिंग कर रहे हैं।', 'एक मिनट, बुक कर रहे हैं।'],
+    change: ['जी, बदल रहे हैं।', 'एक मिनट, अपडेट कर रहे हैं।'],
+    lookup: ['एक मिनट, देख रहे हैं।', 'जी, देखते हैं।'],
+    other: ['एक मिनट।', 'जी, देख रहे हैं।', 'ठीक है, एक पल।'],
+  },
   stillWorking: ['अभी देख रहे हैं, थोड़ा रुकिए।', 'बस हो गया।'],
   stillThere: 'क्या आप लाइन पर हैं?',
   goodbye: (name) => `कोई आवाज़ नहीं आ रही है, इसलिए हम कॉल रख रहे हैं। ${name ? `${name} को ` : ''}कॉल करने के लिए धन्यवाद। नमस्ते!`,
@@ -186,7 +223,10 @@ const HI_LINES: VoiceLines = {
 function dravidianLines(lang: 'kn' | 'te' | 'ta'): VoiceLines {
   const L = LINES[lang];
   return {
-    opener: L.opener, fillers: L.fillers, stillWorking: L.stillWorking, stillThere: L.stillThere, goodbye: L.goodbye,
+    opener: L.opener, fillers: L.fillers,
+    // Kannada / Telugu / Tamil keep their reviewed generic fillers until a native speaker approves tool-specific ones.
+    fillersBy: { availability: L.fillers, booking: L.fillers, change: L.fillers, lookup: L.fillers, other: L.fillers },
+    stillWorking: L.stillWorking, stillThere: L.stillThere, goodbye: L.goodbye,
     greeting: L.greeting, customGreeting: L.customGreeting,
     capabilityHint: (_bt, vertical) => (vertical === 'legal' ? L.hintLegal : L.hint),
   };

@@ -50,6 +50,7 @@ export interface SectorMeta {
   assistantName?: string;
   // Keypad digits count as answers to "what's your number / date?" (0028). Absent = off.
   dtmfInput?: boolean;
+  naturalFillers?: boolean;
   // Conversation guardrails (0027, services/guardrails.ts). Off unless true.
   guardrails?: boolean;
 }

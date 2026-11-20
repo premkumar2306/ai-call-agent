@@ -17,6 +17,8 @@ export interface ClinicPreset {
   /** Starter list (same as the Services page "dental" starter). Price 0 = price on request. */
   services: PresetService[];
   durationBooking: boolean; guardrails: boolean; dtmfInput: boolean;
+  /** Cached fillers instead of dead air while a tool runs (0032). */
+  naturalFillers: boolean;
   plan: string; offer: string;        // attached; nothing is charged until the owner subscribes
   pilot: { mode: 'overflow'; days: number };  // dates are set at activation (pilotWindow)
   /** Front-desk confirmation: needs the front desk's phone, so it is applied only when one is given. */
@@ -42,7 +44,7 @@ export const INDIA_DENTAL: ClinicPreset = {
     { name: 'Teeth whitening', durationMinutes: 60, category: 'SERVICES' },
     { name: 'Braces consultation', durationMinutes: 30, category: 'SERVICES' },
   ],
-  durationBooking: true, guardrails: true, dtmfInput: true,
+  durationBooking: true, guardrails: true, dtmfInput: true, naturalFillers: true,
   plan: 'in_clinic', offer: 'FOUNDING25',
   pilot: { mode: 'overflow', days: 14 },
   confirmationMode: true,

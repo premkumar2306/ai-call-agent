@@ -50,3 +50,13 @@ export function installProviderMock(env: Pick<Env, 'NODE_ENV' | 'PROVIDER_MOCK_U
     return input instanceof Request ? original(new Request(target, input), init) : original(target, init);
   };
 }
+
+/**
+ * e2e only: stands in for a slow tool (a slow calendar or database) by asking the
+ * mock server to hold the reply. A no-op unless PROVIDER_MOCK_URL is set outside production.
+ */
+export async function mockToolDelay(env: Pick<Env, 'NODE_ENV' | 'PROVIDER_MOCK_URL'>, tool: string): Promise<void> {
+  const base = env.PROVIDER_MOCK_URL;
+  if (!base || env.NODE_ENV === 'production') return;
+  await fetch(`${base.replace(/\/$/, '')}/tool.mock/delay?tool=${encodeURIComponent(tool)}`).then(r => r.text()).catch(() => {});
+}

@@ -18,7 +18,7 @@ import { recordCallOutcome } from '../services/metrics';
 import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type EndInfo, type Stt } from './stt-deepgram';
 import { TurnTimeline, saveTurnRows, timelineLog, toRow, type TurnRowContext } from '../services/turn-timeline';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
-import { DEFAULT_VOICE, isDefaultVoice, resolveVoiceSettings, sttDiffers, voiceLines, type VoiceSettings } from '../services/voice-language';
+import { DEFAULT_VOICE, fillerGroup, isDefaultVoice, pickFiller, resolveVoiceSettings, sttDiffers, voiceLines, type FillerGroup, type VoiceSettings } from '../services/voice-language';
 import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
 import { callerIdentity, getOrCreateCustomer } from '../utils/identity';
 import { customerHashSalt, isProduction, voiceModel } from '../config';
@@ -33,6 +33,7 @@ import { recordUsage } from '../services/billing/service';
 import { sttModelFor, ttsModelFor } from '../services/voice-models';
 import { installProviderMock } from '../utils/provider-mock';
 import { logEvent } from '../utils/telemetry';
+import { AudioCache } from '../services/audio-cache';
 
 // One CallRelay instance per phone call: carrier media stream → Deepgram STT
 // → runTurn() → Cartesia TTS, with barge-in.
@@ -93,6 +94,14 @@ const DTMF_IDLE_MS = 2500;
 const FILLER_GRACE_MS = 1200;
 const GAP_FILLER_MS = 2000;
 const MAX_FILLERS = 3;
+// "Natural fillers" (per business, sectors.natural_fillers): the same watchdog,
+// tighter. The first filler comes 700 ms after the caller's final transcript, or
+// 300 ms after the model starts a tool call, whichever is first; a second line
+// ("Almost there.") 1.1 s after the first one finishes. Fillers are replayed
+// from the audio cache (services/audio-cache.ts), so they start at once.
+const NATURAL_FILLER_GRACE_MS = 700;
+const NATURAL_TOOL_FILLER_MS = 300;
+const NATURAL_GAP_FILLER_MS = 1100;
 
 // Caller silence once the assistant has finished speaking: after this long
 // ask "Are you still there?", and after the same again say goodbye and hang
@@ -108,7 +117,15 @@ const CONTINUATION_MS = 2000;
 // that audio's echo.
 const ECHO_TAIL_MS = 1500;
 
-interface SpokenChunk { text: string; played: boolean; filler: boolean; tl?: TurnTimeline }
+interface SpokenChunk {
+  text: string; played: boolean; filler: boolean; tl?: TurnTimeline;
+  // A filler a real reply overtook before it started playing: skipped.
+  cancelled?: boolean;
+  // Audio has begun going to the carrier.
+  started?: boolean;
+  // Replayed from the audio cache: nothing was synthesized, so nothing is metered.
+  cached?: boolean;
+}
 
 // One caller turn's timing, saved with the transcript (transcripts.metrics).
 // All ms. `at` is when the final transcript arrived, from call start; laps are
@@ -231,6 +248,38 @@ export class CallRelay extends DurableObject<Env> {
 
   private get ttsProvider(): TtsProvider {
     return this.tts ??= createTts(this.env, this.voice);
+  }
+
+  // Cached fillers and greeting, tighter dead-air timing (see NATURAL_* above).
+  private get naturalFillers(): boolean {
+    return !!this.cache.sectorMeta?.naturalFillers;
+  }
+  private audioCache?: AudioCache;
+  private lastFiller = '';
+  private fillerSeq = 0;
+
+  // The clip for `text` from the audio cache, or synthesized and stored. Records the hit on the chunk and turn.
+  private cachedTts(text: string, signal: AbortSignal, chunk: SpokenChunk): Promise<Response | null> {
+    this.audioCache ??= new AudioCache(this.env.CACHE, p => this.ctx.waitUntil(p));
+    const e = this.env, v = this.voice;
+    const voiceKey = v.ttsProvider === 'sarvam'
+      ? [v.voiceId ?? e.SARVAM_TTS_SPEAKER, e.SARVAM_TTS_MODEL, e.SARVAM_TTS_CODEC].join('|')
+      : [v.voiceId ?? e.CARTESIA_VOICE_ID, e.CARTESIA_MODEL_ID].join('|');
+    return this.audioCache.start(this.ttsProvider, voiceKey, v.language, text, signal)
+      .then(({ res, hit }) => {
+        if (!res) return null;
+        chunk.cached = hit;
+        const tl = chunk.tl;
+        if (tl) {
+          if (hit) { tl.cachedAudio = true; tl.audioCache = 'hit'; tl.ttsChars -= text.length; }
+          else if (!tl.cachedAudio) tl.audioCache = 'miss';
+        }
+        return res;
+      })
+      .catch((err) => {
+        if (err?.name !== 'AbortError') console.error('[audio cache]', err?.message || err);
+        return null;
+      });
   }
 
   // The assistant is thinking or audible — the window in which caller speech
@@ -547,7 +596,7 @@ export class CallRelay extends DurableObject<Env> {
     }
     if (res) this.ttsFailStreak = 0;
     else if (!signal.aborted && ++this.ttsFailStreak >= TTS_DOWN_AFTER) this.failCall('tts');
-    if (res) this.meter.addTts(chunk.text); // the synthesis was requested, so it's billed
+    if (res && !chunk.cached) this.meter.addTts(chunk.text); // the synthesis was requested, so it's billed
     if (signal.aborted || !res) {
       // Nobody will read this body; release it rather than leak the stream.
       await res?.body?.cancel().catch(() => {});
@@ -618,6 +667,7 @@ export class CallRelay extends DurableObject<Env> {
     // whatever is still playing; only the draining to Twilio is chained, so
     // audio stays strictly sequential and barge-in stops it cleanly.
     let chunkChain: Promise<void> = Promise.resolve();
+    const natural = this.naturalFillers;
     let firstChunkLogged = false;
     // Chunks queued whose audio hasn't been handed to Twilio yet.
     let unsent = 0;
@@ -625,20 +675,28 @@ export class CallRelay extends DurableObject<Env> {
     const queue = (textToSay: string, filler: boolean) => {
       if (signal.aborted) return;
       const chunk: SpokenChunk = { text: textToSay, played: false, filler, tl };
+      // The real reply is here: a filler that hasn't started playing is skipped
+      // rather than made to play first. One already playing finishes cleanly —
+      // chunks go out strictly in order, so the reply never overlaps it.
+      if (!filler) for (const c of turn.chunks) if (c.filler && !c.started) c.cancelled = true;
       turn.chunks.push(chunk);
       tl.ttsChars += textToSay.length;
       if (!filler) tl.once('firstPhrase');
       unsent++;
       const queuedAt = Date.now();
-      const started = this.ttsProvider.start(textToSay, signal).catch((e) => {
-        if (e?.name !== 'AbortError') console.error(`[${this.ttsProvider.name} start]`, e?.message || e);
-        return null;
-      });
+      const started = filler && natural
+        ? this.cachedTts(textToSay, signal, chunk)
+        : this.ttsProvider.start(textToSay, signal).catch((e) => {
+          if (e?.name !== 'AbortError') console.error(`[${this.ttsProvider.name} start]`, e?.message || e);
+          return null;
+        });
       chunkChain = chunkChain.then(async () => {
         // Contained: one chunk failing must not reject the chain, or every
         // later chunk appended to it would be silently skipped.
         try {
           const res = await started;
+          if (chunk.cancelled) { await res?.body?.cancel().catch(() => {}); return; }
+          chunk.started = true;
           if (res && !firstChunkLogged && !filler && !signal.aborted) {
             firstChunkLogged = true;
             metric.firstAudio = Date.now() - t0;
@@ -657,19 +715,25 @@ export class CallRelay extends DurableObject<Env> {
     let realChunkSeen = false;
     let fillers = 0;
     let quietSince = Date.now();
+    // Set when the model starts a tool call (natural fillers): which filler fits.
+    let toolGroup: FillerGroup | undefined;
+    let toolAt = 0;
     const watchdog = setInterval(() => {
       if (signal.aborted) return;
       const now = Date.now();
       if (unsent > 0 || this.pendingMarks.size > 0) { quietSince = now; return; }
       if (fillers >= MAX_FILLERS) return;
-      if (now - quietSince < (realChunkSeen || fillers ? GAP_FILLER_MS : FILLER_GRACE_MS)) return;
-      const pool = fillers === 0 && !realChunkSeen ? this.lines.fillers : this.lines.stillWorking;
+      const first = fillers === 0 && !realChunkSeen;
+      const toolReady = natural && first && !!toolGroup && now - toolAt >= NATURAL_TOOL_FILLER_MS;
+      const wait = natural ? (first ? NATURAL_FILLER_GRACE_MS : NATURAL_GAP_FILLER_MS) : (first ? FILLER_GRACE_MS : GAP_FILLER_MS);
+      if (!toolReady && now - quietSince < wait) return;
+      const pool = !first ? this.lines.stillWorking : natural && toolGroup ? this.lines.fillersBy[toolGroup] : this.lines.fillers;
       console.log(`[${tag}] dead air ${now - quietSince}ms — filler`);
-      queue(pool[fillers % pool.length], true);
+      queue(natural ? (this.lastFiller = pickFiller(pool, first ? this.fillerSeq++ : fillers, this.lastFiller)) : pool[fillers % pool.length], true);
       fillers++;
       metric.fillers = fillers;
       quietSince = now;
-    }, 250);
+    }, natural ? 100 : 250);
 
     try {
       const result = await runTurn(this.env, this.session!, this.callSid, utterance, {
@@ -680,6 +744,7 @@ export class CallRelay extends DurableObject<Env> {
         onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
         onUsage: (model, usage) => { this.meter.addLlm(model, usage); tl.addLlm(usage); },
         onTool: (name, start, endAt, ok) => tl.tool(name, start, endAt, ok),
+        onToolStart: (name) => { if (natural && !toolGroup) { toolGroup = fillerGroup(name); toolAt = Date.now(); } },
         // Booking side effects (calendar, staff notification) finish even if the caller hangs up mid-tool.
         background: (p) => this.ctx.waitUntil(p),
       });
@@ -921,7 +986,9 @@ export class CallRelay extends DurableObject<Env> {
     const speak = (text: string, started?: Promise<Response | null>) => {
       const chunk: SpokenChunk = { text, played: false, filler: false };
       turn.chunks.push(chunk);
-      return { chunk, done: this.playChunk(turn, chunk, started ?? this.ttsProvider.start(text, signal).catch(() => null)) };
+      // Natural fillers: the notice and greeting are the same words on every call, so they're replayed from the audio cache.
+      const audio = started ?? (this.naturalFillers ? this.cachedTts(text, signal, chunk) : this.ttsProvider.start(text, signal).catch(() => null));
+      return { chunk, done: this.playChunk(turn, chunk, audio) };
     };
     const say = (text: string, started?: Promise<Response | null>) => speak(text, started).done;
     // Opener first (no dependency on the lookup), then the part that needs
