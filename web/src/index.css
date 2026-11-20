@@ -475,3 +475,29 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .share-link { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .share-link a { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
 .share-link button { flex: none; }
+
+/* ── Narrow screens ─────────────────────────────────────────
+   Grid/flex children default to min-width:auto, so one long email, URL or word
+   stretches the whole page. Let them shrink and wrap instead. Checked by
+   `npm run mobile:check`. */
+.page, .stack, .stack-sm, .stack-lg { grid-template-columns: minmax(0, 1fr); }
+.page > *, .stack > *, .stack-sm > *, .stack-lg > *, .card > *, .card-head > *, .row > *, .row-between > * { min-width: 0; }
+.card, .notice, .field, .kv, .feed-main, .page-header, .table td { overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+  /* Pages with inline-styled rows (Team, Services, Practitioners, Calendar…): wrap and shrink. */
+  .page [style*="display: flex"] { flex-wrap: wrap; }
+  .page [style*="display: flex"] > * { min-width: 0; overflow-wrap: anywhere; }
+  .page [style*="display: flex"] > [style*="flex: 1"] { flex: 1 1 12rem !important; }
+  .page [style*="display: grid"] > * { min-width: 0; }
+  .page [style*="display: grid"] { overflow-wrap: anywhere; }
+  .page select, .page input, .page textarea { max-width: 100%; }
+}
+@media (max-width: 640px) {
+  /* 16px stops iOS Safari zooming into a focused field. */
+  input, select, textarea { font-size: 16px !important; }
+  .page-header .actions { width: 100%; }
+}
+.auth-wrap { grid-template-columns: minmax(0, 1fr); }
+.muted, .small, .strong { overflow-wrap: anywhere; }
+.hours-row { flex-wrap: wrap; }
+@media (max-width: 860px) { .btn { white-space: normal; max-width: 100%; text-align: center; } .table .btn { white-space: nowrap; } }
