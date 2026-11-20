@@ -194,7 +194,7 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
   // dtmf_input: keypad digits as answers (0028), off by default.
   const dtmf = (body as Record<string, unknown>).dtmf_input;
   if (dtmf !== undefined && typeof dtmf !== 'boolean') return c.json({ success: false, error: 'dtmf_input must be true or false' }, 400);
-  // natural_fillers: cached acknowledgements instead of dead air (0032), off by default.
+  // natural_fillers: cached acknowledgements instead of dead air (0033), off by default.
   const fillers = (body as Record<string, unknown>).natural_fillers;
   if (fillers !== undefined && typeof fillers !== 'boolean') return c.json({ success: false, error: 'natural_fillers must be true or false' }, 400);
   await updateSectorVoice(c.env, key, voice.value);

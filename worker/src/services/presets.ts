@@ -17,7 +17,7 @@ export interface ClinicPreset {
   /** Starter list (same as the Services page "dental" starter). Price 0 = price on request. */
   services: PresetService[];
   durationBooking: boolean; guardrails: boolean; dtmfInput: boolean;
-  /** Cached fillers instead of dead air while a tool runs (0032). */
+  /** Cached fillers instead of dead air while a tool runs (0033). */
   naturalFillers: boolean;
   plan: string; offer: string;        // attached; nothing is charged until the owner subscribes
   pilot: { mode: 'overflow'; days: number };  // dates are set at activation (pilotWindow)
