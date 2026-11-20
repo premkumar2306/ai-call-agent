@@ -22,10 +22,11 @@ export type MetricsSettings = typeof metricsSettings.$inferSelect;
 export async function recordCallOutcome(env: Env, o: {
   carrier: string; callSid: string; businessType: string; callerHash?: string | null;
   startedAt: number; endedAt: number; userTurns: number; transferred: boolean; messageTaken: boolean; isTest: boolean;
+  endReason?: string | null;
 }): Promise<void> {
   try {
     await getDb(env.DB).insert(callOutcomes).values({
-      ...o, callerHash: o.callerHash ?? null, durationSeconds: Math.max(0, o.endedAt - o.startedAt), createdAt: nowSec(),
+      ...o, callerHash: o.callerHash ?? null, endReason: o.endReason ?? null, durationSeconds: Math.max(0, o.endedAt - o.startedAt), createdAt: nowSec(),
     }).onConflictDoNothing();
   } catch (e: any) {
     console.error('[metrics] recordCallOutcome failed', o.businessType, e?.message || e);

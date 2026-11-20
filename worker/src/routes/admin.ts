@@ -194,8 +194,17 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
   // dtmf_input: keypad digits as answers (0028), off by default.
   const dtmf = (body as Record<string, unknown>).dtmf_input;
   if (dtmf !== undefined && typeof dtmf !== 'boolean') return c.json({ success: false, error: 'dtmf_input must be true or false' }, 400);
+  // Runaway-call guards (0032): whole seconds / minutes, null = back to the default.
+  const guards: Record<string, number | null> = {};
+  for (const [field, col, max] of [['silence_prompt_sec', 'silencePromptSec', 300], ['silence_hangup_sec', 'silenceHangupSec', 300], ['max_call_minutes', 'maxCallMinutes', 120]] as const) {
+    const v = (body as Record<string, unknown>)[field];
+    if (v === undefined) continue;
+    if (v !== null && !(Number.isInteger(v) && (v as number) >= 1 && (v as number) <= max)) return c.json({ success: false, error: `${field} must be a whole number from 1 to ${max}, or null for the default` }, 400);
+    guards[col] = v as number | null;
+  }
   await updateSectorVoice(c.env, key, voice.value);
   if (typeof dtmf === 'boolean') await updateSector(c.env, key, { dtmfInput: dtmf });
+  if (Object.keys(guards).length) await updateSector(c.env, key, guards);
   const updated = { ...current, ...voice.value };
   if ('voiceId' in voice.value && !voice.value.voiceId) delete updated.voiceId;
   return c.json({ success: true, data: updated, ...(voice.pending ? { pending: voice.pending } : {}) });
@@ -582,7 +591,8 @@ adminRouter.get('/calls/:callSid/turns', withAdminKey, async (c) => {
     llm_in: turns.reduce((n, t) => n + t.llm_in + t.llm_cache_read + t.llm_cache_write, 0),
     llm_out: turns.reduce((n, t) => n + t.llm_out, 0),
   };
-  return c.json({ success: true, data: { call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, usd_to_inr: rates.usdToInr, total, turns } });
+  const outcome = await c.env.DB.prepare('SELECT end_reason, duration_seconds FROM call_outcomes WHERE call_sid = ? LIMIT 1').bind(callSid).first<{ end_reason: string | null; duration_seconds: number }>().catch(() => null);
+  return c.json({ success: true, data: { end_reason: outcome?.end_reason ?? null, duration_seconds: outcome?.duration_seconds ?? null, call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, usd_to_inr: rates.usdToInr, total, turns } });
 });
 
 // GET /admin/latency?business=&from=&to= — p50/p90/p95 per segment, overall and per carrier.

@@ -204,6 +204,18 @@ export function troubleLine(lang: VoiceLanguage, transferring: boolean): string 
     : "I'm sorry, I'm having trouble on my end. Please call back in a few minutes.";
 }
 
+/** Said when a call reaches its maximum length. Kannada/Telugu/Tamil fall back to English until reviewed by a native speaker. */
+export function maxDurationLine(lang: VoiceLanguage, transferring: boolean): string {
+  if (lang === 'hi' || lang === 'hi-en') {
+    return transferring
+      ? 'हमें बात करते काफ़ी समय हो गया है। मैं आपको हमारी टीम से जोड़ रही हूँ।'
+      : 'हमें बात करते काफ़ी समय हो गया है, इसलिए हम कॉल समाप्त कर रहे हैं। ज़रूरत हो तो दोबारा कॉल कीजिए। धन्यवाद, नमस्ते!';
+  }
+  return transferring
+    ? "We've been on this call for a while, so let me connect you to our team."
+    : "We've been on this call for a while, so I'll end it here. Please call back if you need anything else. Thanks, goodbye!";
+}
+
 export function voiceLines(lang: VoiceLanguage): VoiceLines {
   if (isDravidian(lang)) return dravidianLines(lang);
   return lang === 'en' ? EN_LINES : HI_LINES;
