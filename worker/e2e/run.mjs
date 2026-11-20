@@ -415,6 +415,11 @@ async function timelineChecks(n, call, s) {
   check(n, 'every turn: speech_end ≤ final ≤ first_phrase ≤ first_tts ≤ first_sent', ordered, turns.map(t => `${t.t_final}/${t.t_first_phrase}/${t.t_first_tts}/${t.t_first_sent}`).join(' | '));
   check(n, 'end-of-speech signal is recorded', turns.every(t => t.end_signal), turns.map(t => t.end_signal).join(','));
   check(n, 'counters: STT audio seconds and TTS characters are > 0', turns.every(t => t.stt_audio_s > 0 && t.tts_chars > 0), turns.map(t => `${t.stt_audio_s}s/${t.tts_chars}c`).join(' '));
+  const modelled = turns.filter(t => t.llm_out > 0);
+  check(n, 'LLM tokens are recorded for turns that called the model', modelled.length > 0 && modelled.every(t => t.llm_in + t.llm_cache_read + t.llm_cache_write > 0), modelled.map(t => `${t.llm_in}+${t.llm_cache_read}c in/${t.llm_out} out`).join(' | '));
+  const sumUsd = turns.reduce((x, t) => x + t.cost.total_usd_micros, 0);
+  const costOk = turns.every(t => t.cost.total_usd_micros > 0) && data.total.total_usd_micros === sumUsd && data.total.total_inr_paise > 0 && data.usd_to_inr > 0;
+  check(n, 'every turn has an AI cost in USD and INR; the call total adds up', costOk, `USD ${(sumUsd / 1e6).toFixed(5)}, INR ${(data.total.total_inr_paise / 100).toFixed(3)}, ${data.total.stt_seconds}s, ${data.total.llm_in}+${data.total.llm_out} tokens, ${data.total.tts_chars} chars`);
   check(n, 'provider names are recorded', turns.every(t => t.stt_provider === s.stt && t.tts_provider === s.tts && t.llm_model), `${turns[0]?.stt_provider}/${turns[0]?.tts_provider}/${turns[0]?.llm_model}`);
   const tooled = turns.filter(t => t.tools.length);
   check(n, 'a tool turn records tool start, end and outcome', tooled.length > 0 && tooled.every(t => t.tools.every(x => x.name && x.end >= x.start && typeof x.ok === 'boolean')), tooled.map(t => t.tools.map(x => `${x.name}:${x.end - x.start}ms`).join(',')).join(' | '));
@@ -596,6 +601,47 @@ async function practiceScenario(mocks) {
 
 // Plivo beyond the happy path: signatures, an unknown number, a forged stream
 // token, the caller hanging up mid-call, and the hangup callback.
+async function onboardScenario() {
+  const S = 'onboard';
+  const LEAD = 'lotus-dental-hub-bengaluru', K = 'lotus_dental_hub_bengaluru';
+  const run = (...extra) => spawnSync('node', ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', 'scripts/onboard-clinic.mjs', '--lead', LEAD, ...extra], { cwd: WORKER_DIR, encoding: 'utf8', env: { ...process.env, WORKER_URL: BASE, ADMIN_KEY: ADMIN } });
+  console.log('\n▶ onboard: India dental preset from a campaign lead');
+  const dry = run();
+  check(S, 'dry run prints the plan and exits 0', dry.status === 0 && /DRY RUN/.test(dry.stdout), dry.stderr.slice(0, 200));
+  check(S, 'dry run never prints the admin key', !dry.stdout.includes(ADMIN) && !dry.stderr.includes(ADMIN));
+  const gone = await fetch(`${BASE}/admin/sectors/${K}`, { headers: { 'X-Admin-Key': ADMIN } });
+  check(S, 'dry run creates nothing', gone.status === 404, `HTTP ${gone.status}`);
+  const applied = run('--apply');
+  check(S, '--apply succeeds', applied.status === 0, (applied.stdout + applied.stderr).slice(-300));
+  check(S, 'apply never prints the admin key', !applied.stdout.includes(ADMIN) && !applied.stderr.includes(ADMIN));
+  const sec = await api('GET', `/admin/sectors/${K}`);
+  check(S, 'India locale: IN, INR, Asia/Kolkata, en-IN', sec.countryCode === 'IN' && sec.currency === 'INR' && sec.timezone === 'Asia/Kolkata' && sec.locale === 'en-IN', JSON.stringify([sec.countryCode, sec.currency, sec.timezone, sec.locale]));
+  check(S, 'dental clinic vertical', sec.kind === 'dental' && sec.vertical === 'clinic', JSON.stringify([sec.kind, sec.vertical]));
+  check(S, 'voice: Hindi/English (Sarvam) and DTMF on', sec.voice?.language === 'hi-en' && sec.voice?.sttProvider === 'sarvam' && sec.dtmfInput === true, JSON.stringify(sec.voice));
+  check(S, 'no staff phone copied from the lead', !sec.phone);
+  const g = await api('GET', `/admin/guardrails/${K}`);
+  check(S, 'guardrails on', g.enabled === true);
+  const priv = await api('GET', `/admin/privacy/${K}/settings`);
+  check(S, 'DPDP disclosure on', JSON.stringify(priv).includes('true'), JSON.stringify(priv).slice(0, 200));
+  const cf = await api('GET', `/clinic/${K}`);
+  check(S, 'duration booking on; recalls, no-show, review requests off', cf.durationBooking === true && !cf.recalls && !cf.noShowRecovery && !cf.reviewRequests, JSON.stringify(cf));
+  const wa = await api('GET', `/admin/whatsapp/business/${K}`);
+  check(S, 'WhatsApp reminders and missed-call follow-up off', wa.settings?.reminders === false && wa.settings?.missedCallFollowup === false, JSON.stringify(wa.settings));
+  const pilot = await api('GET', `/pilot/${K}`);
+  check(S, 'pilot is a draft (not enabled), no dates', !pilot.config?.enabled && !pilot.active, JSON.stringify(pilot.config));
+  const bill = await api('GET', `/admin/billing/accounts/${K}`);
+  check(S, 'plan in_clinic with FOUNDING25, not subscribed', bill.planId === 'in_clinic' && bill.offerCode === 'FOUNDING25' && !bill.razorpaySubscriptionId, JSON.stringify([bill.planId, bill.offerCode]));
+  const products = await api('GET', `/admin/products/${K}`);
+  check(S, '8 dental starter services', Array.isArray(products) && products.length === 8, `${products?.length}`);
+  const nums = await api('GET', '/admin/phone-numbers');
+  check(S, 'no phone number mapped', !JSON.stringify(nums).includes(K));
+  const again = run('--apply');
+  check(S, 'running again changes nothing', again.status === 0 && /Already onboarded/.test(again.stdout), again.stdout.slice(-200));
+  const products2 = await api('GET', `/admin/products/${K}`);
+  const offers = await api('GET', '/admin/billing/offers');
+  check(S, 'no duplicate services; FOUNDING25 seat used once', products2.length === 8 && (offers.find(o => o.code === 'FOUNDING25')?.redeemed ?? 0) >= 1);
+}
+
 async function plivoScenario(mocks) {
   const n = 'plivo';
   console.log('\n▶ Plivo: signatures, unknown number, hangup mid-call');
@@ -1598,6 +1644,7 @@ try {
   if (!only || 'practice'.includes(only)) await practiceScenario(mocks);
   if (!only || 'razorpay'.includes(only)) await razorpayScenario(mocks);
   if (!only || 'svt'.includes(only)) await svtIndiaScenario(mocks);
+  if (!only || 'onboard'.includes(only)) await onboardScenario();
   if (!only || 'whatsapp'.includes(only)) await whatsappScenario(mocks);
   if (!only || 'whatsapp'.includes(only)) await whatsappProdScenario(mocks);
   if (!only || 'integrations'.includes(only)) await integrationsScenario(mocks);

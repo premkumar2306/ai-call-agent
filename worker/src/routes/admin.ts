@@ -12,7 +12,7 @@ import {
 import { parseHoursRanges } from '../services/tool-router.service';
 import { parseVoiceInput, resolveVoiceSettings } from '../services/voice-language';
 import { getDb } from '../db/client';
-import { fromDb, latencyReport } from '../services/turn-timeline';
+import { costRates, fromDb, latencyReport, turnCost } from '../services/turn-timeline';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
 import { signStreamToken } from '../utils/stream-token';
 import { COUNTRIES, isValidCountryCode, isValidCurrency, isValidLocale, isValidTimeZone } from '../utils/locale';
@@ -170,7 +170,7 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
     vertical:     body.vertical === null ? null : body.vertical ?? undefined,
     voice:        voice.value,
   });
-  return c.json({ success: true, data: { key: body.key, name: body.name } });
+  return c.json({ success: true, data: { key: body.key, name: body.name }, ...(voice.pending ? { pending: voice.pending } : {}) });
 });
 
 // GET /admin/sectors/:key/voice — phone-line language + STT/TTS providers
@@ -198,7 +198,7 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
   if (typeof dtmf === 'boolean') await updateSector(c.env, key, { dtmfInput: dtmf });
   const updated = { ...current, ...voice.value };
   if ('voiceId' in voice.value && !voice.value.voiceId) delete updated.voiceId;
-  return c.json({ success: true, data: updated });
+  return c.json({ success: true, data: updated, ...(voice.pending ? { pending: voice.pending } : {}) });
 });
 
 // GET /admin/sectors/:key — get one sector
@@ -572,8 +572,17 @@ adminRouter.get('/calls/:callSid/turns', withAdminKey, async (c) => {
   const callSid = c.req.param('callSid') ?? '';
   const { results } = await c.env.DB.prepare('SELECT * FROM call_turn_metrics WHERE call_sid = ? ORDER BY turn_n').bind(callSid).all();
   if (!results.length) return c.json({ success: false, error: 'No turn metrics for that call' }, 404);
-  const turns = results.map(fromDb);
-  return c.json({ success: true, data: { call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, turns } });
+  const rates = costRates(c.env.BILLING_COST_RATES);
+  const turns = results.map(fromDb).map(t => ({ ...t, cost: turnCost(t, rates) }));
+  const sum = (k: 'total_usd_micros' | 'total_inr_paise' | 'stt_usd_micros' | 'tts_usd_micros' | 'llm_usd_micros') => turns.reduce((n, t) => n + t.cost[k], 0);
+  const total = {
+    ...Object.fromEntries((['total_usd_micros', 'total_inr_paise', 'stt_usd_micros', 'tts_usd_micros', 'llm_usd_micros'] as const).map(k => [k, sum(k)])),
+    stt_seconds: Math.round(turns.reduce((n, t) => n + t.stt_audio_s, 0) * 100) / 100,
+    tts_chars: turns.reduce((n, t) => n + t.tts_chars, 0),
+    llm_in: turns.reduce((n, t) => n + t.llm_in + t.llm_cache_read + t.llm_cache_write, 0),
+    llm_out: turns.reduce((n, t) => n + t.llm_out, 0),
+  };
+  return c.json({ success: true, data: { call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, usd_to_inr: rates.usdToInr, total, turns } });
 });
 
 // GET /admin/latency?business=&from=&to= — p50/p90/p95 per segment, overall and per carrier.

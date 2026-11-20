@@ -198,15 +198,20 @@ export function estimateCostUsdMicros(u: UsageForCost, rates: CostRates = DEFAUL
   return Math.round(usd * 1e6);
 }
 
-/** The phone-line and AI-model parts of a cost (speech is the rest). */
-export function costParts(u: UsageForCost, rates: CostRates = DEFAULT_COST_RATES): { telephony: number; llm: number } {
+/** The phone-line, speech-to-text, voice (TTS) and AI-model parts of a cost, in micro-USD. They add up to estimateCostUsdMicros. */
+export function costParts(u: UsageForCost, rates: CostRates = DEFAULT_COST_RATES): { telephony: number; stt: number; tts: number; llm: number } {
   const llmRate = (u.llmModel && rates.llm[u.llmModel]) || rates.llm.default;
   const llm = (u.llm.input * llmRate.inputPerMTok + u.llm.output * llmRate.outputPerMTok
     + u.llm.cacheRead * llmRate.cacheReadPerMTok + u.llm.cacheWrite * llmRate.cacheWritePerMTok) / 1e6;
+  const sttRate = (u.sttProvider ? rates.sttPerSecondByProvider[u.sttProvider] : undefined) ?? rates.sttPerSecond;
+  const ttsRate = (u.ttsProvider ? rates.ttsPerCharByProvider[u.ttsProvider] : undefined) ?? rates.ttsPerChar;
   const telephony = u.channel === 'voice'
     ? billableMinutes(u.durationSeconds) * (rates.telephonyPerMinute[u.provider ?? 'default'] ?? rates.telephonyPerMinute.default ?? 0)
     : rates.whatsappPerConversation;
-  return { telephony: Math.round(telephony * 1e6), llm: Math.round(llm * 1e6) };
+  return {
+    telephony: Math.round(telephony * 1e6), stt: Math.round(u.sttSeconds * sttRate * 1e6),
+    tts: Math.round(u.ttsChars * ttsRate * 1e6), llm: Math.round(llm * 1e6),
+  };
 }
 
 /** micro-USD → paise at the configured exchange rate. */

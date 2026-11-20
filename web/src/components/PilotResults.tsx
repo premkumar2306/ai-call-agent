@@ -21,6 +21,7 @@ export default function PilotResults({ base, auth, sector, isOwner }: { base: st
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const q = range === 'pilot' ? '?pilot=1' : `?days=${range}`;
   useEffect(() => { api<Data>(base, `/metrics/${encodeURIComponent(sector)}${q}`, auth).then(setData).catch(e => setError(e.message)); }, [base, sector, q, auth]);
 
@@ -55,8 +56,13 @@ export default function PilotResults({ base, auth, sector, isOwner }: { base: st
         <div className="stack-sm">
           <label className="row small"><input type="checkbox" checked={data.settings.weeklySummary} disabled={busy} onChange={e => save({ weeklySummary: e.target.checked })} /> Email me a weekly summary (Mondays)</label>
           <label className="row small"><input type="checkbox" checked={data.settings.shareEnabled} disabled={busy} onChange={e => save({ shareEnabled: e.target.checked })} /> Share a read-only report link</label>
-          {shareUrl && <p className="small">Anyone with this link can see these figures (no patient details): <a href={shareUrl} target="_blank" rel="noreferrer">{shareUrl}</a>{' '}
-            <Button size="sm" variant="secondary" onClick={() => navigator.clipboard?.writeText(shareUrl)}>Copy</Button></p>}
+          {shareUrl && <div className="stack-sm">
+            <p className="small muted">Anyone with this link can see these figures (no patient details):</p>
+            <div className="share-link">
+              <a href={shareUrl} target="_blank" rel="noreferrer" title={shareUrl}>{shareUrl}</a>
+              <Button size="sm" variant="secondary" onClick={() => navigator.clipboard?.writeText(shareUrl).then(() => setCopied(true), () => {})}>{copied ? 'Copied' : 'Copy'}</Button>
+            </div>
+          </div>}
         </div>
       )}
     </Card>

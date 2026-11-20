@@ -67,7 +67,7 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error ?? 'Save failed');
       setVoice(v => ({ ...json.data, sarvamConfigured: v?.sarvamConfigured }));
-      setMsg({ text: 'Saved. Takes effect on the next call.', ok: true });
+      setMsg({ text: json.pending ? 'Saved.' : 'Saved. Takes effect on the next call.', ok: true });
     } catch (e: any) {
       setMsg({ text: e.message, ok: false });
     } finally {
@@ -122,7 +122,7 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
         {voice && <span className="help">{voiceHint}</span>}
       </div>
       {voice && !voice.sarvamConfigured && (voice.sttProvider === 'sarvam' || voice.ttsProvider === 'sarvam') && (
-        <NotAvailable feature="Hindi and Hinglish calls">The Avery team is setting it up. Until then, your line stays in English.</NotAvailable>
+        <NotAvailable feature="Hindi and Hinglish calls" plural>We've saved your choice; your line stays in English until the Avery team switches it on.</NotAvailable>
       )}
       <div className="form-actions"><Button onClick={save} disabled={!voice} busy={saving}>Save</Button></div>
       <Status msg={msg} />

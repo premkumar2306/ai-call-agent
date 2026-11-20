@@ -30,6 +30,7 @@ import {
 import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/phone-numbers';
 import { UsageMeter } from '../services/billing/meter';
 import { recordUsage } from '../services/billing/service';
+import { sttModelFor, ttsModelFor } from '../services/voice-models';
 import { installProviderMock } from '../utils/provider-mock';
 import { logEvent } from '../utils/telemetry';
 
@@ -372,9 +373,9 @@ export class CallRelay extends DurableObject<Env> {
     if (isDefaultVoice(voice) || this.twWs?.readyState !== WebSocket.OPEN) return;
     const missing = missingVoiceSecret(this.env, voice);
     if (missing) {
-      // Fail closed: a Hindi line must not quietly run on English providers.
-      console.error(`[call] ${this.callSid.slice(-8)} voice config needs ${missing} — ending call`);
-      this.reject(`missing ${missing}`);
+      // The owner's choice is saved, but until the secret exists the call
+      // stays on the default English Deepgram/Cartesia path.
+      console.warn(`[call] ${this.callSid.slice(-8)} voice config needs ${missing}; using default voice`);
       return;
     }
     console.log(`[call] ${this.callSid.slice(-8)} voice ${voice.language} stt=${voice.sttProvider} tts=${voice.ttsProvider}`);
@@ -677,7 +678,7 @@ export class CallRelay extends DurableObject<Env> {
         signal,
         heardText: () => this.heardText(turn),
         onLap: (label, ms) => { if (metric.laps.length < 40) metric.laps.push([label, ms]); },
-        onUsage: (model, usage) => this.meter.addLlm(model, usage),
+        onUsage: (model, usage) => { this.meter.addLlm(model, usage); tl.addLlm(usage); },
         onTool: (name, start, endAt, ok) => tl.tool(name, start, endAt, ok),
         // Booking side effects (calendar, staff notification) finish even if the caller hangs up mid-tool.
         background: (p) => this.ctx.waitUntil(p),
@@ -810,6 +811,8 @@ export class CallRelay extends DurableObject<Env> {
       provider: this.telephony.provider,
       sttProvider: this.voice.sttProvider,
       ttsProvider: this.voice.ttsProvider,
+      sttModel: sttModelFor(this.env, this.voice.sttProvider, this.voice.language),
+      ttsModel: ttsModelFor(this.env, this.voice.ttsProvider),
       sourceId: this.callSid,
       startedAt: Math.floor(this.streamStartedAt / 1000),
       endedAt: Math.floor(endedAt / 1000),
