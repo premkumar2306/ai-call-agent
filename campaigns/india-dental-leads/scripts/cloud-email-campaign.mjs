@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { checkEmailAuth } from './check-email-auth.mjs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { appendFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -171,6 +172,19 @@ export function assertSendAllowed(action, campaignPolicy) {
   }
 }
 
+// Before any send batch: if DKIM or MX is broken, skip the batch (nothing sent, ledger untouched).
+export async function sendPreflight(sender, check = checkEmailAuth) {
+  const domain = sender.slice(sender.lastIndexOf('@') + 1);
+  try {
+    const result = await check(domain);
+    if (!result.blocked) return { skip: false };
+    const failed = result.checks.filter((item) => item.blocker && !item.ok).map((item) => item.name).join(', ');
+    return { skip: true, message: `Email auth preflight failed for ${domain} (${failed}); batch skipped, nothing sent. See docs/email-deliverability.md.` };
+  } catch (error) {
+    return { skip: true, message: `Email auth preflight could not run for ${domain} (${error.message}); batch skipped, nothing sent.` };
+  }
+}
+
 async function main() {
   const action = process.env.CAMPAIGN_ACTION ?? 'preview';
   const city = process.env.CAMPAIGN_CITY ?? 'bengaluru';
@@ -185,6 +199,14 @@ async function main() {
   if (!allowedCities.has(city)) throw new Error(`Unsupported CAMPAIGN_CITY: ${city}`);
   if (action === 'send' && process.env.CONFIRM_SEND !== 'true' && process.env.AUTOMATION_ENABLED !== 'true') {
     throw new Error('Sending is blocked: confirm_send must be true or DENTAL_CAMPAIGN_ENABLED must be true');
+  }
+
+  if (action === 'send') {
+    const preflight = await sendPreflight(sender);
+    if (preflight.skip) {
+      console.log(`::warning::${preflight.message}`);
+      return;
+    }
   }
 
   await mkdir(outputDirectory, { recursive: true });
