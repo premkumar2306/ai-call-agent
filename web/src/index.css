@@ -470,3 +470,8 @@ details.more[open] > summary { margin-bottom: var(--s3); }
 .switch-row + .switch-row { border-top: 1px solid var(--border); }
 .switch-row input { margin-top: 3px; }
 .switch-row .what { display: grid; gap: 2px; }
+
+/* Share link: long URL shrinks with an ellipsis; the Copy button stays inside the card on phones. */
+.share-link { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.share-link a { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
+.share-link button { flex: none; }
