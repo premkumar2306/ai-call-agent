@@ -18,7 +18,8 @@
     "e2e": "node e2e/run.mjs",
     "whatsapp-setup": "node scripts/whatsapp-setup.mjs",
     "preflight": "node scripts/preflight.mjs",
-    "plivo:verify": "node scripts/plivo-verify.mjs"
+    "plivo:verify": "node scripts/plivo-verify.mjs",
+    "onboard:clinic": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/onboard-clinic.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
