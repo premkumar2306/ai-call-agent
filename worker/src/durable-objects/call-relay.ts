@@ -12,10 +12,10 @@ import { missedCallFollowUp } from '../services/whatsapp-outbound';
 import { callStartNotice, recordConsent } from '../services/disclosure';
 import { assistantNameOf, getVertical } from '../services/verticals';
 import { dtmfAction, digitsUtterance } from '../services/dtmf';
-import { troubleLine } from '../services/voice-language';
+import { maxDurationLine, troubleLine } from '../services/voice-language';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { recordCallOutcome } from '../services/metrics';
-import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type EndInfo, type Stt } from './stt-deepgram';
+import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type BargeDecision, type EndInfo, type Stt } from './stt-deepgram';
 import { TurnTimeline, saveTurnRows, timelineLog, toRow, type TurnRowContext } from '../services/turn-timeline';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
 import { DEFAULT_VOICE, fillerGroup, isDefaultVoice, pickFiller, resolveVoiceSettings, sttDiffers, voiceLines, type FillerGroup, type VoiceSettings } from '../services/voice-language';
@@ -103,10 +103,29 @@ const NATURAL_FILLER_GRACE_MS = 700;
 const NATURAL_TOOL_FILLER_MS = 300;
 const NATURAL_GAP_FILLER_MS = 1100;
 
-// Caller silence once the assistant has finished speaking: after this long
-// ask "Are you still there?", and after the same again say goodbye and hang
-// up, rather than holding an open line in dead air.
-const SILENCE_REPROMPT_MS = 8000;
+// Runaway-call guards. Every one ends the carrier leg (closing the stream
+// hands the call to /<carrier>/after-stream, which answers <Hangup/>/302 unless
+// a transfer was saved), so a stuck call cannot bill for an hour.
+//  - silence: after SILENCE_PROMPT_MS without caller speech (assistant quiet)
+//    ask "Are you still there?"; SILENCE_HANGUP_MS later ask once more; SILENCE_HANGUP_MS
+//    after that (the third attempt) say goodbye and hang up.
+//  - max duration: MAX_CALL_MS, then a goodbye (or a transfer when the caller
+//    was just talking); the line is cut CAP_GRACE_MS later whatever happens.
+//  - dead media: no inbound audio frame for DEAD_MEDIA_MS.
+//  - stuck assistant: "speaking/thinking" for AGENT_STUCK_MS (a lost playback
+//    mark) is reset, so it cannot hold the silence timer off forever.
+// Business overrides: sectors.silence_prompt_sec / silence_hangup_sec / max_call_minutes.
+const SILENCE_PROMPT_MS = 20_000;
+const SILENCE_HANGUP_MS = 10_000;
+const MAX_CALL_MS = 5 * 60_000;
+const CAP_GRACE_MS = 20_000;
+const DEAD_MEDIA_MS = 15_000;
+const AGENT_STUCK_MS = 60_000;
+const GUARD_TICK_MS = 250;
+// Barge-in: a mark acknowledged this long after our clear means the carrier kept playing.
+const PLAYBACK_AFTER_CLEAR_MS = 400;
+
+export type EndReason = 'silence' | 'max_duration' | 'dead_media' | 'caller_hangup' | 'agent_hangup' | 'transfer' | 'error';
 
 // Caller speech this soon after a reply began speaking means they hadn't
 // finished their turn (a pause mid-thought ended the utterance early): the
@@ -212,6 +231,22 @@ export class CallRelay extends DurableObject<Env> {
   private quietSince = 0;
   private silencePrompts = 0;
   private hangupWhenDone = false;
+  // Guards (see MAX_CALL_MS…). endReason: the first reason recorded wins.
+  private endReason?: EndReason;
+  private finalized = false;
+  private guardTimer?: ReturnType<typeof setInterval>;
+  // Short guard timings for the e2e simulator (?guardPromptMs=…); ignored in production.
+  private testGuards: { promptMs?: number; hangupMs?: number; maxMs?: number; deadMediaMs?: number } = {};
+  private lastMediaAt = 0;
+  private lastCallerAt = 0;
+  private agentBusySince = 0;
+  private capDeadline = 0;
+  // Barge-in diagnostics: when the caller's speech was first signalled, the last
+  // non-interrupting verdict logged, and the clear the carrier still has to acknowledge.
+  private utteranceSignalAt = 0;
+  private lastVerdict?: BargeDecision;
+  private lastSkipKey = '';
+  private clearInfo?: { at: number; marks: Set<string>; acked: boolean; tl?: TurnTimeline };
   // A transfer to staff was requested: close the stream (→ /twilio/after-stream
   // dials them) once the "connecting you" line has played. Not cancelled by
   // caller speech, unlike the silence goodbye.
@@ -297,6 +332,10 @@ export class CallRelay extends DurableObject<Env> {
     // string from <Stream url="...">, so the 'start' event's customParameters
     // (set via <Parameter> in the TwiML) is the source of truth for real calls.
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
+    if (!isProduction(this.env)) {
+      const q = (k: string) => numEnv(url.searchParams.get(k) ?? undefined);
+      this.testGuards = { promptMs: q('guardPromptMs'), hangupMs: q('guardHangupMs'), maxMs: q('guardMaxMs'), deadMediaMs: q('guardDeadMs') };
+    }
     const cfg = streamConfig(request);
     this.telephony = createTelephonyAdapter(cfg.provider);
     this.urlToken = cfg.urlToken;
@@ -322,6 +361,7 @@ export class CallRelay extends DurableObject<Env> {
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
         isEcho: (text) => this.looksLikeEcho(text),
+        onBargeDecision: (d) => this.noteBargeDecision(d),
         // Mid-sentence speech must hold off "Are you still there?".
         onActivity: () => this.callerActive(),
         onClose: () => { if (gen === this.sttGen) this.handleSttDrop(); },
@@ -402,6 +442,7 @@ export class CallRelay extends DurableObject<Env> {
   private failCall(reason: 'stt' | 'tts') {
     if (this.callFailed || this.endStreamWhenDone || this.twWs?.readyState !== WebSocket.OPEN) return;
     this.callFailed = true;
+    this.endReason ??= 'error';
     logEvent('error', 'call.provider_failed', { callId: this.callSid.slice(-8), provider: this.telephony.provider, reason });
     const staff = this.cache.sectorMeta?.phone?.replace(/[^\d+]/g, '');
     const lang = this.voice.language;
@@ -444,9 +485,11 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   // Stops the assistant: aborts generation and synthesis, and tells the
-  // carrier to drop audio it has buffered but not yet played.
-  private bargeIn() {
+  // carrier to drop audio it has buffered but not yet played. `cause` is why.
+  private bargeIn(cause: string) {
+    const now = Date.now();
     const turn = this.active;
+    const first = !!turn && !turn.closed;
     if (turn && !turn.closed) {
       turn.closed = true;
       if (turn.tl) turn.tl.bargeIn = true;
@@ -465,8 +508,58 @@ export class CallRelay extends DurableObject<Env> {
       // audio short — rewrite history to what they actually heard.
       if (turn.committed && !turn.greeting && !turn.retracted) amendInterruptedReply(this.cache, this.heardText(turn));
     }
+    const marks = new Set(this.pendingMarks.keys());
     this.pendingMarks.clear();
-    this.sendToCarrier(this.telephony.clear());
+    const sent = this.sendToCarrier(this.telephony.clear());
+    if (first || marks.size) {
+      const clearMs = this.utteranceSignalAt ? now - this.utteranceSignalAt : undefined;
+      const b = turn?.tl?.barge;
+      if (b && first) { b.interrupts++; b.reason = cause; b.clearMs = clearMs; }
+      this.clearInfo = { at: now, marks, acked: false, tl: turn?.tl };
+      logEvent('info', 'barge.clear', { callId: this.callSid.slice(-8), carrier: this.telephony.provider, cause, clearMs, sent, pendingMarks: marks.size, turn: turn?.id });
+    }
+    this.utteranceSignalAt = 0;
+  }
+
+  // The carrier acknowledged our clear: Plivo says so (clearedAudio); Twilio and
+  // Exotel echo the marks of the audio they dropped. An echo long after the clear
+  // means that audio kept playing.
+  private clearAcked(via: string, markName?: string) {
+    const ci = this.clearInfo;
+    if (!ci) return;
+    const ms = Date.now() - ci.at;
+    if (markName) {
+      if (!ci.marks.delete(markName)) return;
+      if (ms > PLAYBACK_AFTER_CLEAR_MS) {
+        if (ci.tl) ci.tl.barge.playedAfterClear++;
+        logEvent('warn', 'barge.playback_after_clear', { callId: this.callSid.slice(-8), carrier: this.telephony.provider, ms });
+      }
+    }
+    if (ci.acked) return;
+    ci.acked = true;
+    if (ci.tl) ci.tl.barge.clearAcked = true;
+    logEvent('info', 'barge.clear_ack', { callId: this.callSid.slice(-8), carrier: this.telephony.provider, via, ms });
+  }
+
+  // Every verdict on recognised words heard while the assistant is speaking. Yes
+  // verdicts are logged by handleSpeechStart (with the clear); the rest here, once
+  // per reason per utterance so a growing interim doesn't flood the log.
+  private noteBargeDecision(d: BargeDecision) {
+    this.lastVerdict = d;
+    if (!this.agentActive) return;
+    const b = this.active?.tl?.barge;
+    if (b) { b.decisions++; if (!d.interrupt && b.skipped.length < 5) b.skipped.push({ reason: d.reason, words: d.words }); }
+    if (d.interrupt || this.lastSkipKey === d.reason) return;
+    this.lastSkipKey = d.reason;
+    logEvent('info', 'barge.decision', {
+      callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: 'interim', words: d.words, threshold: d.threshold,
+      vad: this.vadBargeIn, echo: d.reason === 'echo', interrupt: false, reason: d.reason,
+      ...(d.words <= 2 ? { heard: d.text.slice(0, 30) } : {}),
+    });
+  }
+
+  private get vadBargeIn(): boolean {
+    return /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '');
   }
 
   // Sends adapter-built frames; false once the socket has closed.
@@ -485,11 +578,21 @@ export class CallRelay extends DurableObject<Env> {
   // "mm-hmm"). VAD barge-in is off unless VOICE_BARGE_IN_ON_VAD=1.
   private handleSpeechStart(reason: 'vad' | 'interim') {
     this.callerActive();
+    const now = Date.now();
+    if (!this.utteranceSignalAt || now - this.utteranceSignalAt > 5000 || !this.agentActive) this.utteranceSignalAt = now;
     if (!this.agentActive) return;
-    if (reason === 'vad' && !/^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '')) return;
-    if (Date.now() - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) return;
-    console.log(`[barge-in] speech-start (${reason}) — stopping TTS`);
-    this.bargeIn();
+    const log = (interrupt: boolean, why: string, extra: Record<string, string | number | boolean | undefined> = {}) =>
+      logEvent('info', 'barge.decision', {
+        callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: reason, vad: this.vadBargeIn,
+        interrupt, reason: why, sinceSpeakMs: now - this.speakStartedAt, ...extra,
+      });
+    if (reason === 'vad' && !this.vadBargeIn) { log(false, 'vad_off'); return; }
+    if (now - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) { log(false, 'too_early'); return; }
+    const v = reason === 'interim' ? this.lastVerdict : undefined;
+    const b = this.active?.tl?.barge;
+    if (b) b.decisions++;
+    log(true, v?.reason ?? 'vad', v ? { words: v.words, threshold: v.threshold, echo: false, ...(v.words <= 2 ? { heard: v.text.slice(0, 30) } : {}) } : {});
+    this.bargeIn(v?.reason ?? 'vad');
   }
 
   // Our own audio coming back from a speakerphone, heard while (or just
@@ -571,9 +674,15 @@ export class CallRelay extends DurableObject<Env> {
     // Normally handleSpeechStart() already stopped the assistant; this is the
     // backstop when no speech-start signal arrived.
     if (this.agentActive) {
-      console.log(`[barge-in] on transcript "${text.slice(0, 40)}"`);
-      this.bargeIn();
+      logEvent('info', 'barge.decision', {
+        callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: 'final', words: text.trim().split(/\s+/).length,
+        vad: this.vadBargeIn, interrupt: true, reason: 'transcript', ...(text.trim().split(/\s+/).length <= 2 ? { heard: text.slice(0, 30) } : {}),
+      });
+      if (this.active?.tl) this.active.tl.barge.decisions++;
+      this.bargeIn('transcript');
     }
+    this.utteranceSignalAt = 0;
+    this.lastSkipKey = '';
 
     const gen = ++this.transcriptGen;
     const receivedAt = Date.now();
@@ -608,6 +717,8 @@ export class CallRelay extends DurableObject<Env> {
     this.spokenLog = this.spokenLog.filter(s => now - s.at < 20_000);
     this.spokenLog.push({ text: chunk.text, at: now });
     await cartesiaDrain(res, (audio) => {
+      // The caller already cut this reply off: drop audio still arriving, never send it.
+      if (turn.closed) { if (turn.tl) turn.tl.barge.ttsDropped++; return false; }
       const frames = this.telephony.audio(audio);
       const ok = this.sendToCarrier(frames);
       const tl = turn.tl;
@@ -860,6 +971,7 @@ export class CallRelay extends DurableObject<Env> {
       callerHash: this.session.sub, startedAt: Math.floor(this.streamStartedAt / 1000), endedAt: Math.floor(Date.now() / 1000),
       userTurns: h.filter(t => t.role === 'user').length, transferred: !!this.cache.transferTo, messageTaken: !!this.cache.messageId,
       isTest: this.session.sub.startsWith('synthetic-'),
+      endReason: this.endReason ?? 'caller_hangup',
     });
   }
 
@@ -892,63 +1004,135 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   private callerActive() {
+    this.lastCallerAt = Date.now();
     if (this.quietSince) this.quietSince = Date.now();
     this.silencePrompts = 0;
     // They spoke during the goodbye — stay on the line.
     this.hangupWhenDone = false;
   }
 
-  // Runs on every inbound media frame (every 20 ms), so no timer is needed.
-  private checkSilence() {
-    if (!this.quietSince) return;
+  private get guards() {
+    const m = this.cache.sectorMeta;
+    return {
+      promptMs: this.testGuards.promptMs ?? (m?.silencePromptSec ? m.silencePromptSec * 1000 : numEnv(this.env.VOICE_SILENCE_REPROMPT_MS) ?? SILENCE_PROMPT_MS),
+      hangupMs: this.testGuards.hangupMs ?? (m?.silenceHangupSec ? m.silenceHangupSec * 1000 : numEnv(this.env.VOICE_SILENCE_HANGUP_MS) ?? SILENCE_HANGUP_MS),
+      maxMs: this.testGuards.maxMs ?? (m?.maxCallMinutes ? m.maxCallMinutes * 60_000 : numEnv(this.env.VOICE_MAX_CALL_MS) ?? MAX_CALL_MS),
+      deadMediaMs: this.testGuards.deadMediaMs ?? numEnv(this.env.VOICE_DEAD_MEDIA_MS) ?? DEAD_MEDIA_MS,
+    };
+  }
+
+  // Writes the call's records once and stops its timers. Safe to call from every
+  // way a call can end; the first end reason recorded stands.
+  private finalize(reason: EndReason) {
+    this.endReason ??= reason;
+    if (this.guardTimer) { clearInterval(this.guardTimer); this.guardTimer = undefined; }
+    if (this.dtmfTimer) { clearTimeout(this.dtmfTimer); this.dtmfTimer = undefined; }
+    if (this.finalized) return;
+    this.finalized = true;
+    this.quietSince = 0;
+    this.stt.close();
+    this.ctx.waitUntil(this.flushTranscript());
+    this.ctx.waitUntil(this.flushTurnMetrics());
+    this.ctx.waitUntil(this.flushUsage());
+    this.ctx.waitUntil(this.flushFollowUp());
+    this.ctx.waitUntil(Promise.resolve(this.ctx.storage?.deleteAlarm()).catch(() => {}));
+  }
+
+  // Ends the carrier leg: closing the stream moves the carrier on to
+  // /<carrier>/after-stream, which hangs up (or dials staff when a transfer was saved).
+  private hangUp(reason: EndReason, closeReason: string) {
+    logEvent('warn', 'call.hangup', {
+      callId: this.callSid.slice(-8), provider: this.telephony.provider, reason,
+      seconds: Math.round((Date.now() - this.streamStartedAt) / 1000),
+    });
+    this.finalize(reason);
+    this.active?.abort.abort();
+    if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, closeReason);
+  }
+
+  // Runs every GUARD_TICK_MS from the start of the stream (a timer, not the media
+  // frames: a stalled carrier sends none, and a stuck "assistant is speaking"
+  // used to hold the silence timer off for as long as the carrier kept the line).
+  private guardTick() {
+    if (this.finalized || !this.streamStartedAt) return;
     const now = Date.now();
-    if (this.agentActive) { this.quietSince = now; return; }
+    const g = this.guards;
+    if (this.lastMediaAt && now - this.lastMediaAt > g.deadMediaMs) return this.hangUp('dead_media', 'no audio from carrier');
+    if (this.capDeadline && now > this.capDeadline) return this.hangUp('max_duration', 'max duration');
+    if (!this.capDeadline && now - this.streamStartedAt > g.maxMs) this.startCap();
+
+    if (!this.quietSince) return;
+    if (this.agentActive) {
+      this.quietSince = now;
+      this.agentBusySince ||= now;
+      if (now - this.agentBusySince > AGENT_STUCK_MS) {
+        logEvent('warn', 'call.agent_stuck_reset', { callId: this.callSid.slice(-8), provider: this.telephony.provider, pendingMarks: this.pendingMarks.size, turnInFlight: this.turnInFlight });
+        this.active?.abort.abort();
+        this.pendingMarks.clear();
+        this.turnInFlight = false;
+        this.agentBusySince = 0;
+      }
+      return;
+    }
+    this.agentBusySince = 0;
     if (this.endStreamWhenDone) {
       this.endStreamWhenDone = false;
-      this.quietSince = 0;
       console.log(`[call] ${this.callSid.slice(-8)} handing off to staff`);
-      this.stt.close();
-      this.ctx.waitUntil(this.flushTranscript());
-      this.ctx.waitUntil(this.flushTurnMetrics());
-      this.ctx.waitUntil(this.flushUsage());
-      this.ctx.waitUntil(this.flushFollowUp());
-      if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'transfer');
+      this.hangUp('transfer', 'transfer');
       return;
     }
     if (this.endCallWhenDone) {
       // The goodbye has finished playing; end the call and finalise once.
       this.endCallWhenDone = false;
-      this.quietSince = 0;
       console.log(`[call] ${this.callSid.slice(-8)} ending call (endCall)`);
-      this.stt.close();
-      this.ctx.waitUntil(this.flushTranscript());
-      this.ctx.waitUntil(this.flushTurnMetrics());
-      this.ctx.waitUntil(this.flushUsage());
-      this.ctx.waitUntil(this.flushFollowUp());
-      if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'call ended');
+      this.hangUp('agent_hangup', 'call ended');
       return;
     }
     if (this.hangupWhenDone) {
       // Goodbye has finished playing.
       this.hangupWhenDone = false;
-      this.quietSince = 0;
       console.log(`[call] ${this.callSid.slice(-8)} hanging up after caller silence`);
-      this.stt.close();
-      this.ctx.waitUntil(this.flushTranscript());
-      this.ctx.waitUntil(this.flushTurnMetrics());
-      this.ctx.waitUntil(this.flushUsage());
-      this.ctx.waitUntil(this.flushFollowUp());
-      if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, 'caller silent');
+      this.hangUp('silence', 'caller silent');
       return;
     }
-    if (now - this.quietSince < (numEnv(this.env.VOICE_SILENCE_REPROMPT_MS) ?? SILENCE_REPROMPT_MS)) return;
+    if (now - this.quietSince < (this.silencePrompts === 0 ? g.promptMs : g.hangupMs)) return;
     this.quietSince = now;
-    if (this.silencePrompts++ === 0) {
+    if (this.silencePrompts++ < 2) {
+      logEvent('info', 'call.silence_prompt', { callId: this.callSid.slice(-8), provider: this.telephony.provider, nudge: this.silencePrompts });
       this.speakCanned([this.lines.stillThere]);
     } else {
       this.speakCanned([this.lines.goodbye(this.cache.sectorMeta?.name)]);
       this.hangupWhenDone = true;
     }
+  }
+
+  // The call hit its maximum length: say so and end it (or hand it to staff when
+  // the caller was talking just now); the line is cut CAP_GRACE_MS later regardless.
+  private startCap() {
+    this.capDeadline = Date.now() + CAP_GRACE_MS;
+    this.endReason ??= 'max_duration';
+    const staff = this.cache.sectorMeta?.phone?.replace(/[^\d+]/g, '');
+    const talking = Date.now() - this.lastCallerAt < 30_000;
+    logEvent('warn', 'call.max_duration', { callId: this.callSid.slice(-8), provider: this.telephony.provider, transfer: !!staff && talking });
+    this.active?.abort.abort();
+    this.pendingMarks.clear();
+    this.sendToCarrier(this.telephony.clear());
+    if (staff && talking) {
+      this.cache.transferTo = staff;
+      this.ctx.waitUntil(this.env.CACHE.put(transferKey(this.callSid), staff, { expirationTtl: 600 }));
+      this.endStreamWhenDone = true;
+    } else {
+      this.endCallWhenDone = true;
+    }
+    this.speakCanned([maxDurationLine(this.voice.language, !!staff && talking)]);
+  }
+
+  // Backstop if the timers never ran (the object was evicted mid-call): cut any open stream.
+  async alarm() {
+    const left = this.streamStartedAt ? this.streamStartedAt + this.guards.maxMs + CAP_GRACE_MS + 30_000 - Date.now() : 0;
+    if (left > 0) { await this.ctx.storage.setAlarm(Date.now() + left); return; }
+    if (this.streamStartedAt) this.hangUp('max_duration', 'max duration (alarm)');
+    else for (const ws of this.ctx.getWebSockets()) ws.close(1000, 'max duration (alarm)');
   }
 
   // Fixed lines that aren't part of the model's history (re-prompts). Spoken
@@ -1041,12 +1225,13 @@ export class CallRelay extends DurableObject<Env> {
 
     if (ev.type === 'media') {
       // Always forward — even while the assistant speaks — so STT can detect barge-in.
+      this.lastMediaAt = Date.now();
       this.sttBytes += ev.audio.byteLength;
       this.stt.sendAudio(ev.audio.buffer.slice(ev.audio.byteOffset, ev.audio.byteOffset + ev.audio.byteLength) as ArrayBuffer);
-      this.checkSilence();
 
     } else if (ev.type === 'mark') {
       // The carrier reached this point in playback.
+      this.clearAcked('mark', ev.name);
       const chunk = this.pendingMarks.get(ev.name);
       if (chunk) {
         chunk.played = true;
@@ -1056,9 +1241,16 @@ export class CallRelay extends DurableObject<Env> {
         if (this.pendingMarks.size === 0) this.lastAudioEndAt = Date.now();
       }
 
+    } else if (ev.type === 'cleared') {
+      this.clearAcked('clearedAudio');
+
     } else if (ev.type === 'start') {
       this.callStartedAt = Date.now();
       this.streamStartedAt = this.callStartedAt;
+      this.lastMediaAt = this.callStartedAt;
+      this.lastCallerAt = this.callStartedAt;
+      if (!this.guardTimer) this.guardTimer = setInterval(() => this.guardTick(), GUARD_TICK_MS);
+      this.ctx.waitUntil(Promise.resolve(this.ctx.storage?.setAlarm(this.callStartedAt + this.guards.maxMs + CAP_GRACE_MS + 30_000)).catch(() => {}));
       this.callSid = ev.start.callSid;
       this.cache.callSid = this.callSid;
       logEvent('info', 'call.stream_started', {
@@ -1115,12 +1307,7 @@ export class CallRelay extends DurableObject<Env> {
       this.handleDtmf(ev.digit);
 
     } else if (ev.type === 'stop') {
-      if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
-      this.stt.close();
-      this.ctx.waitUntil(this.flushTranscript());
-      this.ctx.waitUntil(this.flushTurnMetrics());
-      this.ctx.waitUntil(this.flushUsage());
-      this.ctx.waitUntil(this.flushFollowUp());
+      this.finalize('caller_hangup');
     }
   }
 
@@ -1181,17 +1368,13 @@ export class CallRelay extends DurableObject<Env> {
       reason,
     });
     this.stt.close();
+    if (this.guardTimer) { clearInterval(this.guardTimer); this.guardTimer = undefined; }
     if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1008, 'Unauthorized');
   }
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean) {
     this.active?.abort.abort();
-    if (this.dtmfTimer) clearTimeout(this.dtmfTimer);
-    this.stt.close();
-    this.ctx.waitUntil(this.flushTranscript());
-    this.ctx.waitUntil(this.flushTurnMetrics());
-    this.ctx.waitUntil(this.flushUsage());
-    this.ctx.waitUntil(this.flushFollowUp());
+    this.finalize('caller_hangup');
   }
 
   async webSocketError(_ws: WebSocket, error: unknown) {

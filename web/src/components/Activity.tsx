@@ -100,11 +100,24 @@ function LatencyChart({ metrics }: { metrics: TurnMetric[] }) {
   );
 }
 
+export const LONG_CALL_S = 10 * 60;
+const BARGE_REASON: Record<string, string> = { stop_word: 'stop word', enough_words: 'several words', transcript: 'final transcript', vad: 'voice detected' };
+export const END_REASON: Record<string, { label: string; tone: 'success' | 'warning' | 'danger' | 'info' }> = {
+  caller_hangup: { label: 'caller hung up', tone: 'info' }, agent_hangup: { label: 'agent ended', tone: 'success' },
+  transfer: { label: 'transferred', tone: 'success' }, silence: { label: 'silence', tone: 'warning' },
+  max_duration: { label: 'max duration', tone: 'danger' }, dead_media: { label: 'no audio', tone: 'danger' }, error: { label: 'error', tone: 'danger' },
+};
+export function EndReasonTag({ reason }: { reason: string }) {
+  const e = END_REASON[reason] ?? { label: reason, tone: 'info' as const };
+  return <Badge tone={e.tone}>{e.label}</Badge>;
+}
+
 interface TimelineTurn {
   turn_n: number; provider: string; end_signal: string; t_final: number | null; t_first_phrase: number | null;
   t_first_tts: number | null; t_first_sent: number | null; t_playback_done: number | null;
   tools: { name: string; start: number; end: number; ok: boolean }[];
   stt_audio_s: number; tts_chars: number; barge_in: boolean; reply_used_cached_audio: boolean;
+  barge?: { decisions: number; interrupts: number; reason?: string; clearMs?: number; clearAcked?: boolean; ttsDropped: number; playedAfterClear: number; skipped: { reason: string; words: number }[] } | null;
   stt_provider: string; tts_provider: string; llm_model: string;
   llm_in: number; llm_out: number; llm_cache_read: number; llm_cache_write: number;
   cost: Cost;
@@ -142,6 +155,7 @@ const median = (v: number[]) => { const a = [...v].sort((x, y) => x - y); return
 function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Record<string, string>; callSid: string; texts?: string[] }) {
   const [turns, setTurns] = useState<TimelineTurn[] | null | 'none'>(null);
   const [meta, setMeta] = useState<{ total: CallTotal; rate: number } | null>(null);
+  const [ended, setEnded] = useState<{ reason: string | null; seconds: number | null }>({ reason: null, seconds: null });
   const [openTurn, setOpenTurn] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
@@ -149,6 +163,7 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
       .then(r => (r.ok ? r.json() : null))
       .then(j => {
         if (!live) return;
+        setEnded({ reason: j?.data?.end_reason ?? null, seconds: j?.data?.duration_seconds ?? null });
         setMeta(j?.data?.total ? { total: j.data.total, rate: j.data.usd_to_inr ?? 88 } : null);
         setTurns(j?.data?.turns?.length ? j.data.turns : 'none');
       })
@@ -177,6 +192,12 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
           <div><span className="tl-num">{biggest.label}</span><span className="small muted">biggest share, {sec(avg(biggest.key))} avg</span></div>
         </div>
       )}
+      {(ended.reason || (ended.seconds ?? 0) > LONG_CALL_S) && (
+        <p className="small">
+          {ended.reason && <EndReasonTag reason={ended.reason} />}{' '}
+          {(ended.seconds ?? 0) > LONG_CALL_S && <span className="bad">Long call: {Math.round((ended.seconds ?? 0) / 60)} min</span>}
+        </p>
+      )}
       {meta && (
         <>
           <div className="tl-sum">
@@ -197,7 +218,7 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
           return (
             <li key={r.turn_n}>
               <button type="button" className="tl-row" aria-expanded={open} onClick={() => setOpenTurn(open ? null : r.turn_n)}>
-                <span className="tl-label small">{r.turn_n}. {text ? `“${text}”` : ''}{r.barge_in ? ' · cut off' : ''}</span>
+                <span className="tl-label small">{r.turn_n}. {text ? `“${text}”` : ''}{r.barge_in ? ` · interrupted${r.barge?.reason ? ` (${BARGE_REASON[r.barge.reason] ?? r.barge.reason})` : ''}` : ''}</span>
                 <span className="tl-bar">
                   {st ? STAGES.map(s => <span key={s.key} className={s.cls} title={`${s.label} ${Math.round(st[s.key])}ms`} style={w(st[s.key])} />)
                     : <span className="tl-stt" title={`Transcript ${r.t_final ?? 0}ms`} style={w(r.t_final ?? 0)} />}
@@ -212,6 +233,7 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
                   <dt>Audio ready</dt><dd>{r.t_first_tts ?? '—'} ms</dd>
                   <dt>Sent to carrier</dt><dd>{r.t_first_sent ?? '—'} ms</dd>
                   <dt>Playback finished*</dt><dd>{r.t_playback_done === null ? '—' : `${r.t_playback_done} ms (spoke for about ${sec(r.t_playback_done - (r.t_first_sent ?? 0))})`}</dd>
+                  {r.barge && <><dt>Barge-in</dt><dd>{r.barge.interrupts ? `interrupted by ${BARGE_REASON[r.barge.reason ?? ''] ?? r.barge.reason}${r.barge.clearMs != null ? `, clear sent ${r.barge.clearMs} ms after the caller started` : ''}${r.barge.clearAcked ? ', carrier confirmed' : ', carrier did not confirm'}${r.barge.playedAfterClear ? `, ${r.barge.playedAfterClear} audio piece(s) played after the clear` : ''}` : 'not interrupted'}{r.barge.skipped.length ? ` · ignored: ${r.barge.skipped.map(s => `${s.reason} (${s.words} word${s.words === 1 ? '' : 's'})`).join(', ')}` : ''}</dd></>}
                   <dt>Listened</dt><dd>{r.stt_audio_s}s of caller audio · {inr(r.cost.stt_usd_micros, meta?.rate ?? 88)}</dd>
                   <dt>Model</dt><dd>{num(r.llm_in + r.llm_cache_read + r.llm_cache_write)} tokens in{r.llm_cache_read ? ` (${num(r.llm_cache_read)} cached)` : ''}, {num(r.llm_out)} out · {inr(r.cost.llm_usd_micros, meta?.rate ?? 88)}</dd>
                   <dt>Spoke</dt><dd>{num(r.tts_chars)} characters · {inr(r.cost.tts_usd_micros, meta?.rate ?? 88)}{r.reply_used_cached_audio ? ' · cached audio' : ''}</dd>

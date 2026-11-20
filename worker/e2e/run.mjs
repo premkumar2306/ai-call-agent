@@ -254,7 +254,7 @@ const CARRIERS = {
 
 // ── One simulated call ───────────────────────────────────────────────────────
 
-async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, drive }) {
+async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, drive, wsQuery = '' }) {
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
@@ -263,7 +263,7 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
   call.webhook = opened;
   if (!opened.ok) return call;
 
-  const ws = new WebSocket(opened.wsUrl);
+  const ws = new WebSocket(wsQuery ? `${opened.wsUrl}${opened.wsUrl.includes('?') ? '&' : '?'}${wsQuery}` : opened.wsUrl);
   await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
   let lastAudioAt = 0, pendingAcks = 0, playedUntil = 0;
   ws.on('message', raw => {
@@ -314,7 +314,7 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
   call.greeting = mocks.log.tts.slice(ttsBefore).map(t => t.text);
   call.turns = [];
   // A scenario that drives the call itself (interruptions, noise) instead of line by line.
-  if (drive) await drive({ call, quiet, press: digit => ws.send(JSON.stringify(c.dtmf({ streamSid, digit }))), closed, remainingMs: () => Math.max(0, playedUntil - Date.now()) });
+  if (drive) await drive({ call, quiet, press: digit => ws.send(JSON.stringify(c.dtmf({ streamSid, digit }))), closed, stopFrames: () => clearInterval(pump), remainingMs: () => Math.max(0, playedUntil - Date.now()) });
   for (const line of lines) {
     if (ws.readyState !== WebSocket.OPEN) break;
     const before = mocks.log.tts.length;
@@ -724,8 +724,9 @@ async function bargeInScenario(mocks) {
         r.echoTurns = mocks.log.anthropic.length - llm0;
         // The caller really interrupts.
         const c1 = call.cleared;
-        const said = Date.now();
+        while (Date.now() - replyAt < 2600) await sleep(100);   // past CONTINUATION_MS: a real interruption, not "I wasn't finished"
         await waitPlaying();
+        const said = Date.now();
         await mocks.say('Actually I want to book an appointment.');
         for (let i = 0; i < 20 && call.cleared === c1; i++) await sleep(50);
         r.clearMs = call.clearTimes.at(c1) ? call.clearTimes[c1] - said : null;
@@ -745,6 +746,95 @@ async function bargeInScenario(mocks) {
     check(n, 'the cut-off reply is in the transcript once, not twice', mine.length === 1, `${mine.length} of ${turns.length} turns: ${mine.map(t => t.content.slice(0, 60)).join(' | ')}`);
     check(n, 'the cut-off reply is recorded only as far as the caller heard it', mine.length === 1 && !/ask me to find a time/.test(mine[0].content), mine[0]?.content?.slice(-80) ?? 'none');
     check(n, 'the assistant then answers the interruption', turns.some(t => t.role === 'user' && /book an appointment/.test(t.content)), `${turns.length} turns`);
+  }
+}
+
+// Runaway-call guards on every carrier: a caller who goes silent is asked "still there?" then
+// told goodbye and the carrier leg is ended (after-stream answers hangup, no dial); a call at
+// its maximum length is wrapped up; no audio from the carrier ends the call. Short timings come
+// from the stream URL, which the Worker honours only outside production.
+async function guardsScenario(mocks) {
+  const reasonOf = callSid => sql(`SELECT end_reason FROM call_outcomes WHERE call_sid = '${callSid}'`)[0]?.end_reason ?? null;
+  for (const b of [{ key: 'us_twilio', carrier: 'twilio' }, { key: 'in_exotel', carrier: 'exotel' }, { key: 'in_plivo_en', carrier: 'plivo' }]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `call guards ${b.carrier}`;
+    console.log(`\n▶ Call guards over ${b.carrier}`);
+    const tts0 = mocks.log.tts.length;
+    const t0 = Date.now();
+    const silent = await placeCall(mocks, { carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'guardPromptMs=2500&guardHangupMs=2000',
+      drive: async ({ closed }) => { await Promise.race([closed, sleep(30000)]); } });
+    const said = mocks.log.tts.slice(tts0).map(t => t.text);
+    check(n, 'a silent caller is nudged twice ("Are you still there?"), then told goodbye on the third attempt', said.filter(t => /still there/i.test(t)).length === 2 && said.some(t => /hang up now/i.test(t)), said.slice(-2).join(' | ').slice(0, 120));
+    check(n, 'the carrier leg is ended: stream closed, after-stream hangs up (no dial)', silent.closedByServer && !silent.transferTo, `closedByServer=${silent.closedByServer}, dial=${silent.transferTo} after ${Date.now() - t0}ms`);
+    check(n, 'end_reason=silence is stored on the call record', reasonOf(silent.callSid) === 'silence', String(reasonOf(silent.callSid)));
+  }
+  // Dead media (no audio frames from the carrier): finalised and hung up.
+  {
+    const sc = SCENARIOS.find(x => x.key === 'us_twilio');
+    const n = 'call guards dead media';
+    console.log('\n▶ Call guards: dead media');
+    const dead = await placeCall(mocks, { carrier: 'twilio', number: sc.number, from: sc.from, wsQuery: 'guardDeadMs=2500',
+      drive: async ({ closed, stopFrames }) => { stopFrames(); await Promise.race([closed, sleep(15000)]); } });
+    check(n, 'no inbound audio for the limit → the call is hung up', dead.closedByServer && !dead.transferTo, `closedByServer=${dead.closedByServer}`);
+    check(n, 'end_reason=dead_media is stored', reasonOf(dead.callSid) === 'dead_media', String(reasonOf(dead.callSid)));
+    const u = sql(`SELECT COUNT(*) AS c FROM usage_records WHERE source_id = '${dead.callSid}'`)[0]?.c;
+    check(n, 'usage is recorded for the call', u === 1, `usage rows ${u}`);
+  }
+  // Maximum duration: the cap is announced; a caller who was just talking is handed to staff, then the line ends.
+  {
+    const sc = SCENARIOS.find(x => x.key === 'us_twilio');
+    const n = 'call guards max duration';
+    console.log('\n▶ Call guards: maximum duration');
+    const tts0 = mocks.log.tts.length;
+    const capped = await placeCall(mocks, { carrier: 'twilio', number: sc.number, from: sc.from, wsQuery: 'guardMaxMs=6000',
+      drive: async ({ closed }) => { await Promise.race([closed, sleep(20000)]); } });
+    const said = mocks.log.tts.slice(tts0).map(t => t.text);
+    check(n, 'at the cap the caller hears why, and the call is handed to staff', said.some(t => /been on this call for a while/i.test(t)) && capped.closedByServer && !!capped.transferTo, `dial=${capped.transferTo}`);
+    check(n, 'end_reason=max_duration is stored', reasonOf(capped.callSid) === 'max_duration', String(reasonOf(capped.callSid)));
+  }
+}
+
+// One-word interruptions ("stop", "रुको") cut the reply at the interim, mid-sentence, and the
+// carrier's playback is cleared with no further audio of that reply; the decision is logged
+// with its reason per turn. (A cough still doesn't interrupt: see the barge-in scenario.)
+async function stopWordScenario(mocks) {
+  for (const b of [
+    { key: 'us_twilio', carrier: 'twilio', word: 'stop' },
+    { key: 'in_exotel', carrier: 'exotel', word: 'wait' },
+    { key: 'in_plivo_en', carrier: 'plivo', word: 'stop' },
+    { key: 'in_plivo_hi', carrier: 'plivo', word: 'रुको' },
+  ]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `stop word ${b.carrier} "${b.word}"`;
+    console.log(`\n▶ One-word interruption "${b.word}" over ${b.carrier}`);
+    const r = {};
+    const call = await placeCall(mocks, {
+      carrier: b.carrier, number: sc.number, from: sc.from,
+      drive: async ({ call, quiet, remainingMs }) => {
+        const asked = Date.now();
+        await mocks.say('Tell me about your services please.');
+        for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+        // Past the echo guard, and past the window where an early cut-in means "I wasn't finished" (reply withdrawn, asked again).
+        while (Date.now() - asked < 3000) await sleep(100);
+        const c0 = call.cleared;
+        const said = Date.now();
+        await mocks.say(b.word);
+        for (let i = 0; i < 20 && call.cleared === c0; i++) await sleep(50);
+        r.cleared = call.cleared - c0;
+        r.clearAt = call.clearTimes[c0];
+        r.clearMs = r.clearAt ? r.clearAt - said : null;
+        r.ttsAfterClear = mocks.log.tts.filter(t => t.at > (r.clearAt ?? Infinity) && /book online or ask me to find a time/.test(t.text)).length;
+        await quiet(said);
+      },
+    });
+    check(n, 'a single stop word clears the carrier playback', r.cleared >= 1, `${r.cleared} clear frame(s) in ${r.clearMs}ms`);
+    check(n, 'cleared within ~1 s, before the recogniser even finalises', r.clearMs != null && r.clearMs < 1000, `${r.clearMs}ms`);
+    check(n, 'no further speech of the cut-off reply is synthesised after the clear', r.ttsAfterClear === 0, `${r.ttsAfterClear} chunk(s)`);
+    await sleep(500);
+    const turns = sql(`SELECT barge_in, barge, outcome FROM call_turn_metrics WHERE call_sid = '${call.callSid}' ORDER BY turn_n`);
+    const hit = turns.map(t => { try { return JSON.parse(t.barge ?? 'null'); } catch { return null; } }).find(x => x?.interrupts > 0);
+    check(n, 'the turn records the interruption with its reason (stop_word) and the clear time', hit?.reason === 'stop_word' && typeof hit.clearMs === 'number', JSON.stringify(hit));
+    check(n, 'the interrupted turn is marked interrupted', turns.some(t => t.barge_in && t.outcome === 'interrupted'), JSON.stringify(turns.map(t => [t.barge_in, t.outcome])));
   }
 }
 
@@ -1734,6 +1824,8 @@ try {
   if (!only || 'latency'.includes(only)) await latencyApiScenario();
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
   if (!only || 'fillers'.includes(only)) await fillersScenario(mocks);
+  if (!only || 'barge'.includes(only) || 'stop'.includes(only)) await stopWordScenario(mocks);
+  if (!only || 'guards'.includes(only)) await guardsScenario(mocks);
   if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);
   if (!only || 'disconnect'.includes(only)) await disconnectScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();

@@ -51,6 +51,10 @@ export interface SectorMeta {
   // Keypad digits count as answers to "what's your number / date?" (0028). Absent = off.
   dtmfInput?: boolean;
   naturalFillers?: boolean;
+  // Runaway-call guards (0032). Absent = defaults: 20 s silence → "still there?", 10 s → second nudge, 10 s → goodbye, 5 min cap.
+  silencePromptSec?: number;
+  silenceHangupSec?: number;
+  maxCallMinutes?: number;
   // Conversation guardrails (0027, services/guardrails.ts). Off unless true.
   guardrails?: boolean;
 }
@@ -187,8 +191,14 @@ export interface Env {
   // instead of waiting for recognised words. Off by default: line noise and
   // echo cut replies off.
   VOICE_BARGE_IN_ON_VAD?: string;
-  /** ms of caller silence (after the assistant finishes) before "Are you still there?"; again → goodbye + hang up. Default 8000. */
+  /** ms of caller silence (after the assistant finishes) before "Are you still there?". Default 20000. */
   VOICE_SILENCE_REPROMPT_MS?: string;
+  /** ms between silence nudges (second nudge, then the goodbye). Default 10000. */
+  VOICE_SILENCE_HANGUP_MS?: string;
+  /** Hard cap on a call, ms. Default 300000 (5 min); a sector's max_call_minutes wins. */
+  VOICE_MAX_CALL_MS?: string;
+  /** Hang up when the carrier sends no audio for this many ms. Default 15000. */
+  VOICE_DEAD_MEDIA_MS?: string;
   // Set to '0'/'false' to disable speaking a self-sufficient tool result
   // directly and always round-trip it through Claude for paraphrasing.
   VOICE_DIRECT_TOOL_REPLY?: string;

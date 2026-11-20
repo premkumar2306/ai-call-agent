@@ -21,6 +21,24 @@ export type Stamp = 'final' | 'firstPhrase' | 'firstTts' | 'firstSent' | 'firstF
 
 export interface ToolTiming { name: string; start: number; end: number; ok: boolean }
 
+/** What barge-in did during one turn: decisions taken while the assistant spoke, and the interruption itself. */
+export interface BargeInfo {
+  decisions: number;
+  interrupts: number;
+  /** Why the assistant was cut off (enough_words | stop_word | transcript | vad), when it was. */
+  reason?: string;
+  /** Caller speech start → clear sent, ms. */
+  clearMs?: number;
+  /** Carrier acknowledged the clear (Plivo clearedAudio, or the cleared marks echoed back). */
+  clearAcked?: boolean;
+  /** Synthesised audio that arrived after the clear and was dropped. */
+  ttsDropped: number;
+  /** Marks acknowledged more than 400 ms after the clear: the carrier kept playing. */
+  playedAfterClear: number;
+  /** Last few non-interrupting decisions (reason + words), for the timeline. */
+  skipped: { reason: string; words: number }[];
+}
+
 export class TurnTimeline {
   /** performance.now() at t=0 (the STT end-of-speech signal). */
   readonly t0: number;
@@ -32,6 +50,7 @@ export class TurnTimeline {
   sttAudioS = 0;
   ttsChars = 0;
   bargeIn = false;
+  barge: BargeInfo = { decisions: 0, interrupts: 0, ttsDropped: 0, playedAfterClear: 0, skipped: [] };
   outcome = 'done';
   llm = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   cachedAudio = false;
@@ -78,7 +97,7 @@ export interface TurnRow {
   tools: ToolTiming[];
   stt_audio_s: number; tts_chars: number; reply_used_cached_audio: boolean; audio_cache: string | null;
   llm_in: number; llm_out: number; llm_cache_read: number; llm_cache_write: number;
-  barge_in: boolean; outcome: string;
+  barge_in: boolean; outcome: string; barge?: BargeInfo | null;
   stt_provider: string; tts_provider: string; llm_model: string; sync_dtmf_at: number | null;
 }
 
@@ -95,7 +114,7 @@ export function toRow(tl: TurnTimeline, c: TurnRowContext): TurnRow {
     stt_audio_s: Math.round(tl.sttAudioS * 100) / 100, tts_chars: tl.ttsChars,
     reply_used_cached_audio: tl.cachedAudio, audio_cache: tl.audioCache,
     llm_in: tl.llm.input, llm_out: tl.llm.output, llm_cache_read: tl.llm.cacheRead, llm_cache_write: tl.llm.cacheWrite,
-    barge_in: tl.bargeIn, outcome: tl.outcome,
+    barge_in: tl.bargeIn, outcome: tl.bargeIn && tl.outcome === 'done' ? 'interrupted' : tl.outcome, barge: tl.barge.decisions || tl.bargeIn ? tl.barge : null,
     stt_provider: c.sttProvider, tts_provider: c.ttsProvider, llm_model: c.llmModel, sync_dtmf_at: c.syncDtmfAt,
   };
 }
@@ -119,7 +138,7 @@ export function timelineLog(r: TurnRow) {
     call: r.call_sid.slice(-8), n: r.turn_n, carrier: r.provider, sig: r.end_signal,
     t: { final: r.t_final, phrase: r.t_first_phrase, tts: r.t_first_tts, sent: r.t_first_sent, filler: r.t_first_filler_sent },
     seg: segments(r), tools: r.tools.map(t => `${t.name}:${t.end - t.start}${t.ok ? '' : '!'}`),
-    stt_s: r.stt_audio_s, tts_chars: r.tts_chars, cached: r.reply_used_cached_audio, barge: r.barge_in, out: r.outcome,
+    stt_s: r.stt_audio_s, tts_chars: r.tts_chars, cached: r.reply_used_cached_audio, barge: r.barge_in, bargeWhy: r.barge?.reason, out: r.outcome,
     stt: r.stt_provider, tts: r.tts_provider, llm: r.llm_model,
   };
 }
@@ -127,7 +146,7 @@ export function timelineLog(r: TurnRow) {
 const COLS = ['id', 'call_sid', 'business_type', 'provider', 'turn_n', 'started_at', 'end_signal', 'endpointing_ms',
   't_speech_end', 't_final', 't_first_phrase', 't_first_tts', 't_first_sent', 't_first_filler_sent', 't_playback_done',
   'tools', 'stt_audio_s', 'tts_chars', 'cached_audio', 'audio_cache', 'barge_in', 'outcome',
-  'stt_provider', 'tts_provider', 'llm_model', 'sync_dtmf_at', 'llm_in', 'llm_out', 'llm_cache_read', 'llm_cache_write', 'created_at'] as const;
+  'stt_provider', 'tts_provider', 'llm_model', 'sync_dtmf_at', 'llm_in', 'llm_out', 'llm_cache_read', 'llm_cache_write', 'barge', 'created_at'] as const;
 
 /** Writes a call's turn rows in one D1 batch. Callers run it under waitUntil and swallow errors. */
 export async function saveTurnRows(env: Env, rows: TurnRow[]): Promise<void> {
@@ -138,7 +157,7 @@ export async function saveTurnRows(env: Env, rows: TurnRow[]): Promise<void> {
     `${r.call_sid}:${r.turn_n}`, r.call_sid, r.business_type, r.provider, r.turn_n, r.started_at, r.end_signal, r.endpointing_ms,
     r.t_speech_end, r.t_final, r.t_first_phrase, r.t_first_tts, r.t_first_sent, r.t_first_filler_sent, r.t_playback_done,
     JSON.stringify(r.tools), r.stt_audio_s, r.tts_chars, r.reply_used_cached_audio ? 1 : 0, r.audio_cache, r.barge_in ? 1 : 0, r.outcome,
-    r.stt_provider, r.tts_provider, r.llm_model, r.sync_dtmf_at, r.llm_in, r.llm_out, r.llm_cache_read, r.llm_cache_write, now,
+    r.stt_provider, r.tts_provider, r.llm_model, r.sync_dtmf_at, r.llm_in, r.llm_out, r.llm_cache_read, r.llm_cache_write, r.barge ? JSON.stringify(r.barge) : null, now,
   )));
 }
 
@@ -146,6 +165,8 @@ export async function saveTurnRows(env: Env, rows: TurnRow[]): Promise<void> {
 export function fromDb(d: Record<string, any>): TurnRow {
   let tools: ToolTiming[] = [];
   try { tools = JSON.parse(d.tools ?? '[]'); } catch { /* keep [] */ }
+  let barge: BargeInfo | null = null;
+  try { barge = d.barge ? JSON.parse(d.barge) : null; } catch { /* keep null */ }
   return {
     call_sid: d.call_sid, business_type: d.business_type, provider: d.provider, turn_n: d.turn_n,
     started_at: d.started_at, end_signal: d.end_signal, endpointing_ms: d.endpointing_ms ?? null,
@@ -153,7 +174,7 @@ export function fromDb(d: Record<string, any>): TurnRow {
     t_first_sent: d.t_first_sent ?? null, t_first_filler_sent: d.t_first_filler_sent ?? null, t_playback_done: d.t_playback_done ?? null,
     tools, stt_audio_s: d.stt_audio_s, tts_chars: d.tts_chars, reply_used_cached_audio: !!d.cached_audio, audio_cache: d.audio_cache ?? null,
     llm_in: d.llm_in ?? 0, llm_out: d.llm_out ?? 0, llm_cache_read: d.llm_cache_read ?? 0, llm_cache_write: d.llm_cache_write ?? 0,
-    barge_in: !!d.barge_in, outcome: d.outcome,
+    barge_in: !!d.barge_in, outcome: d.outcome, barge,
     stt_provider: d.stt_provider, tts_provider: d.tts_provider, llm_model: d.llm_model, sync_dtmf_at: d.sync_dtmf_at ?? null,
   };
 }

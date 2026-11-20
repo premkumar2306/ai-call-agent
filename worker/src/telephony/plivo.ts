@@ -48,6 +48,8 @@ export class PlivoAdapter implements TelephonyAdapter {
         const digit = dtmfDigit(msg.dtmf?.digit ?? msg.dtmf?.digits);
         return digit ? { type: 'dtmf', digit } : null;
       }
+      case 'clearedAudio':
+        return { type: 'cleared' };
       case 'stop':
         return { type: 'stop' };
       default:

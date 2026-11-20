@@ -34,6 +34,8 @@ export type InboundEvent =
   | { type: 'mark'; name: string }
   /** One keypad press: '0'-'9', '*' or '#'. Same shape on every carrier. */
   | { type: 'dtmf'; digit: string }
+  /** The carrier confirms it dropped its queued audio (Plivo clearedAudio). */
+  | { type: 'cleared' }
   | { type: 'stop' };
 
 export interface TelephonyAdapter {

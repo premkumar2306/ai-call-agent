@@ -32,6 +32,10 @@ export const sectors = sqliteTable('sectors', {
   dtmfInput:    integer('dtmf_input', { mode: 'boolean' }).notNull().default(false), // keypad digits as answers (0028)
   naturalFillers: integer('natural_fillers', { mode: 'boolean' }).notNull().default(false), // cached fillers instead of dead air (0033)
   assistantName: text('assistant_name'),      // spoken name (0018); null = "Avery"
+  // Runaway-call guards (0032); null = default (20 s, 10 s, 5 min).
+  silencePromptSec: integer('silence_prompt_sec'),
+  silenceHangupSec: integer('silence_hangup_sec'),
+  maxCallMinutes:   integer('max_call_minutes'),
   isActive:     integer('is_active', { mode: 'boolean' }).notNull().default(true),
   createdAt:    integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt:    integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -510,6 +514,7 @@ export const callOutcomes = sqliteTable('call_outcomes', {
   transferred:     integer('transferred', { mode: 'boolean' }).notNull().default(false),
   messageTaken:    integer('message_taken', { mode: 'boolean' }).notNull().default(false),
   isTest:          integer('is_test', { mode: 'boolean' }).notNull().default(false),
+  endReason:       text('end_reason'),   // 0032: silence | max_duration | dead_media | caller_hangup | agent_hangup | transfer | error
   createdAt:       integer('created_at').notNull(),
 }, (t) => [
   primaryKey({ columns: [t.carrier, t.callSid] }),

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../auth';
 import { Badge, Card, EmptyState, Notice, Table } from './ui';
 import { flagOutliers } from '../lib/costFlags';
+import { EndReasonTag, LONG_CALL_S } from './Activity';
 
 // Operator only: estimated provider cost of every call and WhatsApp
 // conversation this month, the revenue it brought in, and the margin
@@ -12,6 +13,7 @@ interface Row {
   startedAt: number; durationSeconds: number; billableMinutes: number; llmModel: string | null;
   costPaise: number; phonePaise: number; speechPaise: number; sttPaise: number; ttsPaise: number; aiPaise: number; revenuePaise: number; marginPaise: number;
   sttProvider: string | null; sttModel: string | null; ttsProvider: string | null; ttsModel: string | null;
+  endReason?: string | null;
 }
 interface ModelUsage {
   kind: 'stt' | 'tts' | 'llm'; provider: string | null; model: string | null; calls: number; callSeconds: number;
@@ -83,7 +85,7 @@ export default function CallCosts({ base, auth, sector }: { base: string; auth: 
               <tr key={r.id} className={flags.has(r.id) ? 'flagged' : undefined} title={flags.get(r.id)}>
                 <td data-label="When">{flags.has(r.id) && <span className="bad" role="img" aria-label={`Check this call: ${flags.get(r.id)}`}>⚠ </span>}{new Date(r.startedAt * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</td>
                 <td data-label="Type">{r.billable ? kind(r) : <Badge>{kind(r)}</Badge>}</td>
-                <td data-label="Length">{r.channel === 'voice' && r.provider !== 'web' ? `${dur(r.durationSeconds)} (${r.billableMinutes} min)` : '—'}</td>
+                <td data-label="Length">{r.channel === 'voice' && r.provider !== 'web' ? `${dur(r.durationSeconds)} (${r.billableMinutes} min)` : '—'}{r.durationSeconds > LONG_CALL_S && r.channel === 'voice' && <> <span className="bad">long</span></>}{r.endReason && <><br /><EndReasonTag reason={r.endReason} /></>}</td>
                 <td className="num" data-label="Phone line">{inr(r.phonePaise)}</td>
                 <td className="num" data-label="Speech-to-text">{inr(r.sttPaise)}<br /><span className="muted small">{modelLabel(r.sttProvider, r.sttModel)}</span></td>
                 <td className="num" data-label="Voice (TTS)">{inr(r.ttsPaise)}<br /><span className="muted small">{modelLabel(r.ttsProvider, r.ttsModel)}</span></td>
