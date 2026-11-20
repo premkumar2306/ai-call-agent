@@ -244,6 +244,8 @@ export interface UsageInput {
   provider?: string | null;
   sttProvider?: string | null;
   ttsProvider?: string | null;
+  sttModel?: string | null;
+  ttsModel?: string | null;
   sourceId: string;
   startedAt: number;     // unix seconds
   endedAt?: number;
@@ -279,6 +281,7 @@ export async function recordUsage(env: Env, u: UsageInput): Promise<void> {
       durationSeconds: duration,
       billableMinutes: billable && u.channel === 'voice' ? billableMinutes(duration) : 0,
       billable, sttSeconds, ttsChars, llmModel: u.llmModel ?? null,
+      sttProvider: u.sttProvider ?? null, sttModel: u.sttModel ?? null, ttsProvider: u.ttsProvider ?? null, ttsModel: u.ttsModel ?? null,
       llmInputTokens: llm.input, llmOutputTokens: llm.output,
       llmCacheReadTokens: llm.cacheRead, llmCacheWriteTokens: llm.cacheWrite,
       costUsdMicros: cost, createdAt: nowSec(),
@@ -709,11 +712,46 @@ export async function recordTestTurn(env: Env, businessType: string, sourceId: s
 export interface CallCost {
   id: string; sourceId: string; channel: string; provider: string | null; billable: boolean;
   startedAt: number; durationSeconds: number; billableMinutes: number; llmModel: string | null;
-  costPaise: number; phonePaise: number; speechPaise: number; aiPaise: number;
+  costPaise: number; phonePaise: number; speechPaise: number; sttPaise: number; ttsPaise: number; aiPaise: number;
   revenuePaise: number; marginPaise: number;
+  sttProvider: string | null; sttModel: string | null; ttsProvider: string | null; ttsModel: string | null;
+  sttSeconds: number; ttsChars: number;
+  llmInputTokens: number; llmOutputTokens: number; llmCacheTokens: number;
 }
 
-export async function callCosts(env: Env, businessType: string, period: string): Promise<{ rows: CallCost[]; unallocatedFeePaise: number }> {
+/** Total usage and cost of one speech or AI model across a month's calls. */
+export interface ModelUsage {
+  kind: 'stt' | 'tts' | 'llm'; provider: string | null; model: string | null;
+  calls: number; callSeconds: number;
+  seconds: number; chars: number; inputTokens: number; outputTokens: number; cacheTokens: number;
+  costPaise: number; costPaisePerMinute: number;
+}
+
+/** Groups voice calls by STT, TTS and AI model: units used, cost, and cost per call minute. */
+export function modelSummary(rows: CallCost[]): ModelUsage[] {
+  const groups = new Map<string, ModelUsage>();
+  const add = (kind: ModelUsage['kind'], provider: string | null, model: string | null, r: CallCost, paise: number) => {
+    const key = `${kind}|${provider}|${model}`;
+    const g = groups.get(key) ?? { kind, provider, model, calls: 0, callSeconds: 0, seconds: 0, chars: 0, inputTokens: 0, outputTokens: 0, cacheTokens: 0, costPaise: 0, costPaisePerMinute: 0 };
+    g.calls++; g.callSeconds += r.durationSeconds; g.costPaise += paise;
+    if (kind === 'stt') g.seconds += r.sttSeconds;
+    if (kind === 'tts') g.chars += r.ttsChars;
+    if (kind === 'llm') { g.inputTokens += r.llmInputTokens; g.outputTokens += r.llmOutputTokens; g.cacheTokens += r.llmCacheTokens; }
+    groups.set(key, g);
+  };
+  for (const r of rows) {
+    if (r.channel !== 'voice' || r.provider === 'web') continue;
+    add('stt', r.sttProvider, r.sttModel, r, r.sttPaise);
+    add('tts', r.ttsProvider, r.ttsModel, r, r.ttsPaise);
+    add('llm', 'anthropic', r.llmModel, r, r.aiPaise);
+  }
+  const kinds = { stt: 0, tts: 1, llm: 2 };
+  return [...groups.values()]
+    .map(g => ({ ...g, costPaisePerMinute: g.callSeconds > 0 ? Math.round(g.costPaise / (g.callSeconds / 60)) : 0 }))
+    .sort((a, b) => kinds[a.kind] - kinds[b.kind] || b.costPaise - a.costPaise);
+}
+
+export async function callCosts(env: Env, businessType: string, period: string): Promise<{ rows: CallCost[]; unallocatedFeePaise: number; byModel: ModelUsage[] }> {
   const rates = costRates(env.BILLING_COST_RATES);
   const records = await usageRecordsFor(env, businessType, period, 1000);
   const account = await getAccount(env, businessType);
@@ -732,6 +770,7 @@ export async function callCosts(env: Env, businessType: string, period: string):
   const rows = records.map(r => {
     const parts = costParts({
       channel: r.channel as 'voice' | 'whatsapp', provider: r.provider, durationSeconds: r.durationSeconds,
+      sttProvider: r.sttProvider, ttsProvider: r.ttsProvider,
       sttSeconds: r.sttSeconds, ttsChars: r.ttsChars, llmModel: r.llmModel,
       llm: { input: r.llmInputTokens, output: r.llmOutputTokens, cacheRead: r.llmCacheReadTokens, cacheWrite: r.llmCacheWriteTokens },
     }, rates);
@@ -739,15 +778,20 @@ export async function callCosts(env: Env, businessType: string, period: string):
     const phonePaise = usdMicrosToPaise(parts.telephony, rates);
     const aiPaise = usdMicrosToPaise(parts.llm, rates);
     const revenuePaise = revenue.get(r.id) ?? 0;
+    const speechPaise = Math.max(0, costPaise - phonePaise - aiPaise);
+    const sttPaise = Math.min(speechPaise, usdMicrosToPaise(parts.stt, rates)); // the rest of speech is voice (TTS)
     return {
       id: r.id, sourceId: r.sourceId, channel: r.channel, provider: r.provider, billable: r.billable,
       startedAt: r.startedAt, durationSeconds: r.durationSeconds, billableMinutes: r.billableMinutes, llmModel: r.llmModel,
-      costPaise, phonePaise, aiPaise, speechPaise: Math.max(0, costPaise - phonePaise - aiPaise),
+      costPaise, phonePaise, aiPaise, speechPaise, sttPaise, ttsPaise: speechPaise - sttPaise,
       revenuePaise, marginPaise: revenuePaise - costPaise,
+      sttProvider: r.sttProvider, sttModel: r.sttModel, ttsProvider: r.ttsProvider, ttsModel: r.ttsModel,
+      sttSeconds: r.sttSeconds, ttsChars: r.ttsChars,
+      llmInputTokens: r.llmInputTokens, llmOutputTokens: r.llmOutputTokens, llmCacheTokens: r.llmCacheReadTokens + r.llmCacheWriteTokens,
     };
   });
   const includedRevenue = plan ? Math.min(minutesSoFar, plan.includedMinutes) * feePerMinute : 0;
-  return { rows, unallocatedFeePaise: plan ? Math.max(0, Math.round(plan.monthlyFeePaise - includedRevenue)) : 0 };
+  return { rows, byModel: modelSummary(rows), unallocatedFeePaise: plan ? Math.max(0, Math.round(plan.monthlyFeePaise - includedRevenue)) : 0 };
 }
 
 // ── WhatsApp ────────────────────────────────────────────────────────────────
