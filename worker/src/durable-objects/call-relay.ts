@@ -30,6 +30,7 @@ import {
 import { businessForNumber, normalizeE164, PROVIDER_COUNTRY } from '../services/phone-numbers';
 import { UsageMeter } from '../services/billing/meter';
 import { recordUsage } from '../services/billing/service';
+import { sttModelFor, ttsModelFor } from '../services/voice-models';
 import { installProviderMock } from '../utils/provider-mock';
 import { logEvent } from '../utils/telemetry';
 
@@ -810,6 +811,8 @@ export class CallRelay extends DurableObject<Env> {
       provider: this.telephony.provider,
       sttProvider: this.voice.sttProvider,
       ttsProvider: this.voice.ttsProvider,
+      sttModel: sttModelFor(this.env, this.voice.sttProvider, this.voice.language),
+      ttsModel: ttsModelFor(this.env, this.voice.ttsProvider),
       sourceId: this.callSid,
       startedAt: Math.floor(this.streamStartedAt / 1000),
       endedAt: Math.floor(endedAt / 1000),

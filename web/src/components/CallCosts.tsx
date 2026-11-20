@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../auth';
 import { Badge, Card, EmptyState, Notice, Table } from './ui';
+import { flagOutliers } from '../lib/costFlags';
 
 // Operator only: estimated provider cost of every call and WhatsApp
 // conversation this month, the revenue it brought in, and the margin
@@ -9,9 +10,23 @@ import { Badge, Card, EmptyState, Notice, Table } from './ui';
 interface Row {
   id: string; sourceId: string; channel: string; provider: string | null; billable: boolean;
   startedAt: number; durationSeconds: number; billableMinutes: number; llmModel: string | null;
-  costPaise: number; phonePaise: number; speechPaise: number; aiPaise: number; revenuePaise: number; marginPaise: number;
+  costPaise: number; phonePaise: number; speechPaise: number; sttPaise: number; ttsPaise: number; aiPaise: number; revenuePaise: number; marginPaise: number;
+  sttProvider: string | null; sttModel: string | null; ttsProvider: string | null; ttsModel: string | null;
 }
-interface Data { period: string; rows: Row[]; unallocatedFeePaise: number }
+interface ModelUsage {
+  kind: 'stt' | 'tts' | 'llm'; provider: string | null; model: string | null; calls: number; callSeconds: number;
+  seconds: number; chars: number; inputTokens: number; outputTokens: number; cacheTokens: number; costPaise: number; costPaisePerMinute: number;
+}
+interface Data { period: string; rows: Row[]; unallocatedFeePaise: number; byModel?: ModelUsage[] }
+
+const PROVIDER = { deepgram: 'Deepgram', sarvam: 'Sarvam', cartesia: 'Cartesia', anthropic: 'Anthropic' } as Record<string, string>;
+const modelLabel = (provider: string | null, model: string | null) =>
+  provider || model ? `${PROVIDER[provider ?? ''] ?? provider ?? ''} ${model ?? ''}`.trim() : '—';
+const KIND = { stt: 'Speech-to-text', tts: 'Voice (TTS)', llm: 'AI' } as const;
+const usage = (g: ModelUsage) =>
+  g.kind === 'stt' ? `${(g.seconds / 60).toFixed(1)} min`
+    : g.kind === 'tts' ? `${g.chars.toLocaleString('en-IN')} chars`
+      : `${(g.inputTokens + g.cacheTokens).toLocaleString('en-IN')} in / ${g.outputTokens.toLocaleString('en-IN')} out tokens`;
 
 const inr = (paise: number) => `${paise < 0 ? '−' : ''}₹${(Math.abs(paise) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const months = (n: number) => Array.from({ length: n }, (_, i) => {
@@ -35,6 +50,7 @@ export default function CallCosts({ base, auth, sector }: { base: string; auth: 
   }, [base, auth, sector, period]);
 
   const sum = (k: keyof Row) => (data?.rows ?? []).reduce((a, r) => a + (r[k] as number), 0);
+  const flags = flagOutliers(data?.rows ?? []);
   const totalRevenue = sum('revenuePaise') + (data?.unallocatedFeePaise ?? 0);
 
   return (
@@ -62,15 +78,16 @@ export default function CallCosts({ base, auth, sector }: { base: string; auth: 
             <div><span className="figure">{inr(totalRevenue)}</span><p className="muted small">revenue{data.unallocatedFeePaise ? ' (incl. unused plan minutes)' : ''}</p></div>
             <div><span className={`figure ${totalRevenue - sum('costPaise') < 0 ? 'bad' : 'ok'}`}>{inr(totalRevenue - sum('costPaise'))}</span><p className="muted small">margin</p></div>
           </div>
-          <Table head={['When', 'Type', 'Length', 'Phone line', 'Speech', 'AI', 'Cost', 'Revenue', 'Margin']}>
+          <Table head={['When', 'Type', 'Length', 'Phone line', 'Speech-to-text', 'Voice (TTS)', 'AI', 'Cost', 'Revenue', 'Margin']}>
             {data.rows.map(r => (
-              <tr key={r.id}>
-                <td data-label="When">{new Date(r.startedAt * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</td>
+              <tr key={r.id} className={flags.has(r.id) ? 'flagged' : undefined} title={flags.get(r.id)}>
+                <td data-label="When">{flags.has(r.id) && <span className="bad" role="img" aria-label={`Check this call: ${flags.get(r.id)}`}>⚠ </span>}{new Date(r.startedAt * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}</td>
                 <td data-label="Type">{r.billable ? kind(r) : <Badge>{kind(r)}</Badge>}</td>
                 <td data-label="Length">{r.channel === 'voice' && r.provider !== 'web' ? `${dur(r.durationSeconds)} (${r.billableMinutes} min)` : '—'}</td>
                 <td className="num" data-label="Phone line">{inr(r.phonePaise)}</td>
-                <td className="num" data-label="Speech">{inr(r.speechPaise)}</td>
-                <td className="num" data-label="AI">{inr(r.aiPaise)}</td>
+                <td className="num" data-label="Speech-to-text">{inr(r.sttPaise)}<br /><span className="muted small">{modelLabel(r.sttProvider, r.sttModel)}</span></td>
+                <td className="num" data-label="Voice (TTS)">{inr(r.ttsPaise)}<br /><span className="muted small">{modelLabel(r.ttsProvider, r.ttsModel)}</span></td>
+                <td className="num" data-label="AI">{inr(r.aiPaise)}<br /><span className="muted small">{r.llmModel ?? '—'}</span></td>
                 <td className="num strong" data-label="Cost">{inr(r.costPaise)}</td>
                 <td className="num" data-label="Revenue">{inr(r.revenuePaise)}</td>
                 <td className={`num ${r.marginPaise < 0 ? 'bad' : 'ok'}`} data-label="Margin">{inr(r.marginPaise)}</td>
@@ -79,13 +96,31 @@ export default function CallCosts({ base, auth, sector }: { base: string; auth: 
             <tr className="total-row">
               <td data-label="Total" colSpan={3}>Total ({data.rows.length})</td>
               <td className="num" data-label="Phone line">{inr(sum('phonePaise'))}</td>
-              <td className="num" data-label="Speech">{inr(sum('speechPaise'))}</td>
+              <td className="num" data-label="Speech-to-text">{inr(sum('sttPaise'))}</td>
+              <td className="num" data-label="Voice (TTS)">{inr(sum('ttsPaise'))}</td>
               <td className="num" data-label="AI">{inr(sum('aiPaise'))}</td>
               <td className="num strong" data-label="Cost">{inr(sum('costPaise'))}</td>
               <td className="num" data-label="Revenue">{inr(sum('revenuePaise'))}</td>
               <td className={`num ${sum('marginPaise') < 0 ? 'bad' : 'ok'}`} data-label="Margin">{inr(sum('marginPaise'))}</td>
             </tr>
           </Table>
+          {flags.size > 0 && <p className="small"><span className="bad">⚠ {flags.size} call{flags.size > 1 ? 's' : ''} to check</span>: cost per minute over 2× the month's median, or a negative margin. Hover a ⚠ for the reason.</p>}
+          {!!data.byModel?.length && (
+            <>
+              <h4>By model</h4>
+              <Table head={['Part', 'Model', 'Used', 'Cost', 'Cost per call minute']}>
+                {data.byModel.map(g => (
+                  <tr key={`${g.kind}|${g.provider}|${g.model}`}>
+                    <td data-label="Part">{KIND[g.kind]}</td>
+                    <td data-label="Model">{modelLabel(g.provider, g.model)}</td>
+                    <td className="num" data-label="Used">{usage(g)}</td>
+                    <td className="num" data-label="Cost">{inr(g.costPaise)}</td>
+                    <td className="num" data-label="Cost per call minute">{inr(g.costPaisePerMinute)}</td>
+                  </tr>
+                ))}
+              </Table>
+            </>
+          )}
           <p className="muted small">
             Revenue per call: the plan fee spread over its included minutes, then the overage rate, in call order.
             {data.unallocatedFeePaise > 0 && ` ${inr(data.unallocatedFeePaise)} of this month's fee covers minutes not used yet, so it isn't tied to a call.`}
