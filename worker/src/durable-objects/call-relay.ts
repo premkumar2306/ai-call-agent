@@ -1151,6 +1151,7 @@ export class CallRelay extends DurableObject<Env> {
       this.lastMediaAt = Date.now();
       this.sttBytes += ev.audio.byteLength;
       this.stt.sendAudio(ev.audio.buffer.slice(ev.audio.byteOffset, ev.audio.byteOffset + ev.audio.byteLength) as ArrayBuffer);
+      this.guardTick();   // also on every frame, so a goodbye or hand-off ends the stream as promptly as it always did
 
     } else if (ev.type === 'mark') {
       // The carrier reached this point in playback.
