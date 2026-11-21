@@ -258,7 +258,7 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
-  const call = { startedAt: Date.now(), callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false, clearTimes: [] };
+  const call = { startedAt: Date.now(), callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false, clearTimes: [], audioAt: [], silences: [], events: '' };
   const opened = await c.open({ number, from, callSid });
   call.webhook = opened;
   if (!opened.ok) return call;
@@ -273,9 +273,14 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
       call.audioFrames++;
       if (!o.ok) call.badFrames.push(o.why);
       lastAudioAt = Date.now();
+      // What the caller hears: a gap is the time between the phone running out of audio and more arriving.
+      if (playedUntil && lastAudioAt > playedUntil) call.silences.push({ from: playedUntil, to: lastAudioAt });
+      call.audioAt.push(lastAudioAt);
+      call.events += 'a';
       playedUntil = Math.max(playedUntil, Date.now()) + o.ms;   // the caller's phone plays it in real time
     } else if (o.kind === 'mark') {
       call.marks++;
+      call.events += 'm';
       pendingAcks++;
       setTimeout(() => {
         pendingAcks--;
@@ -1576,6 +1581,98 @@ async function integrationsScenario(mocks) {
   check(n, 'preflight prints the go-live checklist with ✓ / ✗ and next actions, and no secret', /✓ Anthropic/.test(out) && /✗ Google Calendar/.test(out) && /wrangler secret put GOOGLE_CLIENT_ID/.test(out) && pfLeaks.length === 0, `exit ${pf.status}; ${pfLeaks.length} leaked`);
 }
 
+// Natural fillers: a slow tool must not mean dead air. One business has the switch on, one off (the
+// default). The slow tool is the mock holding the tool call for 4.5 s (mockToolDelay). Speech is slowed to 250 ms/word so a filler
+// lasts as long as a real one. Numbers printed here are SIMULATOR numbers, not production.
+const FILLER_TEXT = /Let me check the slots|Checking the calendar|One moment|Still checking|Almost there|Let me check that|Just a second|Let me check\./;
+async function fillersScenario(mocks) {
+  const n = 'natural fillers';
+  console.log('\n▶ Natural fillers: no dead air on a slow tool');
+  const biz = {
+    on:  { key: 'in_fill_on',  number: '+918047100071', from: '+919812345671', staff: '+919876500071' },
+    off: { key: 'in_fill_off', number: '+918047100072', from: '+919812345672', staff: '+919876500072' },
+  };
+  await setupBusiness({ key: biz.on.key, name: 'Fillers On Clinic', country: 'IN', phone: biz.on.staff, number: biz.on.number, provider: 'plivo', voice: { natural_fillers: true } });
+  await setupBusiness({ key: biz.off.key, name: 'Fillers Off Clinic', country: 'IN', phone: biz.off.staff, number: biz.off.number, provider: 'plivo' });
+  const flag = await api('GET', `/admin/sectors/${biz.on.key}/voice`);
+  const flagOff = await api('GET', `/admin/sectors/${biz.off.key}/voice`);
+  check(n, 'switch is saved per business, off by default', flag.naturalFillers === true && flagOff.naturalFillers === false, `${flag.naturalFillers} / ${flagOff.naturalFillers}`);
+
+  mocks.faults.msPerWord = 250;
+  const slowTool = async (b, { interrupt = false } = {}) => {
+    mocks.faults.toolDelayMs = 4500;
+    const r = { tts0: mocks.log.tts.length };
+    const call = await placeCall(mocks, {
+      carrier: 'plivo', number: b.number, from: b.from,
+      drive: async ({ call, quiet }) => {
+        r.tts0 = mocks.log.tts.length;
+        await mocks.say('I would like to book an appointment please.');
+        r.finalAt = Date.now();
+        // The tool is slow, so quiet() alone would give up in a gap between fillers: wait for the reply itself.
+        const replied = () => mocks.log.tts.slice(r.tts0).some(t => /openings|Which works/.test(t.text));
+        if (!interrupt) {
+          for (let i = 0; i < 400 && !replied(); i++) await sleep(50);
+          await quiet(r.finalAt, 25000);
+          return;
+        }
+        // Wait for the filler to start playing, then talk over it.
+        for (let i = 0; i < 100 && !call.audioAt.some(a => a >= r.finalAt); i++) await sleep(20);
+        r.fillerStartedMs = (call.audioAt.find(a => a >= r.finalAt) ?? 0) - r.finalAt;
+        await sleep(300);
+        mocks.faults.toolDelayMs = 0;
+        const c0 = call.cleared, said = Date.now();
+        await mocks.say('Actually I want to book an appointment.');
+        for (let i = 0; i < 40 && call.cleared === c0; i++) await sleep(50);
+        r.clearedByInterrupt = call.cleared - c0;
+        r.clearMs = call.clearTimes[c0] ? call.clearTimes[c0] - said : null;
+        await quiet(said, 15000);
+      },
+    });
+    mocks.faults.toolDelayMs = 0;
+    r.call = call;
+    r.said = mocks.log.tts.slice(r.tts0).map(t => t.text);
+    r.firstSoundMs = (call.audioAt.find(a => a >= r.finalAt) ?? NaN) - r.finalAt;
+    r.gaps = call.silences.filter(g => g.from >= r.finalAt - 50).map(g => g.to - g.from);
+    r.maxSilence = Math.max(r.firstSoundMs, ...r.gaps);
+    r.turns = (await api('GET', `/admin/calls/${call.callSid}/turns`)).turns ?? [];
+    r.toolTurn = r.turns.find(t => t.tools.some(x => x.name === 'check_availability'));
+    return r;
+  };
+
+  const off = await slowTool(biz.off);
+  const on1 = await slowTool(biz.on);
+  const on2 = await slowTool(biz.on);
+
+  // 1. A filler comes within 1 s of the final transcript, and the caller never hears more than 1.5 s of silence.
+  check(n, 'slow tool: a filler is sent within 1 s of the final transcript', on1.toolTurn?.t_first_filler_sent != null && on1.toolTurn.t_first_filler_sent <= 1000, `first filler at ${on1.toolTurn?.t_first_filler_sent}ms; said: ${on1.said.filter(t => FILLER_TEXT.test(t)).join(' | ')}`);
+  check(n, 'slow tool: no silence over 1.5 s from the final transcript to the end of the reply', on1.maxSilence <= 1500 && on2.maxSilence <= 1500, `longest silence ${Math.round(on1.maxSilence)}ms / ${Math.round(on2.maxSilence)}ms (gaps ${on1.gaps.map(Math.round).join(',')})`);
+  const fillersSaid = on1.said.filter(t => FILLER_TEXT.test(t));
+  check(n, 'the filler fits the tool, and a second gentle line follows a 4.5 s wait', /slots|calendar|schedule/.test(fillersSaid[0] ?? '') && fillersSaid.length >= 2 && /Still checking|Almost there/.test(fillersSaid[1]), JSON.stringify(fillersSaid));
+  check(n, 'the same filler is never said twice in a row', fillersSaid.every((f, i) => i === 0 || f !== fillersSaid[i - 1]), JSON.stringify(fillersSaid));
+  // 2. Filler, then the reply, never on top of each other: chunk audio is strictly audio…mark, audio…mark.
+  const replyAt = on1.said.findIndex(t => /openings|Which works/.test(t));
+  check(n, 'the filler plays first, then the reply, with no overlap', replyAt > on1.said.findIndex(t => FILLER_TEXT.test(t)) && /^(a+m)+$/.test(on1.call.events), `order: ${JSON.stringify(on1.said.map(t => t.slice(0, 24)))}; frames ${on1.call.events.replace(/a+/g, 'a').slice(0, 24)}`);
+  // 3. Without the switch: nothing changes (generic filler no sooner than 1.2 s, nothing cached).
+  check(n, 'switch off: today\'s behaviour (live synthesis, no cache, first filler after 1.2 s)', off.turns.every(t => t.audio_cache === null && !t.reply_used_cached_audio) && (off.toolTurn?.t_first_filler_sent ?? 0) >= 1200, `first filler at ${off.toolTurn?.t_first_filler_sent}ms, audio_cache ${off.turns.map(t => t.audio_cache).join(',')}`);
+  // 4. Cache: the first call synthesizes and stores, the second replays (no voice request for the fillers).
+  check(n, 'first call: fillers synthesized live and recorded as a cache miss', on1.said.some(t => FILLER_TEXT.test(t)) && on1.toolTurn?.audio_cache === 'miss' && on1.toolTurn?.reply_used_cached_audio === false, `audio_cache ${on1.toolTurn?.audio_cache}`);
+  check(n, 'second call: fillers come from the cache (hit recorded, no voice request for them)', on2.toolTurn?.audio_cache === 'hit' && on2.toolTurn?.reply_used_cached_audio === true && !on2.said.some(t => FILLER_TEXT.test(t)), `audio_cache ${on2.toolTurn?.audio_cache}, requested: ${JSON.stringify(on2.said)}`);
+  check(n, 'second call: greeting also replayed from the cache', !on2.call.greeting.some(t => /Fillers On Clinic/.test(t)) && on2.call.audioFrames > 0, `greeting requested: ${JSON.stringify(on2.call.greeting)}`);
+  const sumChars = rs => rs.reduce((x, r) => x + r.turns.reduce((y, t) => y + t.tts_chars, 0), 0);
+  check(n, 'cached playback is not counted as synthesized characters', sumChars([on2]) < sumChars([on1]), `${sumChars([on1])} → ${sumChars([on2])} chars`);
+  const first = (r) => Math.round(r.toolTurn?.t_first_filler_sent ?? r.toolTurn?.t_first_sent ?? NaN);
+  console.log(`  SIMULATOR (4.5 s slow tool, not production): first sound after the caller finishes: off ${Math.round(off.firstSoundMs)} ms → on ${Math.round(on1.firstSoundMs)} ms (cache hit ${Math.round(on2.firstSoundMs)} ms); longest silence: off ${Math.round(off.maxSilence)} ms → on ${Math.round(on1.maxSilence)} ms / ${Math.round(on2.maxSilence)} ms; turn row first filler ${first(off)} → ${first(on1)} / ${first(on2)} ms`);
+
+  // 5. Barge-in during a filler: the carrier's playback is cleared and the caller is answered.
+  const bi = await slowTool(biz.on, { interrupt: true });
+  check(n, 'barge-in during a filler clears the carrier\'s playback quickly', bi.clearedByInterrupt >= 1 && bi.clearMs != null && bi.clearMs < 1000, `filler started ${Math.round(bi.fillerStartedMs)}ms after the question; cleared ${bi.clearedByInterrupt}x in ${bi.clearMs}ms`);
+  await sleep(500);
+  const tr = sql(`SELECT turns FROM transcripts WHERE call_sid = '${bi.call.callSid}'`);
+  const turns = tr[0] ? JSON.parse(tr[0].turns) : [];
+  check(n, 'the filler is not in the transcript, and the interruption is answered', !turns.some(t => t.role === 'assistant' && FILLER_TEXT.test(t.content)) && turns.some(t => t.role === 'user' && /Actually I want to book/.test(t.content)), `${turns.length} turns`);
+  mocks.faults.msPerWord = 0;
+}
+
 const SCENARIOS = [
   {
     name: 'US business over Twilio (English)', key: 'us_twilio', carrier: 'twilio', country: 'US',
@@ -1726,6 +1823,7 @@ try {
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'latency'.includes(only)) await latencyApiScenario();
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
+  if (!only || 'fillers'.includes(only)) await fillersScenario(mocks);
   if (!only || 'barge'.includes(only) || 'stop'.includes(only)) await stopWordScenario(mocks);
   if (!only || 'guards'.includes(only)) await guardsScenario(mocks);
   if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);

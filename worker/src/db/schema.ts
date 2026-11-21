@@ -30,6 +30,7 @@ export const sectors = sqliteTable('sectors', {
   voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
   kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
   dtmfInput:    integer('dtmf_input', { mode: 'boolean' }).notNull().default(false), // keypad digits as answers (0028)
+  naturalFillers: integer('natural_fillers', { mode: 'boolean' }).notNull().default(false), // cached fillers instead of dead air (0033)
   assistantName: text('assistant_name'),      // spoken name (0018); null = "Avery"
   // Runaway-call guards (0032); null = default (20 s, 10 s, 5 min).
   silencePromptSec: integer('silence_prompt_sec'),
