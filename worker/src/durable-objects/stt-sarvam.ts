@@ -125,7 +125,7 @@ export async function createSarvamSTT(
     holdTimer = undefined;
     const combined = [held, text].filter(Boolean).join(' ');
     // No interims: this is the first moment there are words to barge in on.
-    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho);
+    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho);   // transcript-time: the final-transcript backstop already interrupts
     opts.onBargeDecision?.(verdict);
     if (verdict.interrupt) onSpeechStart?.('interim');
     if (incompleteHoldMs > 0 && looksIncomplete(combined, lang)) {

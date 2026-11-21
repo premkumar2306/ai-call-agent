@@ -244,7 +244,7 @@ describe('CallRelay: runaway-call guards', () => {
     await send(exotelStart());
     const idle = setInterval(() => { relay.turnInFlight = false; relay.pendingMarks.clear(); }, 20);   // the greeting is over
     await vi.waitFor(() => expect(ws.closed).toBeDefined(), { timeout: 4000 });
-    expect(spoken.join(' ')).toMatch(/for a while/);
+    expect(spoken.join(' ')).toMatch(/end it here/);
     clearInterval(idle);
     expect(relay.endReason).toBe('max_duration');
   });

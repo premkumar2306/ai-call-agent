@@ -76,7 +76,7 @@ async function startWorker(mockUrl) {
   mkdirSync(STATE, { recursive: true });
   wrangler(['d1', 'execute', 'DB', '--local', '--persist-to', STATE, '--file=./schema.sql']);
   wrangler(['d1', 'migrations', 'apply', 'DB', '--local', '--persist-to', STATE]);
-  const vars = { NODE_ENV: 'staging', PROVIDER_MOCK_URL: mockUrl, ADMIN_SECRET: ADMIN, ...SECRETS };
+  const vars = { NODE_ENV: 'staging', PROVIDER_MOCK_URL: mockUrl, ADMIN_SECRET: ADMIN, VOICE_BARGE_IN_ON_INTERIM: '1', ...SECRETS };
   const args = ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1', '--persist-to', STATE, '--test-scheduled',
     ...Object.entries(vars).flatMap(([k, v]) => ['--var', `${k}:${v}`])];
   const out = openSync(join(STATE, 'wrangler.log'), 'w');
@@ -775,7 +775,7 @@ async function guardsScenario(mocks) {
     const u = sql(`SELECT COUNT(*) AS c FROM usage_records WHERE source_id = '${dead.callSid}'`)[0]?.c;
     check(n, 'usage is recorded for the call', u === 1, `usage rows ${u}`);
   }
-  // Maximum duration: the cap is announced; a caller who was just talking is handed to staff, then the line ends.
+  // Maximum duration: the cap is announced, then the line ends.
   {
     const sc = SCENARIOS.find(x => x.key === 'us_twilio');
     const n = 'call guards max duration';
@@ -784,7 +784,7 @@ async function guardsScenario(mocks) {
     const capped = await placeCall(mocks, { carrier: 'twilio', number: sc.number, from: sc.from, wsQuery: 'guardMaxMs=6000',
       drive: async ({ closed }) => { await Promise.race([closed, sleep(20000)]); } });
     const said = mocks.log.tts.slice(tts0).map(t => t.text);
-    check(n, 'at the cap the caller hears why, and the call is handed to staff', said.some(t => /been on this call for a while/i.test(t)) && capped.closedByServer && !!capped.transferTo, `dial=${capped.transferTo}`);
+    check(n, 'at the cap the caller hears why and the call is ended (no staff dial)', said.some(t => /end it here/i.test(t)) && capped.closedByServer && !capped.transferTo, `dial=${capped.transferTo}`);
     check(n, 'end_reason=max_duration is stored', reasonOf(capped.callSid) === 'max_duration', String(reasonOf(capped.callSid)));
   }
 }

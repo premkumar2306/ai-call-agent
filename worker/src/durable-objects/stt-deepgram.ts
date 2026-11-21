@@ -34,6 +34,12 @@ export interface SttOptions {
   apiKey: string;
   /** Told about every barge-in decision on recognised words (yes and no), for diagnostics. */
   onBargeDecision?: (d: BargeDecision) => void;
+  /**
+   * Interrupt on interim words (and one-word stops). Off by default: barge-in then behaves as it always
+   * has (the VAD signal and the first interim share one announcement, so in practice the final transcript
+   * does it). On (VOICE_BARGE_IN_ON_INTERIM=1): interims count, but only with enough words and confidence.
+   */
+  interimBargeIn?: boolean;
   /** True when an interim transcript is our own voice coming back (speakerphone echo) — no barge-in. */
   isEcho?: (text: string) => boolean;
   /** Extra wait (ms) after a complete statement of 4+ words, for a follow-up question. Default 400; 0 disables. */
@@ -95,11 +101,11 @@ export type SpeechStartReason = 'vad' | 'interim';
 
 // One-word interruptions that are never a cough or a stray word: they stop the
 // assistant on a single recognised word (the ≥ bargeInMinWords rule is for the rest).
-const STOP_WORDS = new Set([
-  'stop', 'wait', 'no', 'nope', 'hello', 'hold', 'pause', 'excuse', 'sorry', 'enough',
-  'रुको', 'रुकिए', 'रुकिये', 'रुकें', 'ठहरो', 'नहीं', 'नही', 'बस', 'सुनो', 'सुनिए', 'हैलो', 'हेलो',
-  'ruko', 'rukiye', 'nahi', 'nahin', 'bas', 'suno',
-]);
+// Kept short on purpose: "no", "hello", "sorry" are common in line noise and the greeting.
+const STOP_WORDS = new Set(['stop', 'wait', 'hold', 'रुको', 'रुकिए', 'रुकिये', 'रुकें', 'ruko', 'rukiye']);
+
+/** With interim barge-in on, interim text needs at least this many words, and this confidence. */
+export const INTERIM_MIN_WORDS = 3;
 
 export interface BargeDecision {
   text: string;
@@ -107,19 +113,24 @@ export interface BargeDecision {
   threshold: number;
   interrupt: boolean;
   /** enough_words | stop_word | too_few_words | backchannel | echo */
-  reason: 'enough_words' | 'stop_word' | 'too_few_words' | 'backchannel' | 'echo';
+  reason: 'enough_words' | 'stop_word' | 'too_few_words' | 'backchannel' | 'echo' | 'low_confidence';
 }
 
 /** Whether recognised words heard while the assistant speaks are a real interruption, and why. */
 export function bargeInDecision(
   text: string, minWords: number, lang: VoiceLanguage, isEcho?: (t: string) => boolean,
+  gate: { interim?: boolean; confidence?: number; minConfidence?: number } = {},
 ): BargeDecision {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   const d = (interrupt: boolean, reason: BargeDecision['reason']): BargeDecision => ({ text: text.slice(0, 60), words, threshold: minWords, interrupt, reason });
   if (isBackchannel(text, lang)) return d(false, 'backchannel');
   if (isEcho?.(text)) return d(false, 'echo');
   const tokens = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
-  if (tokens.length > 0 && tokens.length <= 2 && tokens.every(t => STOP_WORDS.has(t))) return d(true, 'stop_word');
+  if (gate.interim) {
+    if (gate.confidence !== undefined && gate.minConfidence && gate.confidence < gate.minConfidence) return d(false, 'low_confidence');
+    if (tokens.length > 0 && tokens.length <= 2 && tokens.every(t => STOP_WORDS.has(t))) return d(true, 'stop_word');
+    return words >= Math.max(minWords, INTERIM_MIN_WORDS) ? d(true, 'enough_words') : d(false, 'too_few_words');
+  }
   return words >= minWords ? d(true, 'enough_words') : d(false, 'too_few_words');
 }
 
@@ -310,7 +321,8 @@ export async function createDeepgramSTT(
   const announced = new Set<SpeechStartReason>();
 
   const announceSpeech = (reason: SpeechStartReason) => {
-    if (announced.has(reason)) return;
+    // Interim barge-in off: one announcement per utterance whichever signal comes first (the historical behaviour).
+    if (opts.interimBargeIn ? announced.has(reason) : announced.size) return;
     announced.add(reason);
     if (debug) console.log(`[dg stt] speech-start (${reason})`);
     onSpeechStart?.(reason);
@@ -442,7 +454,7 @@ export async function createDeepgramSTT(
             }
             // Barge-in once there are enough words to be a real interruption
             // — and not just the caller saying "mm-hmm" while listening.
-            const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho);
+            const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, { interim: opts.interimBargeIn, confidence, minConfidence });
             opts.onBargeDecision?.(verdict);
             if (verdict.interrupt) announceSpeech('interim');
           } else if (!finalized) {
@@ -546,7 +558,7 @@ export async function createDeepgramFluxSTT(
       if (msg.event === 'StartOfTurn' && !turnStartedAt) turnStartedAt = Date.now();
       if (text) opts.onActivity?.();
       if ((msg.event === 'StartOfTurn' || msg.event === 'Update') && text && announcedTurn !== turn) {
-        const verdict = bargeInDecision(text, bargeInMinWords, 'en', isEcho);
+        const verdict = bargeInDecision(text, bargeInMinWords, 'en', isEcho, { interim: opts.interimBargeIn });
         opts.onBargeDecision?.(verdict);
         if (verdict.interrupt) {
           announcedTurn = turn;

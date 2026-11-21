@@ -190,6 +190,9 @@ export interface Env {
   // instead of waiting for recognised words. Off by default: line noise and
   // echo cut replies off.
   VOICE_BARGE_IN_ON_VAD?: string;
+  // Set to '1'/'true' to interrupt on interim words (3+ words, confident) and one-word stops (stop/wait/hold/रुको).
+  // Off by default: barge-in is then exactly what it was (final transcript).
+  VOICE_BARGE_IN_ON_INTERIM?: string;
   /** ms of caller silence (after the assistant finishes) before "Are you still there?". Default 20000. */
   VOICE_SILENCE_REPROMPT_MS?: string;
   /** ms between silence nudges (second nudge, then the goodbye). Default 10000. */

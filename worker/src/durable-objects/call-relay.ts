@@ -100,8 +100,8 @@ const MAX_FILLERS = 3;
 //  - silence: after SILENCE_PROMPT_MS without caller speech (assistant quiet)
 //    ask "Are you still there?"; SILENCE_HANGUP_MS later ask once more; SILENCE_HANGUP_MS
 //    after that (the third attempt) say goodbye and hang up.
-//  - max duration: MAX_CALL_MS, then a goodbye (or a transfer when the caller
-//    was just talking); the line is cut CAP_GRACE_MS later whatever happens.
+//  - max duration: MAX_CALL_MS, then a goodbye; the line is cut
+//    CAP_GRACE_MS later whatever happens.
 //  - dead media: no inbound audio frame for DEAD_MEDIA_MS.
 //  - stuck assistant: "speaking/thinking" for AGENT_STUCK_MS (a lost playback
 //    mark) is reset, so it cannot hold the silence timer off forever.
@@ -221,7 +221,6 @@ export class CallRelay extends DurableObject<Env> {
   // Short guard timings for the e2e simulator (?guardPromptMs=…); ignored in production.
   private testGuards: { promptMs?: number; hangupMs?: number; maxMs?: number; deadMediaMs?: number } = {};
   private lastMediaAt = 0;
-  private lastCallerAt = 0;
   private agentBusySince = 0;
   private capDeadline = 0;
   // Barge-in diagnostics: when the caller's speech was first signalled, the last
@@ -313,6 +312,7 @@ export class CallRelay extends DurableObject<Env> {
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
         isEcho: (text) => this.looksLikeEcho(text),
         onBargeDecision: (d) => this.noteBargeDecision(d),
+        interimBargeIn: /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_INTERIM ?? ''),
         // Mid-sentence speech must hold off "Are you still there?".
         onActivity: () => this.callerActive(),
         onClose: () => { if (gen === this.sttGen) this.handleSttDrop(); },
@@ -505,7 +505,6 @@ export class CallRelay extends DurableObject<Env> {
     logEvent('info', 'barge.decision', {
       callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: 'interim', words: d.words, threshold: d.threshold,
       vad: this.vadBargeIn, echo: d.reason === 'echo', interrupt: false, reason: d.reason,
-      ...(d.words <= 2 ? { heard: d.text.slice(0, 30) } : {}),
     });
   }
 
@@ -537,12 +536,12 @@ export class CallRelay extends DurableObject<Env> {
         callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: reason, vad: this.vadBargeIn,
         interrupt, reason: why, sinceSpeakMs: now - this.speakStartedAt, ...extra,
       });
-    if (reason === 'vad' && !this.vadBargeIn) { log(false, 'vad_off'); return; }
+    if (reason === 'vad' && !this.vadBargeIn) { if (this.lastSkipKey !== 'vad_off') { this.lastSkipKey = 'vad_off'; log(false, 'vad_off'); } return; }
     if (now - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) { log(false, 'too_early'); return; }
     const v = reason === 'interim' ? this.lastVerdict : undefined;
     const b = this.active?.tl?.barge;
     if (b) b.decisions++;
-    log(true, v?.reason ?? 'vad', v ? { words: v.words, threshold: v.threshold, echo: false, ...(v.words <= 2 ? { heard: v.text.slice(0, 30) } : {}) } : {});
+    log(true, v?.reason ?? 'vad', v ? { words: v.words, threshold: v.threshold, echo: false } : {});
     this.bargeIn(v?.reason ?? 'vad');
   }
 
@@ -627,7 +626,7 @@ export class CallRelay extends DurableObject<Env> {
     if (this.agentActive) {
       logEvent('info', 'barge.decision', {
         callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: 'final', words: text.trim().split(/\s+/).length,
-        vad: this.vadBargeIn, interrupt: true, reason: 'transcript', ...(text.trim().split(/\s+/).length <= 2 ? { heard: text.slice(0, 30) } : {}),
+        vad: this.vadBargeIn, interrupt: true, reason: 'transcript',
       });
       if (this.active?.tl) this.active.tl.barge.decisions++;
       this.bargeIn('transcript');
@@ -939,7 +938,6 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   private callerActive() {
-    this.lastCallerAt = Date.now();
     if (this.quietSince) this.quietSince = Date.now();
     this.silencePrompts = 0;
     // They spoke during the goodbye — stay on the line.
@@ -1046,20 +1044,12 @@ export class CallRelay extends DurableObject<Env> {
   private startCap() {
     this.capDeadline = Date.now() + CAP_GRACE_MS;
     this.endReason ??= 'max_duration';
-    const staff = this.cache.sectorMeta?.phone?.replace(/[^\d+]/g, '');
-    const talking = Date.now() - this.lastCallerAt < 30_000;
-    logEvent('warn', 'call.max_duration', { callId: this.callSid.slice(-8), provider: this.telephony.provider, transfer: !!staff && talking });
+    logEvent('warn', 'call.max_duration', { callId: this.callSid.slice(-8), provider: this.telephony.provider });
     this.active?.abort.abort();
     this.pendingMarks.clear();
     this.sendToCarrier(this.telephony.clear());
-    if (staff && talking) {
-      this.cache.transferTo = staff;
-      this.ctx.waitUntil(this.env.CACHE.put(transferKey(this.callSid), staff, { expirationTtl: 600 }));
-      this.endStreamWhenDone = true;
-    } else {
-      this.endCallWhenDone = true;
-    }
-    this.speakCanned([maxDurationLine(this.voice.language, !!staff && talking)]);
+    this.endCallWhenDone = true;
+    this.speakCanned([maxDurationLine(this.voice.language, false)]);
   }
 
   // Backstop if the timers never ran (the object was evicted mid-call): cut any open stream.
@@ -1181,7 +1171,6 @@ export class CallRelay extends DurableObject<Env> {
       this.callStartedAt = Date.now();
       this.streamStartedAt = this.callStartedAt;
       this.lastMediaAt = this.callStartedAt;
-      this.lastCallerAt = this.callStartedAt;
       if (!this.guardTimer) this.guardTimer = setInterval(() => this.guardTick(), GUARD_TICK_MS);
       this.ctx.waitUntil(Promise.resolve(this.ctx.storage?.setAlarm(this.callStartedAt + this.guards.maxMs + CAP_GRACE_MS + 30_000)).catch(() => {}));
       this.callSid = ev.start.callSid;
