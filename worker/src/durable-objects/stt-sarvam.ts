@@ -46,6 +46,7 @@ export interface SarvamSttOptions {
   onClose?: () => void;
   bargeInMinWords?: number;
   onBargeDecision?: (d: BargeDecision) => void;
+  interimBargeIn?: boolean;
   /** How long a transcript ending on a dangling word waits for the rest. Default 900; 0 disables. */
   incompleteHoldMs?: number;
   /** Ask Sarvam for its high-sensitivity VAD (quiet callers, noisy lines). */
@@ -125,7 +126,7 @@ export async function createSarvamSTT(
     holdTimer = undefined;
     const combined = [held, text].filter(Boolean).join(' ');
     // No interims: this is the first moment there are words to barge in on.
-    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho);   // transcript-time: the final-transcript backstop already interrupts
+    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, { interim: opts.interimBargeIn });   // transcript-time: the final-transcript backstop already interrupts
     opts.onBargeDecision?.(verdict);
     if (verdict.interrupt) onSpeechStart?.('interim');
     if (incompleteHoldMs > 0 && looksIncomplete(combined, lang)) {
