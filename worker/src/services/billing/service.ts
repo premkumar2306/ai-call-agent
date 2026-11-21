@@ -717,6 +717,8 @@ export interface CallCost {
   sttProvider: string | null; sttModel: string | null; ttsProvider: string | null; ttsModel: string | null;
   sttSeconds: number; ttsChars: number;
   llmInputTokens: number; llmOutputTokens: number; llmCacheTokens: number;
+  /** silence | max_duration | dead_media | caller_hangup | agent_hangup | transfer | error (calls from 0032 on). */
+  endReason?: string | null;
 }
 
 /** Total usage and cost of one speech or AI model across a month's calls. */
@@ -767,6 +769,12 @@ export async function callCosts(env: Env, businessType: string, period: string):
     }
     revenue.set(r.id, Math.round(paise));
   }
+  const reasons = new Map<string, string>();
+  try {
+    const { results } = await env.DB.prepare('SELECT call_sid, end_reason FROM call_outcomes WHERE business_type = ? AND started_at >= ? AND end_reason IS NOT NULL')
+      .bind(businessType, Math.min(...records.map(r => r.startedAt), Math.floor(Date.now() / 1000))).all<{ call_sid: string; end_reason: string }>();
+    for (const x of results) reasons.set(x.call_sid, x.end_reason);
+  } catch { /* the tag is optional */ }
   const rows = records.map(r => {
     const parts = costParts({
       channel: r.channel as 'voice' | 'whatsapp', provider: r.provider, durationSeconds: r.durationSeconds,
@@ -788,6 +796,7 @@ export async function callCosts(env: Env, businessType: string, period: string):
       sttProvider: r.sttProvider, sttModel: r.sttModel, ttsProvider: r.ttsProvider, ttsModel: r.ttsModel,
       sttSeconds: r.sttSeconds, ttsChars: r.ttsChars,
       llmInputTokens: r.llmInputTokens, llmOutputTokens: r.llmOutputTokens, llmCacheTokens: r.llmCacheReadTokens + r.llmCacheWriteTokens,
+      endReason: reasons.get(r.sourceId) ?? null,
     };
   });
   const includedRevenue = plan ? Math.min(minutesSoFar, plan.includedMinutes) * feePerMinute : 0;

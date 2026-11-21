@@ -177,10 +177,11 @@ describe('CallRelay: cache.endCall', () => {
     await send({ event: 'media', stream_sid: 'SS1', media: { chunk: 1, timestamp: '20', payload: Buffer.alloc(320).toString('base64') } });
     expect(ws.closed).toBeUndefined();
 
-    // Playback reaches the last mark → the next media frame ends the call.
+    // Playback reaches the last mark → the next guard tick ends the call.
     for (const m of ws.sent.filter(m => m.event === 'mark')) await send({ event: 'mark', stream_sid: 'SS1', mark: { name: m.mark.name } });
     await send({ event: 'media', stream_sid: 'SS1', media: { chunk: 2, timestamp: '40', payload: Buffer.alloc(320).toString('base64') } });
-    expect(ws.closed).toEqual({ code: 1000, reason: 'call ended' });
+    await vi.waitFor(() => expect(ws.closed).toEqual({ code: 1000, reason: 'call ended' }));
+    expect(relay.endReason).toBe('agent_hangup');
     expect(stt.closed).toBeGreaterThan(0);
     expect(relay.usageFlushed).toBe(true);
     expect(relay.endCallWhenDone).toBe(false);
@@ -214,5 +215,56 @@ describe('CallRelay over Twilio (unchanged wire format)', () => {
     const { ws, send } = makeRelay(makeEnv({ NODE_ENV: 'production' }), 'twilio');
     await send({ event: 'start', start: { callSid: 'CA1', streamSid: 'MZ1', customParameters: {} } });
     expect(ws.closed).toEqual({ code: 1008, reason: 'Unauthorized' });
+  });
+});
+
+describe('CallRelay: runaway-call guards', () => {
+  const frame = { event: 'media', stream_sid: 'SS1', media: { chunk: 1, timestamp: '20', payload: Buffer.alloc(320).toString('base64') } };
+
+  it('silence: two nudges, then goodbye and hang up on the third attempt (end_reason=silence)', async () => {
+    const { relay, ws, send } = makeRelay(makeEnv({ VOICE_SILENCE_REPROMPT_MS: '300', VOICE_SILENCE_HANGUP_MS: '300' }), 'exotel');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const spoken: string[] = [];
+    relay.speakCanned = (lines: string[]) => { spoken.push(...lines); };
+    await send(exotelStart());
+    const idle = setInterval(() => { relay.turnInFlight = false; relay.pendingMarks.clear(); }, 20);   // the greeting is over
+    await vi.waitFor(() => expect(ws.closed).toEqual({ code: 1000, reason: 'caller silent' }), { timeout: 4000 });
+    expect(spoken).toHaveLength(3);
+    expect(spoken[0]).toBe(spoken[1]);
+    expect(spoken[2]).toMatch(/hang up/i);
+    clearInterval(idle);
+    expect(relay.endReason).toBe('silence');
+  });
+
+  it('max duration without a staff line: says goodbye, then ends the call with end_reason=max_duration', async () => {
+    const { relay, ws, send } = makeRelay(makeEnv({ VOICE_MAX_CALL_MS: '200' }), 'exotel');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const spoken: string[] = [];
+    relay.speakCanned = (lines: string[]) => { spoken.push(...lines); };
+    await send(exotelStart());
+    const idle = setInterval(() => { relay.turnInFlight = false; relay.pendingMarks.clear(); }, 20);   // the greeting is over
+    await vi.waitFor(() => expect(ws.closed).toBeDefined(), { timeout: 4000 });
+    expect(spoken.join(' ')).toMatch(/end it here/);
+    clearInterval(idle);
+    expect(relay.endReason).toBe('max_duration');
+  });
+
+  it('dead media: no frames for the limit hangs up with end_reason=dead_media', async () => {
+    const { relay, ws, send } = makeRelay(makeEnv({ VOICE_DEAD_MEDIA_MS: '300' }), 'exotel');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await send(exotelStart());
+    await send(frame);
+    await vi.waitFor(() => expect(ws.closed).toBeDefined(), { timeout: 4000 });
+    expect(relay.endReason).toBe('dead_media');
+  });
+
+  it('a lost playback mark cannot hold the silence timer off forever', async () => {
+    const { relay, send } = makeRelay(makeEnv(), 'exotel');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await send(exotelStart());
+    relay.pendingMarks.set('lost', { text: 'x', played: false, filler: false });
+    relay.agentBusySince = Date.now() - 61_000;
+    relay.guardTick();
+    expect(relay.pendingMarks.size).toBe(0);
   });
 });

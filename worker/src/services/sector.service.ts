@@ -44,6 +44,9 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
     ...(row.assistantName ? { assistantName: row.assistantName } : {}),
     // Only present when on, so a business without it reads exactly as before.
     ...(row.dtmfInput ? { dtmfInput: true } : {}),
+    ...(row.silencePromptSec ? { silencePromptSec: row.silencePromptSec } : {}),
+    ...(row.silenceHangupSec ? { silenceHangupSec: row.silenceHangupSec } : {}),
+    ...(row.maxCallMinutes ? { maxCallMinutes: row.maxCallMinutes } : {}),
   };
 }
 
@@ -215,7 +218,7 @@ export async function updateSectorVoice(env: Env, key: string, voice: Partial<Vo
 
 /** Changes only the given columns of an existing sector. False if there's no such sector. */
 export async function updateSector(env: Env, key: string, patch: Partial<Pick<typeof sectorsTable.$inferInsert,
-  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity' | 'dtmfInput'>>): Promise<boolean> {
+  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity' | 'dtmfInput' | 'silencePromptSec' | 'silenceHangupSec' | 'maxCallMinutes'>>): Promise<boolean> {
   const rows = await getDb(env.DB).update(sectorsTable)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(sectorsTable.key, key))

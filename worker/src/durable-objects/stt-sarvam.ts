@@ -24,8 +24,8 @@
 //    encoding "audio/wav" on audio messages.
 //  • No per-transcript confidence, so there is no low-confidence filter.
 
-import type { EndInfo, OnTranscript, SpeechStartReason, Stt } from './stt-deepgram';
-import { isBackchannel, looksIncomplete } from './stt-deepgram';
+import type { BargeDecision, EndInfo, OnTranscript, SpeechStartReason, Stt } from './stt-deepgram';
+import { bargeInDecision, looksIncomplete } from './stt-deepgram';
 import { MulawUpsampler, bytesToBase64, pcm16ToBytes } from './audio';
 import type { VoiceLanguage } from '../services/voice-language';
 
@@ -45,6 +45,8 @@ export interface SarvamSttOptions {
   /** The socket closed or errored while the call was still using it (not after our own close()). */
   onClose?: () => void;
   bargeInMinWords?: number;
+  onBargeDecision?: (d: BargeDecision) => void;
+  interimBargeIn?: boolean;
   /** How long a transcript ending on a dangling word waits for the rest. Default 900; 0 disables. */
   incompleteHoldMs?: number;
   /** Ask Sarvam for its high-sensitivity VAD (quiet callers, noisy lines). */
@@ -124,9 +126,9 @@ export async function createSarvamSTT(
     holdTimer = undefined;
     const combined = [held, text].filter(Boolean).join(' ');
     // No interims: this is the first moment there are words to barge in on.
-    if (text.split(/\s+/).length >= bargeInMinWords && !isBackchannel(text, lang) && !isEcho?.(text)) {
-      onSpeechStart?.('interim');
-    }
+    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, { interim: opts.interimBargeIn });   // transcript-time: the final-transcript backstop already interrupts
+    opts.onBargeDecision?.(verdict);
+    if (verdict.interrupt) onSpeechStart?.('interim');
     if (incompleteHoldMs > 0 && looksIncomplete(combined, lang)) {
       held = combined;
       holdTimer = setTimeout(releaseHeld, incompleteHoldMs);

@@ -67,6 +67,8 @@ export function createStt(
       onActivity: common.onActivity,
       onClose: common.onClose,
       bargeInMinWords: common.bargeInMinWords,
+      onBargeDecision: common.onBargeDecision,
+      interimBargeIn: common.interimBargeIn,
       incompleteHoldMs: common.incompleteHoldMs,
       highVadSensitivity: /^(1|true)$/i.test(env.SARVAM_HIGH_VAD_SENSITIVITY ?? ''),
       debug: common.debug,
