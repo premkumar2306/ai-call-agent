@@ -10,6 +10,8 @@ import { transferKey } from '../services/call-context';
 import { businessForNumber } from '../services/phone-numbers';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
 import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
+import { logEvent } from '../utils/telemetry';
+import { markCarrierEnded, parseEpoch } from '../services/call-end';
 
 const twilioRouter = new Hono<HonoEnv>();
 
@@ -130,6 +132,7 @@ twilioRouter.post('/after-stream', requireTwilioSig('/twilio/after-stream'), asy
   const body = await c.req.parseBody();
   const callSid = typeof body.CallSid === 'string' ? body.CallSid : '';
   const to = callSid ? await c.env.CACHE.get(transferKey(callSid)) : null;
+  logEvent('info', 'call.after_stream', { callId: callSid.slice(-8), provider: 'twilio', status: 200, answer: to ? 'dial' : 'hangup' });
   if (!to) return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>', 200, TEXT_XML);
   console.log(`[call] ${callSid.slice(-8)} transferring to staff`);
   return c.text(
@@ -190,7 +193,13 @@ twilioRouter.post('/status', requireTwilioSig('/twilio/status'), async (c) => {
   const callSid    = body.CallSid as string | undefined;
   const callStatus = body.CallStatus as string | undefined;
 
+  logEvent('info', 'call.carrier_status', { callId: (callSid ?? '').slice(-8), provider: 'twilio', status: String(callStatus ?? '').slice(0, 20) });
   if (!callSid || callStatus !== 'completed') return c.text('ok', 200);
+  // The carrier's own end time and duration (stored next to ours; also confirms the hang-up).
+  const dur = Number(body.CallDuration);
+  background(c, markCarrierEnded(c.env, callSid, {
+    endedAt: parseEpoch(body.Timestamp) ?? Math.floor(Date.now() / 1000), durationSec: Number.isFinite(dur) ? dur : undefined, source: 'callback',
+  }));
 
   // Classify after responding so Twilio gets its 200 immediately. waitUntil
   // keeps the isolate alive until this finishes — a bare floating promise

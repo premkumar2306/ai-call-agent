@@ -6,6 +6,7 @@ import { businessForNumber, normalizeE164 } from '../services/phone-numbers';
 import { transferKey } from '../services/call-context';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
 import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
+import { logEvent } from '../utils/telemetry';
 
 // Exotel (Indian numbers). An ExoPhone's call flow, built in Exotel's App
 // Bazaar, is:
@@ -135,6 +136,7 @@ exotelRouter.get('/stream', async (c) => {
 exotelRouter.on(['GET', 'POST'], '/after-stream', requireExotelAuth, async (c) => {
   const callSid = pick(await exotelParams(c), 'CallSid');
   const to = callSid ? await c.env.CACHE.get(transferKey(callSid)) : null;
+  logEvent('info', 'call.after_stream', { callId: (callSid ?? '').slice(-8), provider: 'exotel', status: to ? 200 : 302, answer: to ? 'connect' : 'hangup' });
   if (!to) return c.body(null, 302);
   console.log(`[call] ${callSid!.slice(-8)} transferring to staff (exotel)`);
   return c.text('transfer', 200);
