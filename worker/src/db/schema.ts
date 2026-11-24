@@ -514,6 +514,10 @@ export const callOutcomes = sqliteTable('call_outcomes', {
   messageTaken:    integer('message_taken', { mode: 'boolean' }).notNull().default(false),
   isTest:          integer('is_test', { mode: 'boolean' }).notNull().default(false),
   endReason:       text('end_reason'),   // 0032: silence | max_duration | dead_media | caller_hangup | agent_hangup | transfer | error
+  carrierEndedAt:  integer('carrier_ended_at'),               // 0034: carrier-reported end (unix s)
+  carrierDurationSeconds: integer('carrier_duration_seconds'), // 0034
+  hangupMethod:    text('hangup_method'),                     // 0034: callback | status_poll | rest | unconfirmed
+  hangupConfirmMs: integer('hangup_confirm_ms'),              // 0034
   createdAt:       integer('created_at').notNull(),
 }, (t) => [
   primaryKey({ columns: [t.carrier, t.callSid] }),

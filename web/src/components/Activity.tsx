@@ -155,7 +155,7 @@ const median = (v: number[]) => { const a = [...v].sort((x, y) => x - y); return
 function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Record<string, string>; callSid: string; texts?: string[] }) {
   const [turns, setTurns] = useState<TimelineTurn[] | null | 'none'>(null);
   const [meta, setMeta] = useState<{ total: CallTotal; rate: number } | null>(null);
-  const [ended, setEnded] = useState<{ reason: string | null; seconds: number | null }>({ reason: null, seconds: null });
+  const [ended, setEnded] = useState<{ reason: string | null; seconds: number | null; carrierSeconds: number | null; hangup: string | null }>({ reason: null, seconds: null, carrierSeconds: null, hangup: null });
   const [openTurn, setOpenTurn] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
@@ -163,7 +163,7 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
       .then(r => (r.ok ? r.json() : null))
       .then(j => {
         if (!live) return;
-        setEnded({ reason: j?.data?.end_reason ?? null, seconds: j?.data?.duration_seconds ?? null });
+        setEnded({ reason: j?.data?.end_reason ?? null, seconds: j?.data?.duration_seconds ?? null, carrierSeconds: j?.data?.carrier_duration_seconds ?? null, hangup: j?.data?.hangup_method ?? null });
         setMeta(j?.data?.total ? { total: j.data.total, rate: j.data.usd_to_inr ?? 88 } : null);
         setTurns(j?.data?.turns?.length ? j.data.turns : 'none');
       })
@@ -192,10 +192,12 @@ function TurnTimeline({ base, auth, callSid, texts }: { base: string; auth: Reco
           <div><span className="tl-num">{biggest.label}</span><span className="small muted">biggest share, {sec(avg(biggest.key))} avg</span></div>
         </div>
       )}
-      {(ended.reason || (ended.seconds ?? 0) > LONG_CALL_S) && (
+      {(ended.reason || (ended.seconds ?? 0) > LONG_CALL_S || ended.carrierSeconds != null || ended.hangup) && (
         <p className="small">
           {ended.reason && <EndReasonTag reason={ended.reason} />}{' '}
           {(ended.seconds ?? 0) > LONG_CALL_S && <span className="bad">Long call: {Math.round((ended.seconds ?? 0) / 60)} min</span>}
+          {ended.carrierSeconds != null && <span className="muted"> Ours {ended.seconds ?? '?'}s · carrier {ended.carrierSeconds}s.</span>}
+          {ended.hangup && <span className={ended.hangup === 'unconfirmed' ? 'bad' : 'muted'}> Hang-up: {ended.hangup === 'unconfirmed' ? 'NOT confirmed by the carrier' : `confirmed (${ended.hangup.replace('_', ' ')})`}.</span>}
         </p>
       )}
       {meta && (

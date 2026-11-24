@@ -591,8 +591,8 @@ adminRouter.get('/calls/:callSid/turns', withAdminKey, async (c) => {
     llm_in: turns.reduce((n, t) => n + t.llm_in + t.llm_cache_read + t.llm_cache_write, 0),
     llm_out: turns.reduce((n, t) => n + t.llm_out, 0),
   };
-  const outcome = await c.env.DB.prepare('SELECT end_reason, duration_seconds FROM call_outcomes WHERE call_sid = ? LIMIT 1').bind(callSid).first<{ end_reason: string | null; duration_seconds: number }>().catch(() => null);
-  return c.json({ success: true, data: { end_reason: outcome?.end_reason ?? null, duration_seconds: outcome?.duration_seconds ?? null, call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, usd_to_inr: rates.usdToInr, total, turns } });
+  const outcome = await c.env.DB.prepare('SELECT end_reason, duration_seconds, carrier_duration_seconds, carrier_ended_at, hangup_method, hangup_confirm_ms FROM call_outcomes WHERE call_sid = ? LIMIT 1').bind(callSid).first<{ end_reason: string | null; duration_seconds: number; carrier_duration_seconds: number | null; carrier_ended_at: number | null; hangup_method: string | null; hangup_confirm_ms: number | null }>().catch(() => null);
+  return c.json({ success: true, data: { end_reason: outcome?.end_reason ?? null, duration_seconds: outcome?.duration_seconds ?? null, carrier_duration_seconds: outcome?.carrier_duration_seconds ?? null, hangup_method: outcome?.hangup_method ?? null, hangup_confirm_ms: outcome?.hangup_confirm_ms ?? null, call_sid: callSid, provider: turns[0].provider, business_type: turns[0].business_type, sync_dtmf_at: turns[0].sync_dtmf_at, usd_to_inr: rates.usdToInr, total, turns } });
 });
 
 // GET /admin/latency?business=&from=&to= — p50/p90/p95 per segment, overall and per carrier.

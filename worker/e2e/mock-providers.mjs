@@ -22,9 +22,11 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 
 export async function startMocks({ port = 0 } = {}) {
-  const log = { tts: [], stt: [], anthropic: [], razorpay: [], plivo: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
+  const log = { tts: [], stt: [], anthropic: [], razorpay: [], plivo: [], hangups: [], email: [], whatsapp: [], sms: [], deepgramRest: [], other: [], sttAudio: { deepgram: 0, sarvam: 0 }, sarvamSttFormats: new Set() };
   let stt = null;   // the call's open speech-recognition socket { kind, ws, t }
   const failing = new Set();
+  // Calls whose carrier ignored our stream close: still live until a REST hangup arrives.
+  const stuck = new Set();
   // Faults a scenario switches on: refuse the next N speech-socket upgrades, fail the next N
   // voice requests, slow every model reply.
   const faults = { sttRefuse: 0, ttsFail: 0, llmDelayMs: 0 };
@@ -64,6 +66,19 @@ export async function startMocks({ port = 0 } = {}) {
         return audioResponse(res, b.text);
       }
       if (host === 'graph.facebook.com') return graph(req, path, body, res, log, url);
+      // Carrier call-control REST (CallTerminator): status reads and hangups.
+      const twCall = host === 'api.twilio.com' && path.match(/\/Calls\/([^/]+)\.json$/);
+      if (twCall) {
+        const sid = twCall[1];
+        if (req.method === 'POST') { log.hangups.push({ carrier: 'twilio', sid, body: body, at: Date.now() }); stuck.delete(sid); return json(res, 200, { sid, status: 'completed' }); }
+        return json(res, 200, { sid, status: stuck.has(sid) ? 'in-progress' : 'completed', duration: '7', end_time: new Date().toUTCString() });
+      }
+      const plCall = host === 'api.plivo.com' && path.match(/^\/v1\/Account\/[^/]+\/Call\/([^/]+)\/$/);
+      if (plCall) {
+        const sid = plCall[1];
+        if (req.method === 'DELETE') { log.hangups.push({ carrier: 'plivo', sid, at: Date.now() }); stuck.delete(sid); res.writeHead(204); return res.end(); }
+        return stuck.has(sid) ? json(res, 200, { call_uuid: sid, call_status: 'in-progress' }) : json(res, 404, { error: 'not found' });
+      }
       if (host === 'api.twilio.com' && path.endsWith('/Messages.json')) {
         const f = new URLSearchParams(body);
         log.sms.push({ to: f.get('To'), from: f.get('From'), body: f.get('Body'), at: Date.now() });
@@ -172,7 +187,7 @@ export async function startMocks({ port = 0 } = {}) {
     dropStt: () => stt?.ws.terminate(),
     /** The mock's stored Razorpay subscription, to change its status as Razorpay would. */
     razorpaySub: id => subs.get(id),
-    failing,
+    failing, stuck,
     plivo,
     /** Meta's side of WhatsApp: stored templates and each number's health. */
     wa: waState,

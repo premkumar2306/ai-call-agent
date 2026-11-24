@@ -224,6 +224,8 @@ export interface Env {
   PLIVO_DEFAULT_BUSINESS_TYPE?: string;
   // Live account checks only (services/integrations.ts; calls never use them).
   PLIVO_AUTH_ID?: string;
+  /** ms after we end a call before checking the carrier ended it too (default 5000; docs/architecture/call-termination.md). */
+  VOICE_HANGUP_VERIFY_MS?: string;
   EXOTEL_ACCOUNT_SID?: string;
   EXOTEL_API_KEY?: string;
   EXOTEL_API_TOKEN?: string;

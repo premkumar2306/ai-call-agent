@@ -7,6 +7,8 @@ import { businessForNumber, normalizeE164 } from '../services/phone-numbers';
 import { transferKey } from '../services/call-context';
 import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
 import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
+import { logEvent } from '../utils/telemetry';
+import { markCarrierEnded, parseEpoch } from '../services/call-end';
 
 // Plivo (Indian numbers, alternative to Exotel). A Plivo application's
 // Answer URL is POST https://<worker>/plivo/answer, which returns a
@@ -147,6 +149,7 @@ plivoRouter.post('/after-stream', requirePlivoSig, async (c) => {
   const p = await formParams(c);
   const callUuid = p.CallUUID ?? '';
   const to = normalizeE164(callUuid ? await c.env.CACHE.get(transferKey(callUuid)) : null, '91');
+  logEvent('info', 'call.after_stream', { callId: callUuid.slice(-8), provider: 'plivo', status: 200, answer: to ? 'dial' : 'hangup' });
   if (!to) return c.text('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>', 200, XML);
   console.log(`[call] ${callUuid.slice(-8)} transferring to staff (plivo)`);
   const ours = normalizeE164(p.To, '91');
@@ -179,6 +182,12 @@ const isHangup = (p: Record<string, string>) => p.Event === 'Hangup' || p.CallSt
 async function hangupAck(c: Context<HonoEnv>, p: Record<string, string>) {
   const callUuid = p.CallUUID ?? '';
   if (callUuid) await c.env.CACHE.delete(transferKey(callUuid)).catch(() => {});
+  if (callUuid && isHangup(p)) {
+    const dur = Number(p.Duration);
+    background(c, markCarrierEnded(c.env, callUuid, {
+      endedAt: parseEpoch(p.EndTime) ?? Math.floor(Date.now() / 1000), durationSec: Number.isFinite(dur) && p.Duration ? dur : undefined, source: 'callback',
+    }));
+  }
   console.log(`[call] ${callUuid.slice(-8)} ended (plivo): ${String(p.HangupCause ?? p.CallStatus ?? '').slice(0, 40)}, ${Number(p.Duration) || 0}s`);
   return c.text('ok', 200);
 }

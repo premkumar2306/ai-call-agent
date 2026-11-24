@@ -15,6 +15,7 @@ import { dtmfAction, digitsUtterance } from '../services/dtmf';
 import { maxDurationLine, troubleLine } from '../services/voice-language';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { recordCallOutcome } from '../services/metrics';
+import { CallTerminator, VERIFY_MS } from '../telephony/terminator';
 import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type BargeDecision, type EndInfo, type Stt } from './stt-deepgram';
 import { TurnTimeline, saveTurnRows, timelineLog, toRow, type TurnRowContext } from '../services/turn-timeline';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
@@ -168,6 +169,8 @@ interface ActiveTurn {
 export class CallRelay extends DurableObject<Env> {
   // The carrier's media-stream socket (named for Twilio, the first carrier).
   private twWs?: WebSocket;
+  // Ends the call for real and confirms it (REST fallback); owns the DO's single alarm.
+  private term = new CallTerminator(this.ctx.storage, this.env);
   private telephony: TelephonyAdapter = createTelephonyAdapter('twilio');
   // Stream credentials that arrived on the upgrade request rather than in the
   // start event: Exotel's ?t= token or a route-verified Basic auth (preauth),
@@ -219,7 +222,7 @@ export class CallRelay extends DurableObject<Env> {
   private finalized = false;
   private guardTimer?: ReturnType<typeof setInterval>;
   // Short guard timings for the e2e simulator (?guardPromptMs=…); ignored in production.
-  private testGuards: { promptMs?: number; hangupMs?: number; maxMs?: number; deadMediaMs?: number } = {};
+  private testGuards: { promptMs?: number; hangupMs?: number; maxMs?: number; deadMediaMs?: number; verifyMs?: number } = {};
   private lastMediaAt = 0;
   private agentBusySince = 0;
   private capDeadline = 0;
@@ -284,7 +287,7 @@ export class CallRelay extends DurableObject<Env> {
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
     if (!isProduction(this.env)) {
       const q = (k: string) => numEnv(url.searchParams.get(k) ?? undefined);
-      this.testGuards = { promptMs: q('guardPromptMs'), hangupMs: q('guardHangupMs'), maxMs: q('guardMaxMs'), deadMediaMs: q('guardDeadMs') };
+      this.testGuards = { promptMs: q('guardPromptMs'), hangupMs: q('guardHangupMs'), maxMs: q('guardMaxMs'), deadMediaMs: q('guardDeadMs'), verifyMs: q('guardVerifyMs') };
     }
     const cfg = streamConfig(request);
     this.telephony = createTelephonyAdapter(cfg.provider);
@@ -951,6 +954,7 @@ export class CallRelay extends DurableObject<Env> {
       hangupMs: this.testGuards.hangupMs ?? (m?.silenceHangupSec ? m.silenceHangupSec * 1000 : numEnv(this.env.VOICE_SILENCE_HANGUP_MS) ?? SILENCE_HANGUP_MS),
       maxMs: this.testGuards.maxMs ?? (m?.maxCallMinutes ? m.maxCallMinutes * 60_000 : numEnv(this.env.VOICE_MAX_CALL_MS) ?? MAX_CALL_MS),
       deadMediaMs: this.testGuards.deadMediaMs ?? numEnv(this.env.VOICE_DEAD_MEDIA_MS) ?? DEAD_MEDIA_MS,
+      verifyMs: this.testGuards.verifyMs ?? numEnv(this.env.VOICE_HANGUP_VERIFY_MS) ?? VERIFY_MS,
     };
   }
 
@@ -968,7 +972,8 @@ export class CallRelay extends DurableObject<Env> {
     this.ctx.waitUntil(this.flushTurnMetrics());
     this.ctx.waitUntil(this.flushUsage());
     this.ctx.waitUntil(this.flushFollowUp());
-    this.ctx.waitUntil(Promise.resolve(this.ctx.storage?.deleteAlarm()).catch(() => {}));
+    // Verify the carrier really ended the call (and hang it up by REST if not).
+    this.ctx.waitUntil(this.term.request(this.endReason ?? reason).catch(e => console.error('[terminator]', e?.message || e)));
   }
 
   // Ends the carrier leg: closing the stream moves the carrier on to
@@ -980,7 +985,10 @@ export class CallRelay extends DurableObject<Env> {
     });
     this.finalize(reason);
     this.active?.abort.abort();
-    if (this.twWs?.readyState === WebSocket.OPEN) this.twWs.close(1000, closeReason);
+    // After an eviction twWs is gone but the hibernated sockets are still ours to close.
+    for (const ws of this.twWs ? [this.twWs] : this.ctx.getWebSockets()) {
+      if (ws.readyState === WebSocket.OPEN) ws.close(1000, closeReason);
+    }
   }
 
   // Runs every GUARD_TICK_MS from the start of the stream (a timer, not the media
@@ -1053,11 +1061,11 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   // Backstop if the timers never ran (the object was evicted mid-call): cut any open stream.
+  // One alarm per DO: CallTerminator multiplexes the backstop, the hang-up check and the re-check.
   async alarm() {
-    const left = this.streamStartedAt ? this.streamStartedAt + this.guards.maxMs + CAP_GRACE_MS + 30_000 - Date.now() : 0;
-    if (left > 0) { await this.ctx.storage.setAlarm(Date.now() + left); return; }
-    if (this.streamStartedAt) this.hangUp('max_duration', 'max duration (alarm)');
-    else for (const ws of this.ctx.getWebSockets()) ws.close(1000, 'max duration (alarm)');
+    const r = await this.term.onAlarm();
+    if (r === 'backstop') this.hangUp('max_duration', 'max duration (alarm)');
+    else if (r === 'none') for (const ws of this.ctx.getWebSockets()) ws.close(1000, 'max duration (alarm)');
   }
 
   // Fixed lines that aren't part of the model's history (re-prompts). Spoken
@@ -1173,8 +1181,9 @@ export class CallRelay extends DurableObject<Env> {
       this.streamStartedAt = this.callStartedAt;
       this.lastMediaAt = this.callStartedAt;
       if (!this.guardTimer) this.guardTimer = setInterval(() => this.guardTick(), GUARD_TICK_MS);
-      this.ctx.waitUntil(Promise.resolve(this.ctx.storage?.setAlarm(this.callStartedAt + this.guards.maxMs + CAP_GRACE_MS + 30_000)).catch(() => {}));
       this.callSid = ev.start.callSid;
+      // Persisted, so the max-duration backstop and the hang-up check survive an eviction.
+      this.ctx.waitUntil(this.term.start(this.callSid, this.telephony.provider, this.callStartedAt + this.guards.maxMs + CAP_GRACE_MS + 30_000, this.guards.verifyMs).catch(() => {}));
       this.cache.callSid = this.callSid;
       logEvent('info', 'call.stream_started', {
         callId: this.callSid.slice(-8),

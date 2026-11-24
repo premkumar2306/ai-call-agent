@@ -119,3 +119,33 @@ No flag (bug fix). Log events in §3f confirm behaviour in production: in the fi
 1. Approve §3e (rewrite usage `durationSeconds` from carrier time)? Billing-adjacent.
 2. Exotel: accept "verify + alert + flow audit" until a hangup API is confirmed (I can't confirm one from code)?
 3. Is the 5 s verify delay acceptable (caller on a silent line ≤ ~5 s in the worst case)?
+
+---
+
+## Approved changes and what shipped (Phase 2)
+
+Approved with these changes, all implemented:
+- **Duration is log-only.** `call_outcomes` gets `carrier_ended_at`, `carrier_duration_seconds`, `hangup_method`, `hangup_confirm_ms` (migration **0034**; 0033 belongs to PR #127). Billing usage is unchanged. The operator call view shows ours vs carrier seconds and the hang-up result.
+- **Start of the 5 s window.** `hangUp()` is only reached from `guardTick` when no reply is playing and no playback mark is pending, so the goodbye has finished before the clock starts.
+- **One status read before any REST hangup** (Twilio `GET Calls/{sid}`, Plivo `GET Call/{uuid}/?status=live`); both results are logged (`call.hangup_status`).
+- **Eviction-safe.** State is persisted in DO storage (`term`); the single DO alarm is multiplexed by `CallTerminator` (backstop, verify, re-check); `hangUp` closes `ctx.getWebSockets()` when `twWs` is gone; REST runs from `alarm()`.
+- **Every after-stream request is logged** (`call.after_stream`, per carrier: answer hangup/dial/connect), and every Twilio status callback (`call.carrier_status`).
+- Exotel: status read + `call.hangup_unconfirmed` alert only (no hangup API known, UNVERIFIED).
+- The max-duration backstop stays at max + grace + 30 s (existing); after it fires, verify + REST follow 5 s later.
+
+### What the Twilio TwiML is (finding)
+`/twilio/inbound` returns `<Connect><Stream url=… ><Parameter…/></Stream></Connect><Redirect method="POST">…/twilio/after-stream</Redirect>`: **no `action=` on `<Connect>`**, and a `<Redirect>` after it. No `statusCallback` is set by the TwiML or any code; `/twilio/status` only receives events if the owner configured a Status Callback URL on the number in the Twilio console. So production may never have received `completed` events. The status read covers that either way.
+
+### Owner's live test: Twilio first
+1. Check the number in the Twilio console: Voice → "Call status changes" → `https://<worker>/twilio/status` (POST). Add it if empty.
+2. Call the US number from your phone and stay silent. Expect "Are you still there?" twice, goodbye, then the line drops.
+3. In Twilio Console → Monitor → Calls, open the call: it ends at the goodbye, no leg left in progress.
+4. Worker logs for that call (last 8 chars of the SID): `call.hangup` → `call.hangup_requested` → `call.after_stream` (answer=hangup) → `call.hangup_status` → `call.hangup_confirmed`. `by=callback`/`status_poll` = Twilio followed the close. `by=rest` or a `call.hangup_rest` line = the stream close did **not** end the call and the REST fallback did: report it.
+5. Operator call view: end reason `silence`, "carrier Ns" next to ours, "Hang-up: confirmed".
+6. Repeat by saying goodbye, and by hanging up yourself (expect `caller_hangup`, no `call.hangup_rest`).
+7. Any `call.hangup_unconfirmed` (error level) after a call = the line may still be up: check the console.
+
+Plivo: same steps with the Plivo call logs. Exotel: audit the flow (Voicebot → Passthru; Passthru 200 → Connect, otherwise → Hangup; nothing after Hangup), then repeat; `call.after_stream` in the logs shows whether Exotel fetched it.
+
+### Tested / not tested
+Unit: `test/terminator.test.ts`. e2e: `hangupScenario` (carrier ignores the close → exactly one REST hangup for Twilio and Plivo; cooperative carriers and caller hang-ups → none; Exotel → none). **Not tested:** real carrier REST responses (the mocks follow the documented shapes, UNVERIFIED against live carriers), and the evicted-DO `alarm()` path end to end (covered only by the unit test of persisted state).

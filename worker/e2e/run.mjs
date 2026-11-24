@@ -254,13 +254,14 @@ const CARRIERS = {
 
 // ── One simulated call ───────────────────────────────────────────────────────
 
-async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, drive, wsQuery = '' }) {
+async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly = false, drive, wsQuery = '', ignoreClose = false }) {
   const c = CARRIERS[carrier];
   const callSid = `${carrier === 'twilio' ? 'CA' : ''}e2e${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const streamSid = `MZe2e${Date.now()}`;
   const call = { startedAt: Date.now(), callSid, streamSid, number, from, audioFrames: 0, badFrames: [], marks: 0, cleared: 0, closedByServer: false, clearTimes: [] };
   const opened = await c.open({ number, from, callSid });
   call.webhook = opened;
+  if (ignoreClose) mocks.stuck.add(callSid);   // the carrier will not end the call when we close the stream
   if (!opened.ok) return call;
 
   const ws = new WebSocket(wsQuery ? `${opened.wsUrl}${opened.wsUrl.includes('?') ? '&' : '?'}${wsQuery}` : opened.wsUrl);
@@ -330,7 +331,8 @@ async function placeCall(mocks, { carrier, number, from, lines = [], hangUpEarly
     }
   }
   await Promise.race([closed, sleep(2000)]);
-  if (!hangUpEarly) call.transferTo = await c.afterStream({ callSid, number, from, call });
+  // A carrier that ignores the stream close never asks for after-stream, so the line stays up.
+  if (!hangUpEarly && !ignoreClose) call.transferTo = await c.afterStream({ callSid, number, from, call });
   await sleep(1500);   // usage and transcripts are written after the call (waitUntil)
   return call;
 }
@@ -756,12 +758,16 @@ async function guardsScenario(mocks) {
     console.log(`\n▶ Call guards over ${b.carrier}`);
     const tts0 = mocks.log.tts.length;
     const t0 = Date.now();
-    const silent = await placeCall(mocks, { carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'guardPromptMs=2500&guardHangupMs=2000',
+    const silent = await placeCall(mocks, { carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'guardPromptMs=2500&guardHangupMs=2000&guardVerifyMs=1000',
       drive: async ({ closed }) => { await Promise.race([closed, sleep(30000)]); } });
     const said = mocks.log.tts.slice(tts0).map(t => t.text);
     check(n, 'a silent caller is nudged twice ("Are you still there?"), then told goodbye on the third attempt', said.filter(t => /still there/i.test(t)).length === 2 && said.some(t => /hang up now/i.test(t)), said.slice(-2).join(' | ').slice(0, 120));
     check(n, 'the carrier leg is ended: stream closed, after-stream hangs up (no dial)', silent.closedByServer && !silent.transferTo, `closedByServer=${silent.closedByServer}, dial=${silent.transferTo} after ${Date.now() - t0}ms`);
     check(n, 'end_reason=silence is stored on the call record', reasonOf(silent.callSid) === 'silence', String(reasonOf(silent.callSid)));
+    await sleep(3500);   // the carrier followed the close: the verify step finds it ended and sends no REST hangup
+    check(n, 'a carrier that ends the call itself gets no REST hangup', !mocks.log.hangups.some(h => h.sid === silent.callSid), JSON.stringify(mocks.log.hangups.filter(h => h.sid === silent.callSid)));
+    const m = sql(`SELECT hangup_method FROM call_outcomes WHERE call_sid = '${silent.callSid}'`)[0]?.hangup_method;
+    check(n, 'the hang-up is confirmed from the carrier (status read) and recorded', m === 'status_poll' || m === 'callback' || b.carrier === 'exotel', String(m));
   }
   // Dead media (no audio frames from the carrier): finalised and hung up.
   {
@@ -786,6 +792,39 @@ async function guardsScenario(mocks) {
     const said = mocks.log.tts.slice(tts0).map(t => t.text);
     check(n, 'at the cap the caller hears why and the call is ended (no staff dial)', said.some(t => /end it here/i.test(t)) && capped.closedByServer && !capped.transferTo, `dial=${capped.transferTo}`);
     check(n, 'end_reason=max_duration is stored', reasonOf(capped.callSid) === 'max_duration', String(reasonOf(capped.callSid)));
+  }
+}
+
+// A carrier that ignores our stream close (the line stays up): CallTerminator must notice and
+// end the call with the carrier's REST API, exactly once. Twilio and Plivo have one; Exotel has
+// none known, so there it can only report (call.hangup_unconfirmed), and sends nothing.
+async function hangupScenario(mocks) {
+  await sleep(2500);   // let the previous call's verify step and speech socket settle
+  for (const b of [{ key: 'us_twilio', carrier: 'twilio' }, { key: 'in_plivo_en', carrier: 'plivo' }]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `forced hang-up ${b.carrier}`;
+    console.log(`\n▶ Carrier ignores the stream close over ${b.carrier}`);
+    const call = await placeCall(mocks, { carrier: b.carrier, number: sc.number, from: sc.from, ignoreClose: true,
+      wsQuery: 'guardPromptMs=2000&guardHangupMs=1500&guardVerifyMs=1000',
+      drive: async ({ closed }) => { await Promise.race([closed, sleep(30000)]); } });
+    check(n, 'we closed the media stream (primary path)', call.closedByServer, '');
+    await sleep(4500);   // verify at +1 s: still live → REST hangup; re-check at +2 s
+    const hs = mocks.log.hangups.filter(h => h.sid === call.callSid);
+    check(n, 'the carrier REST hangup is sent exactly once', hs.length === 1 && hs[0].carrier === b.carrier, JSON.stringify(hs));
+    if (b.carrier === 'twilio') check(n, 'Twilio is told Status=completed', /Status=completed/.test(hs[0]?.body ?? ''), hs[0]?.body);
+    const r = sql(`SELECT end_reason, hangup_method, hangup_confirm_ms FROM call_outcomes WHERE call_sid = '${call.callSid}'`)[0];
+    check(n, 'the call is recorded as ended by REST, with the time to confirm', r?.end_reason === 'silence' && r?.hangup_method === 'rest' && r?.hangup_confirm_ms > 0, JSON.stringify(r));
+  }
+  {
+    const sc = SCENARIOS.find(x => x.key === 'in_exotel');
+    const n = 'forced hang-up exotel';
+    console.log('\n▶ Carrier ignores the stream close over exotel (no hangup API)');
+    const before = mocks.log.hangups.length;
+    const call = await placeCall(mocks, { carrier: 'exotel', number: sc.number, from: sc.from, ignoreClose: true,
+      wsQuery: 'guardPromptMs=2000&guardHangupMs=1500&guardVerifyMs=1000',
+      drive: async ({ closed }) => { await Promise.race([closed, sleep(30000)]); } });
+    await sleep(3000);
+    check(n, 'no REST hangup is attempted (none exists); the call is still finalised once', mocks.log.hangups.length === before && sql(`SELECT COUNT(*) AS c FROM call_outcomes WHERE call_sid = '${call.callSid}'`)[0]?.c === 1, '');
   }
 }
 
@@ -1728,6 +1767,7 @@ try {
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
   if (!only || 'barge'.includes(only) || 'stop'.includes(only)) await stopWordScenario(mocks);
   if (!only || 'guards'.includes(only)) await guardsScenario(mocks);
+  if (!only || 'hangup'.includes(only) || 'guards'.includes(only)) await hangupScenario(mocks);
   if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);
   if (!only || 'disconnect'.includes(only)) await disconnectScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();
