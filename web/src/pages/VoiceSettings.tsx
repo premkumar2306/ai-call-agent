@@ -13,6 +13,7 @@ interface Voice {
   sttProvider: 'deepgram' | 'sarvam';
   ttsProvider: 'cartesia' | 'sarvam';
   voiceId?: string;
+  naturalFillers?: boolean;
   sarvamConfigured?: boolean;
 }
 
@@ -62,6 +63,7 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
           stt_provider: voice.sttProvider,
           tts_provider: voice.ttsProvider,
           voice_id: voice.voiceId?.trim() || null,
+          natural_fillers: !!voice.naturalFillers,
         }),
       });
       const json = await res.json();
@@ -120,6 +122,10 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
         <label htmlFor="vs-voice">Voice ID (optional)</label>
         <input id="vs-voice" className="input input-narrow" value={voice?.voiceId ?? ''} disabled={!voice} onChange={e => set({ voiceId: e.target.value })} placeholder="default" />
         {voice && <span className="help">{voiceHint}</span>}
+      </div>
+      <div className="field">
+        <label htmlFor="vs-fillers"><input id="vs-fillers" type="checkbox" checked={!!voice?.naturalFillers} disabled={!voice} onChange={e => set({ naturalFillers: e.target.checked })} /> Natural fillers</label>
+        <span className="help">While the assistant checks the calendar or thinks, it says a short "Let me check that for you" instead of staying silent.</span>
       </div>
       {voice && !voice.sarvamConfigured && (voice.sttProvider === 'sarvam' || voice.ttsProvider === 'sarvam') && (
         <NotAvailable feature="Hindi and Hinglish calls" plural>We've saved your choice; your line stays in English until the Avery team switches it on.</NotAvailable>

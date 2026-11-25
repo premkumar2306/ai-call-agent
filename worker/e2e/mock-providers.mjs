@@ -29,7 +29,9 @@ export async function startMocks({ port = 0 } = {}) {
   const stuck = new Set();
   // Faults a scenario switches on: refuse the next N speech-socket upgrades, fail the next N
   // voice requests, slow every model reply.
-  const faults = { sttRefuse: 0, ttsFail: 0, llmDelayMs: 0 };
+  // toolDelayMs: every tool call takes this long (the Worker asks the mock to hold it; see mockToolDelay).
+// msPerWord: how long a spoken word lasts in the synthesized audio (default 60: fast, so tests stay short).
+const faults = { sttRefuse: 0, ttsFail: 0, llmDelayMs: 0, toolDelayMs: 0, msPerWord: 0 };
   // Plivo account contents for GET Number/ and Application/:id/ (set by the run).
   const plivo = { numbers: [], apps: {} };
 
@@ -47,6 +49,11 @@ export async function startMocks({ port = 0 } = {}) {
         if (faults.llmDelayMs) await sleep(faults.llmDelayMs);
         return anthropic(JSON.parse(body), res, log);
       }
+      if (host === 'tool.mock' && path === '/delay') {
+        // A slow tool (see mockToolDelay in the Worker): hold the reply.
+        if (faults.toolDelayMs) await sleep(faults.toolDelayMs);
+        return json(res, 200, { ok: true });
+      }
       if (host === 'ics.mock.test') {
         // A practice-software calendar export: today (IST) is fully booked.
         log.other.push({ host, path, method: req.method });
@@ -58,12 +65,12 @@ export async function startMocks({ port = 0 } = {}) {
         const b = JSON.parse(body);
         if (faults.ttsFail > 0) { faults.ttsFail--; log.other.push({ host, path, failed: true }); return json(res, 503, { error: 'unavailable' }); }
         log.tts.push({ provider: 'cartesia', text: b.transcript, format: b.output_format, at: Date.now() });
-        return audioResponse(res, b.transcript);
+        return audioResponse(res, b.transcript, faults.msPerWord);
       }
       if (host === 'api.sarvam.ai' && path === '/text-to-speech/stream') {
         const b = JSON.parse(body);
         log.tts.push({ provider: 'sarvam', text: b.text, format: { codec: b.output_audio_codec, sample_rate: b.speech_sample_rate, language: b.language_code }, at: Date.now() });
-        return audioResponse(res, b.text);
+        return audioResponse(res, b.text, faults.msPerWord);
       }
       if (host === 'graph.facebook.com') return graph(req, path, body, res, log, url);
       // Carrier call-control REST (CallTerminator): status reads and hangups.
@@ -387,9 +394,9 @@ function razorpay(method, path, body, auth, res, log) {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 const MS_PER_WORD = 60;
-function audioResponse(res, text) {
+function audioResponse(res, text, msPerWord = 0) {
   // Raw µ-law 8 kHz, roughly as long as the words would take to say.
-  const bytes = Math.max(1600, String(text).split(/\s+/).length * 8 * MS_PER_WORD);
+  const bytes = Math.max(1600, String(text).split(/\s+/).length * 8 * (msPerWord || MS_PER_WORD));
   res.writeHead(200, { 'content-type': 'application/octet-stream' });
   const buf = Buffer.alloc(bytes);
   for (let i = 0; i < bytes; i++) buf[i] = i % 16 < 8 ? 0x7f : 0xff;   // a quiet buzz, not silence

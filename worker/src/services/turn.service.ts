@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, SessionPayload } from '../types';
 import { createAnthropic, MAX_TOOL_ROUNDS, VOICE_MODEL_TIMEOUT_MS, voiceModel } from '../config';
+import { mockToolDelay } from '../utils/provider-mock';
 import { formatMoney, localeOf } from '../utils/locale';
 import { getSector } from './sector.service';
 import { getProducts } from './catalog.service';
@@ -382,6 +383,13 @@ export interface RunTurnOptions {
   onUsage?: (model: string, usage: Anthropic.Usage) => void;
   /** Every tool call: name, performance.now() at start and end, and whether it succeeded (turn timeline). */
   onTool?: (name: string, startAbs: number, endAbs: number, ok: boolean) => void;
+  /**
+   * The model began a tool call (its block started streaming — before the tool
+   * runs). CallRelay uses it to acknowledge right away instead of leaving the
+   * caller in silence. Not called when text the model was about to say is
+   * still unspoken: that text is the acknowledgement.
+   */
+  onToolStart?: (name: string) => void;
 }
 
 export async function runTurn(
@@ -584,6 +592,9 @@ export async function runTurn(
       try {
         for await (const event of stream) {
           armStall();
+          if (event.type === 'content_block_start' && event.content_block.type === 'tool_use' && !buffer.trim()) {
+            opts.onToolStart?.(event.content_block.name);
+          }
           if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
             if (!firstTokenLapped) { lap(`anthropic#${i} first-token`); firstTokenLapped = true; }
             roundText += event.delta.text;
@@ -619,6 +630,7 @@ export async function runTurn(
         console.log(`[${tag}] tool: ${tb.name} ${JSON.stringify(tb.input).slice(0, 200)}`);
         const toolT0 = Date.now();
         const toolPerf0 = performance.now();
+        await mockToolDelay(env, tb.name);   // e2e only; no-op in production
         // After an emergency the assistant never books or offers slots.
         const result = emergencyActive && (tb.name === 'book_appointment' || tb.name === 'check_availability')
           ? { success: false, error: 'EMERGENCY', spoken_response: guardrailReply('emergency', 'en', sectorMeta) } as ToolResult

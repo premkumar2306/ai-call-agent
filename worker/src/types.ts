@@ -50,6 +50,7 @@ export interface SectorMeta {
   assistantName?: string;
   // Keypad digits count as answers to "what's your number / date?" (0028). Absent = off.
   dtmfInput?: boolean;
+  naturalFillers?: boolean;
   // Runaway-call guards (0032). Absent = defaults: 20 s silence → "still there?", 10 s → second nudge, 10 s → goodbye, 5 min cap.
   silencePromptSec?: number;
   silenceHangupSec?: number;
