@@ -117,6 +117,10 @@ export interface BargeDecision {
   words: number;
   threshold: number;
   interrupt: boolean;
+  /** Deepgram's confidence for the words, when known (interim and final results carry it). */
+  confidence?: number;
+  /** Which word list the words matched: listener feedback, a stop word, or neither. */
+  lexicon: 'backchannel' | 'stop' | 'none';
   /** enough_words | stop_word | too_few_words | backchannel | echo | low_confidence | too_short */
   reason: 'enough_words' | 'stop_word' | 'too_few_words' | 'backchannel' | 'echo' | 'low_confidence' | 'too_short';
 }
@@ -141,10 +145,15 @@ export function bargeInDecision(
   gate: { interim?: boolean; confidence?: number; minConfidence?: number; level?: InterruptionLevel; voicedMs?: number } = {},
 ): BargeDecision {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
-  const d = (interrupt: boolean, reason: BargeDecision['reason']): BargeDecision => ({ text: text.slice(0, 60), words, threshold: minWords, interrupt, reason });
   const tokens = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  const backchannel = gate.level === 'low' ? isBackchannelLow(text, lang) : isBackchannel(text, lang);
+  const stop = tokens.length > 0 && tokens.length <= 2 && tokens.every(t => STOP_WORDS.has(t));
+  const d = (interrupt: boolean, reason: BargeDecision['reason']): BargeDecision => ({
+    text: text.slice(0, 60), words, threshold: minWords, interrupt, reason, confidence: gate.confidence,
+    lexicon: backchannel ? 'backchannel' : stop ? 'stop' : 'none',
+  });
   if (gate.level === 'low') {
-    if (isBackchannelLow(text, lang)) return d(false, 'backchannel');
+    if (backchannel) return d(false, 'backchannel');
     if (isEcho?.(text)) return d(false, 'echo');
     if (gate.voicedMs !== undefined && gate.voicedMs < LOW_MIN_VOICED_MS) return d(false, 'too_short');
     if (gate.confidence !== undefined && gate.minConfidence && gate.confidence < gate.minConfidence) return d(false, 'low_confidence');
@@ -153,11 +162,11 @@ export function bargeInDecision(
     if (tokens.length === 1 && STOP_WORDS.has(tokens[0]!) && gate.confidence !== undefined && gate.confidence >= LOW_STOP_WORD_CONFIDENCE) return d(true, 'stop_word');
     return d(false, 'too_few_words');
   }
-  if (isBackchannel(text, lang)) return d(false, 'backchannel');
+  if (backchannel) return d(false, 'backchannel');
   if (isEcho?.(text)) return d(false, 'echo');
   if (gate.interim) {
     if (gate.confidence !== undefined && gate.minConfidence && gate.confidence < gate.minConfidence) return d(false, 'low_confidence');
-    if (tokens.length > 0 && tokens.length <= 2 && tokens.every(t => STOP_WORDS.has(t))) return d(true, 'stop_word');
+    if (stop) return d(true, 'stop_word');
     return words >= Math.max(minWords, INTERIM_MIN_WORDS) ? d(true, 'enough_words') : d(false, 'too_few_words');
   }
   return words >= minWords ? d(true, 'enough_words') : d(false, 'too_few_words');

@@ -29,6 +29,15 @@ describe('bargeInDecision (default: interim barge-in off)', () => {
   });
 });
 
+describe('bargeInDecision descriptor', () => {
+  it('reports which word list matched and the confidence, never needs the text', () => {
+    expect(bargeInDecision('uh huh', 2, 'en', undefined, live)).toMatchObject({ lexicon: 'backchannel', confidence: 0.9 });
+    expect(bargeInDecision('stop', 2, 'en', undefined, live)).toMatchObject({ lexicon: 'stop' });
+    expect(bargeInDecision('I need to change it', 2, 'en', undefined, live)).toMatchObject({ lexicon: 'none' });
+    expect(bargeInDecision('I need to change it', 2, 'en').confidence).toBeUndefined();
+  });
+});
+
 describe('bargeInDecision at LOW interruption sensitivity', () => {
   const low = { level: 'low' as const, confidence: 0.95, voicedMs: 600 };
   it('listener feedback, including "haan", "ji", "yes", never interrupts', () => {

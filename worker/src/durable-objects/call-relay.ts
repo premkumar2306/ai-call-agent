@@ -17,7 +17,8 @@ import { createCallCache, transferKey, type CallCache } from '../services/call-c
 import { recordCallOutcome } from '../services/metrics';
 import { CallTerminator, VERIFY_MS } from '../telephony/terminator';
 import { bargeInDecision, fixPhoneNumbers, isBackchannel, isBackchannelLow, isDiscourseOnly, isEchoOf, type BargeDecision, type EndInfo, type Stt } from './stt-deepgram';
-import { TurnTimeline, saveTurnRows, timelineLog, toRow, type TurnRowContext } from '../services/turn-timeline';
+import { TurnTimeline, saveTurnRows, timelineLog, toRow, MAX_HEARD, type HeardInfo, type TurnRowContext } from '../services/turn-timeline';
+import { LineLevel } from '../services/line-level';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
 import { DEFAULT_VOICE, isDefaultTuning, isDefaultVoice, resolveTuning, resolveVoiceSettings, sttDiffers, voiceLines, PATIENT_ENDPOINTING_MS, type ResolvedTuning, type VoiceSettings } from '../services/voice-language';
 import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
@@ -239,6 +240,7 @@ export class CallRelay extends DurableObject<Env> {
   // non-interrupting verdict logged, and the clear the carrier still has to acknowledge.
   private utteranceSignalAt = 0;
   private lastVerdict?: BargeDecision;
+  private line = new LineLevel();   // caller-line energy, for the barge-in diagnostics
   private lastSkipKey = '';
   private clearInfo?: { at: number; marks: Set<string>; acked: boolean; tl?: TurnTimeline };
   // A transfer to staff was requested: close the stream (→ /twilio/after-stream
@@ -538,11 +540,27 @@ export class CallRelay extends DurableObject<Env> {
     if (!this.agentActive) return;
     const b = this.active?.tl?.barge;
     if (b) { b.decisions++; if (!d.interrupt && b.skipped.length < 5) b.skipped.push({ reason: d.reason, words: d.words, word: triggerWord(d.text) }); }
+    this.noteHeard('interim', d.interrupt, d.reason, d);
     if (d.interrupt || this.lastSkipKey === d.reason) return;
     this.lastSkipKey = d.reason;
     logEvent('info', 'barge.decision', {
       callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: 'interim', words: d.words, threshold: d.threshold,
       vad: this.vadBargeIn, echo: d.reason === 'echo', interrupt: false, reason: d.reason,
+    });
+  }
+
+  // Records, for the turn's timeline, what was heard at a barge-in decision: numbers only, never the words.
+  // Interim verdicts repeat as an interim grows, so a repeat of the same outcome is not stored again.
+  private noteHeard(signal: HeardInfo['signal'], interrupt: boolean, reason: string, d?: BargeDecision, words?: number) {
+    const b = this.active?.tl?.barge;
+    if (!b || !this.agentActive) return;
+    const list = (b.heard ??= []);
+    const last = list[list.length - 1];
+    if (list.length >= MAX_HEARD || (last && last.signal === signal && last.reason === reason && last.interrupt === interrupt)) return;
+    const { noiseFloorDb, voicedMs } = this.line.snapshot();
+    list.push({
+      signal, interrupt, reason, words: d?.words ?? words, conf: d?.confidence !== undefined ? Math.round(d.confidence * 100) / 100 : undefined,
+      voicedMs, lexicon: d?.lexicon, floorDb: noiseFloorDb, sinceSpeakMs: Date.now() - this.speakStartedAt,
     });
   }
 
@@ -575,11 +593,12 @@ export class CallRelay extends DurableObject<Env> {
         callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: reason, vad: this.vadBargeIn,
         interrupt, reason: why, sinceSpeakMs: now - this.speakStartedAt, ...extra,
       });
-    if (reason === 'vad' && !this.vadBargeIn) { if (this.lastSkipKey !== 'vad_off') { this.lastSkipKey = 'vad_off'; log(false, 'vad_off'); } return; }
-    if (now - this.speakStartedAt < (this.tuning.interruption === 'low' ? BARGE_IN_MIN_SPEAK_LOW_MS : BARGE_IN_MIN_SPEAK_MS)) { log(false, 'too_early'); return; }
+    if (reason === 'vad' && !this.vadBargeIn) { if (this.lastSkipKey !== 'vad_off') { this.lastSkipKey = 'vad_off'; log(false, 'vad_off'); this.noteHeard('vad', false, 'vad_off'); } return; }
+    if (now - this.speakStartedAt < (this.tuning.interruption === 'low' ? BARGE_IN_MIN_SPEAK_LOW_MS : BARGE_IN_MIN_SPEAK_MS)) { log(false, 'too_early'); this.noteHeard(reason === 'vad' ? 'vad' : 'interim', false, 'too_early'); return; }
     const v = reason === 'interim' ? this.lastVerdict : undefined;
     const b = this.active?.tl?.barge;
     if (b) b.decisions++;
+    if (reason === 'vad') this.noteHeard('vad', true, 'vad');
     log(true, v?.reason ?? 'vad', v ? { words: v.words, threshold: v.threshold, echo: false } : {});
     this.bargeIn(v?.reason ?? 'vad', v?.text);
   }
@@ -688,6 +707,7 @@ export class CallRelay extends DurableObject<Env> {
         vad: this.vadBargeIn, interrupt: true, reason: 'transcript',
       });
       if (this.active?.tl) this.active.tl.barge.decisions++;
+      this.noteHeard('final', true, 'transcript', undefined, text.trim().split(/\s+/).filter(Boolean).length);
       this.bargeIn('transcript', text);
     }
     this.utteranceSignalAt = 0;
@@ -1215,6 +1235,7 @@ export class CallRelay extends DurableObject<Env> {
       // Always forward — even while the assistant speaks — so STT can detect barge-in.
       this.lastMediaAt = Date.now();
       this.sttBytes += ev.audio.byteLength;
+      this.line.push(ev.audio);
       this.stt.sendAudio(ev.audio.buffer.slice(ev.audio.byteOffset, ev.audio.byteOffset + ev.audio.byteLength) as ArrayBuffer);
       this.guardTick();   // also on every frame, so a goodbye or hand-off ends the stream as promptly as it always did
 
