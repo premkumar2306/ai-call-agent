@@ -2,7 +2,7 @@ import { eq, asc } from 'drizzle-orm';
 import { getDb } from '../db/client';
 import { sectors as sectorsTable, resources as resourcesTable } from '../db/schema';
 import type { Env, Resource, SectorMeta } from '../types';
-import { resolveVoiceSettings, type VoiceSettings } from './voice-language';
+import { resolveVoiceSettings, type EndpointingMode, type InterruptionLevel, type SpeakingRate, type VoiceSettings } from './voice-language';
 
 // Versioned with the SectorMeta shape: a list cached by an older deploy lacks
 // newer fields (assistantName, 0018), so it must not be read after an upgrade.
@@ -40,6 +40,13 @@ function rowToMeta(row: typeof sectorsTable.$inferSelect): SectorMeta {
       ttsProvider: row.ttsProvider as VoiceSettings['ttsProvider'],
       voiceId: row.voiceId ?? undefined,
     } }),
+    // Only present when something was chosen, so other businesses read exactly as before.
+    ...(row.speakingRate || row.interruptionSensitivity || row.endpointing || row.noiseCancellation != null ? { tuning: {
+      ...(row.speakingRate ? { speakingRate: row.speakingRate as SpeakingRate } : {}),
+      ...(row.interruptionSensitivity ? { interruption: row.interruptionSensitivity as InterruptionLevel } : {}),
+      ...(row.endpointing ? { endpointing: row.endpointing as EndpointingMode } : {}),
+      ...(row.noiseCancellation != null ? { noiseCancellation: row.noiseCancellation } : {}),
+    } } : {}),
     kind:       row.kind ?? undefined,
     ...(row.assistantName ? { assistantName: row.assistantName } : {}),
     // Only present when on, so a business without it reads exactly as before.
@@ -218,7 +225,7 @@ export async function updateSectorVoice(env: Env, key: string, voice: Partial<Vo
 
 /** Changes only the given columns of an existing sector. False if there's no such sector. */
 export async function updateSector(env: Env, key: string, patch: Partial<Pick<typeof sectorsTable.$inferInsert,
-  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity' | 'dtmfInput' | 'silencePromptSec' | 'silenceHangupSec' | 'maxCallMinutes'>>): Promise<boolean> {
+  'name' | 'kind' | 'vertical' | 'assistantName' | 'address' | 'phone' | 'website' | 'timezone' | 'currency' | 'countryCode' | 'locale' | 'hours' | 'about' | 'notifyEmail' | 'capacity' | 'dtmfInput' | 'silencePromptSec' | 'silenceHangupSec' | 'maxCallMinutes' | 'speakingRate' | 'interruptionSensitivity' | 'endpointing' | 'noiseCancellation'>>): Promise<boolean> {
   const rows = await getDb(env.DB).update(sectorsTable)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(sectorsTable.key, key))

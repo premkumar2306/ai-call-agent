@@ -11,7 +11,7 @@ export interface ClinicPreset {
   kind: string;                       // BUSINESS_KINDS key (accounts.ts)
   countryCode: string; currency: string; timezone: string; locale: string;
   /** POST /admin/sectors/:key/voice fields. hi-en = English with Hindi/Hinglish. */
-  voice: { voice_language: string; stt_provider: string; tts_provider: string };
+  voice: { voice_language: string; stt_provider: string; tts_provider: string; speaking_rate?: string; interruption_sensitivity?: string; endpointing?: string; noise_cancellation?: boolean };
   /** A placeholder until the owner confirms real hours. Same as the sign-up wizard's default. */
   hours: Record<string, string>;
   /** Starter list (same as the Services page "dental" starter). Price 0 = price on request. */
@@ -30,7 +30,8 @@ export const INDIA_DENTAL: ClinicPreset = {
   id: 'india-dental',
   kind: 'dental',
   countryCode: 'IN', currency: 'INR', timezone: 'Asia/Kolkata', locale: 'en-IN',
-  voice: { voice_language: 'hi-en', stt_provider: 'sarvam', tts_provider: 'sarvam' },
+  // Calmer call feel for noisy Indian phone lines (migration 0035): slower voice, hard to interrupt by accident, patient, noise reduction.
+  voice: { voice_language: 'hi-en', stt_provider: 'sarvam', tts_provider: 'sarvam', speaking_rate: 'slow', interruption_sensitivity: 'low', endpointing: 'patient', noise_cancellation: true },
   hours: { mon: '9am–6pm', tue: '9am–6pm', wed: '9am–6pm', thu: '9am–6pm', fri: '9am–6pm', sat: '10am–2pm' },
   services: [
     { name: 'Consultation', durationMinutes: 15, category: 'CONSULTATION' },

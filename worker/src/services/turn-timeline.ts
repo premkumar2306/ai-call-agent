@@ -35,8 +35,12 @@ export interface BargeInfo {
   ttsDropped: number;
   /** Marks acknowledged more than 400 ms after the clear: the carrier kept playing. */
   playedAfterClear: number;
-  /** Last few non-interrupting decisions (reason + words), for the timeline. */
-  skipped: { reason: string; words: number }[];
+  /** Last few non-interrupting decisions (reason + words), for the timeline. `word` is the first word heard, at most 12 characters. */
+  skipped: { reason: string; words: number; word?: string }[];
+  /** The first word heard when the assistant was cut off, at most 12 characters. */
+  word?: string;
+  /** The reply was withdrawn (cut-in within 2 s of it starting: "caller wasn't finished"). */
+  withdrawn?: boolean;
 }
 
 export class TurnTimeline {

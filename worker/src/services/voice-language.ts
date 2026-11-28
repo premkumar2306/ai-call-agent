@@ -53,6 +53,78 @@ export function usesSarvam(v: VoiceSettings): boolean {
   return v.sttProvider === 'sarvam' || v.ttsProvider === 'sarvam';
 }
 
+// ── Call-feel tuning (migration 0035) ───────────────────────────────────────
+// Four per-business settings. Stored NULL = automatic: Indian businesses
+// (country IN) get the calmer set, everyone else gets exactly today's
+// behaviour. Explicit values always win.
+
+export const SPEAKING_RATES = ['slow', 'normal', 'fast'] as const;
+export type SpeakingRate = typeof SPEAKING_RATES[number];
+export const INTERRUPTION_LEVELS = ['low', 'normal', 'high'] as const;
+export type InterruptionLevel = typeof INTERRUPTION_LEVELS[number];
+export const ENDPOINTING_MODES = ['patient', 'normal'] as const;
+export type EndpointingMode = typeof ENDPOINTING_MODES[number];
+
+/** What the owner chose explicitly. Absent fields are automatic. */
+export interface VoiceTuning {
+  speakingRate?: SpeakingRate;
+  interruption?: InterruptionLevel;
+  endpointing?: EndpointingMode;
+  noiseCancellation?: boolean;
+}
+
+export interface ResolvedTuning {
+  speakingRate: SpeakingRate;
+  /** Multiplier sent to the voice; 1 = send nothing (today's request). */
+  rate: number;
+  interruption: InterruptionLevel;
+  endpointing: EndpointingMode;
+  noiseCancellation: boolean;
+}
+
+export const SPEAKING_RATE_VALUE: Record<SpeakingRate, number> = { slow: 0.9, normal: 1, fast: 1.1 };
+/** Deepgram endpointing (ms) for "patient"; "normal" keeps DG_ENDPOINTING_MS / 250. */
+export const PATIENT_ENDPOINTING_MS = 700;
+
+export function resolveTuning(meta: { countryCode?: string; tuning?: VoiceTuning | null } | null | undefined): ResolvedTuning {
+  const t = meta?.tuning ?? {};
+  const india = meta?.countryCode === 'IN';
+  const speakingRate = t.speakingRate ?? (india ? 'slow' : 'normal');
+  return {
+    speakingRate,
+    rate: SPEAKING_RATE_VALUE[speakingRate],
+    interruption: t.interruption ?? (india ? 'low' : 'normal'),
+    endpointing: t.endpointing ?? (india ? 'patient' : 'normal'),
+    noiseCancellation: t.noiseCancellation ?? india,
+  };
+}
+
+export function isDefaultTuning(t: ResolvedTuning): boolean {
+  return t.speakingRate === 'normal' && t.interruption === 'normal' && t.endpointing === 'normal' && !t.noiseCancellation;
+}
+
+/** Validates the tuning fields of an admin request (snake_case). null clears a field back to automatic. */
+export function parseTuningInput(body: Record<string, unknown>): { ok: true; value: Record<string, string | boolean | null> } | { ok: false; error: string } {
+  const out: Record<string, string | boolean | null> = {};
+  const pick = (field: string, col: string, allowed: readonly string[]) => {
+    const v = body[field];
+    if (v === undefined) return null;
+    if (v !== null && !allowed.includes(v as string)) return `${field} must be one of ${allowed.join(', ')} (or null for automatic)`;
+    out[col] = v as string | null;
+    return null;
+  };
+  const err = pick('speaking_rate', 'speakingRate', SPEAKING_RATES)
+    ?? pick('interruption_sensitivity', 'interruptionSensitivity', INTERRUPTION_LEVELS)
+    ?? pick('endpointing', 'endpointing', ENDPOINTING_MODES);
+  if (err) return { ok: false, error: err };
+  const nc = body.noise_cancellation;
+  if (nc !== undefined) {
+    if (nc !== null && typeof nc !== 'boolean') return { ok: false, error: 'noise_cancellation must be true, false or null (automatic)' };
+    out.noiseCancellation = nc as boolean | null;
+  }
+  return { ok: true, value: out };
+}
+
 const VOICE_ID_RE = /^[A-Za-z0-9_.:-]{1,100}$/;
 
 /**
@@ -257,6 +329,7 @@ export function languageRules(lang: VoiceLanguage): string {
     : '- Callers here mix Hindi and English (Hinglish). Reply in the language the caller is using right now: Hinglish if they mix, English if they speak English, Hindi if they speak Hindi. Switch when they switch.';
   return `LANGUAGE (Hindi / Hinglish phone line):
 ${lead}
+- Keep sentences short, and ask one question at a time; the caller is on a phone line, often a noisy one.
 - Speak naturally, like a polite front-desk person in India: "जी", "आप", "बताइए". Mixing in the English words people actually use is good ("appointment", "service", "booking", "Sunday").
 - Write every Hindi word in Devanagari (मैं, आपका, कल) — never romanised Hindi ("main", "aapka"). English words, brand and service names stay in English letters. The voice reads Devanagari as Hindi and English letters as English.
 - End Hindi sentences with "।" or "?" — never leave a sentence without its full stop.

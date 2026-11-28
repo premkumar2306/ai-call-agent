@@ -9,6 +9,8 @@ import { PREAUTH_HEADER, PROVIDER_HEADER } from '../telephony';
 import { background, forwardedFromParam, recordCallRouting } from '../services/pilot';
 import { logEvent } from '../utils/telemetry';
 import { markCarrierEnded, parseEpoch } from '../services/call-end';
+import { getSector } from '../services/sector.service';
+import { resolveTuning } from '../services/voice-language';
 
 // Plivo (Indian numbers, alternative to Exotel). A Plivo application's
 // Answer URL is POST https://<worker>/plivo/answer, which returns a
@@ -106,10 +108,13 @@ plivoRouter.post('/answer', requirePlivoSig, async (c) => {
   background(c, recordCallRouting(c.env, {
     carrier: 'plivo', callSid: p.CallUUID, businessType, calledNumber: normalizeE164(p.To, '91'), callerHash, forwardedFrom: forwardedFromParam(p),
   }));
+  // Carrier-side noise suppression (Plivo <Stream> noiseCancellation / noiseCancellationLevel 60–100,
+  // default 85). Per business; automatic-on for Indian lines.
+  const noise = resolveTuning(await getSector(c.env, businessType).catch(() => null)).noiseCancellation;
   const base = (c.env.PLIVO_WEBHOOK_URL ?? `https://${host}`).replace(/\/$/, '');
   return c.text(
     '<?xml version="1.0" encoding="UTF-8"?><Response>' +
-    `<Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">${xml(`wss://${host}/plivo/stream?token=${token}`)}</Stream>` +
+    `<Stream bidirectional="true" keepCallAlive="true"${noise ? ' noiseCancellation="true" noiseCancellationLevel="85"' : ''} contentType="audio/x-mulaw;rate=8000">${xml(`wss://${host}/plivo/stream?token=${token}`)}</Stream>` +
     `<Redirect method="POST">${xml(`${base}/plivo/after-stream`)}</Redirect></Response>`,
     200, XML,
   );

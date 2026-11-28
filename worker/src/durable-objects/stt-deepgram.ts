@@ -25,7 +25,7 @@
 // Results message.)
 
 import {
-  type VoiceLanguage, wordsOf, endsSentence,
+  type VoiceLanguage, type InterruptionLevel, wordsOf, endsSentence,
   HINDI_BACKCHANNEL_WORDS, HINDI_DANGLING_WORDS, HINDI_DISCOURSE_WORDS,
   DRAVIDIAN_BACKCHANNEL_WORDS, DRAVIDIAN_DANGLING_WORDS, DRAVIDIAN_DISCOURSE_WORDS,
 } from '../services/voice-language';
@@ -40,6 +40,11 @@ export interface SttOptions {
    * does it). On (VOICE_BARGE_IN_ON_INTERIM=1): interims count, but only with enough words and confidence.
    */
   interimBargeIn?: boolean;
+  /**
+   * The caller-interruption sensitivity, read at decision time (the sector lookup lands after the
+   * socket opens). 'low' = noise-robust rules, see bargeInDecision. Unset/'normal'/'high' = the rules above.
+   */
+  interruption?: () => InterruptionLevel;
   /** True when an interim transcript is our own voice coming back (speakerphone echo) — no barge-in. */
   isEcho?: (text: string) => boolean;
   /** Extra wait (ms) after a complete statement of 4+ words, for a follow-up question. Default 400; 0 disables. */
@@ -112,20 +117,44 @@ export interface BargeDecision {
   words: number;
   threshold: number;
   interrupt: boolean;
-  /** enough_words | stop_word | too_few_words | backchannel | echo */
-  reason: 'enough_words' | 'stop_word' | 'too_few_words' | 'backchannel' | 'echo' | 'low_confidence';
+  /** enough_words | stop_word | too_few_words | backchannel | echo | low_confidence | too_short */
+  reason: 'enough_words' | 'stop_word' | 'too_few_words' | 'backchannel' | 'echo' | 'low_confidence' | 'too_short';
+}
+
+// LOW interruption sensitivity (noisy rooms, TV, other people): a caller has to sound like they mean it.
+export const LOW_MIN_VOICED_MS = 350;
+/** A single stop word interrupts at LOW only when the recogniser is this sure of it. */
+export const LOW_STOP_WORD_CONFIDENCE = 0.85;
+// Backchannels at LOW: the usual lists plus the common Indian-English ones, in either script.
+const LOW_BACKCHANNEL = new Set(['yes', 'ya', 'yaa', 'haan', 'ji', 'accha', 'hmm', 'ok']);
+
+/** "haan", "ok ji", "yes" — listener feedback, with the wider LOW list. */
+export function isBackchannelLow(text: string, lang: VoiceLanguage): boolean {
+  if (isBackchannel(text, lang)) return true;
+  const words = wordsOf(text.replace(/-/g, ''), lang);
+  return words.length > 0 && words.length <= 3 && words.every(w => LOW_BACKCHANNEL.has(w) || BACKCHANNEL_WORDS.has(w) || HINDI_BACKCHANNEL_WORDS.has(w) || DRAVIDIAN_BACKCHANNEL_WORDS.has(w));
 }
 
 /** Whether recognised words heard while the assistant speaks are a real interruption, and why. */
 export function bargeInDecision(
   text: string, minWords: number, lang: VoiceLanguage, isEcho?: (t: string) => boolean,
-  gate: { interim?: boolean; confidence?: number; minConfidence?: number } = {},
+  gate: { interim?: boolean; confidence?: number; minConfidence?: number; level?: InterruptionLevel; voicedMs?: number } = {},
 ): BargeDecision {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   const d = (interrupt: boolean, reason: BargeDecision['reason']): BargeDecision => ({ text: text.slice(0, 60), words, threshold: minWords, interrupt, reason });
+  const tokens = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  if (gate.level === 'low') {
+    if (isBackchannelLow(text, lang)) return d(false, 'backchannel');
+    if (isEcho?.(text)) return d(false, 'echo');
+    if (gate.voicedMs !== undefined && gate.voicedMs < LOW_MIN_VOICED_MS) return d(false, 'too_short');
+    if (gate.confidence !== undefined && gate.minConfidence && gate.confidence < gate.minConfidence) return d(false, 'low_confidence');
+    if (tokens.length >= Math.max(minWords, 2)) return d(true, 'enough_words');
+    // One word: only a stop word the recogniser is sure of. No confidence (Sarvam) = no one-word rule.
+    if (tokens.length === 1 && STOP_WORDS.has(tokens[0]!) && gate.confidence !== undefined && gate.confidence >= LOW_STOP_WORD_CONFIDENCE) return d(true, 'stop_word');
+    return d(false, 'too_few_words');
+  }
   if (isBackchannel(text, lang)) return d(false, 'backchannel');
   if (isEcho?.(text)) return d(false, 'echo');
-  const tokens = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
   if (gate.interim) {
     if (gate.confidence !== undefined && gate.minConfidence && gate.confidence < gate.minConfidence) return d(false, 'low_confidence');
     if (tokens.length > 0 && tokens.length <= 2 && tokens.every(t => STOP_WORDS.has(t))) return d(true, 'stop_word');
@@ -250,7 +279,8 @@ export function fixPhoneNumbers(text: string): string {
 }
 
 /** Which STT signal ended the caller's speech, and when it arrived (performance.now()). For the per-turn latency timeline. */
-export interface EndInfo { signal: string; at: number }
+/** `confidence` (0–1) and `speechMs` (voiced audio in the utterance) are set when the provider knows them. */
+export interface EndInfo { signal: string; at: number; confidence?: number; speechMs?: number }
 export type OnTranscript = (text: string, end?: EndInfo) => void;
 
 export interface Stt {
@@ -312,6 +342,8 @@ export async function createDeepgramSTT(
   let lastEnd = 0;
   let lastConfidence = 1;
   let utteranceStart = 0;
+  // Audio time (s) where this utterance's first words began; -1 = none yet. With lastEnd it gives the voiced span.
+  let speechFrom = -1;
   let finalized = false;
   // Barge-in fires at most once per utterance. SpeechStarted and the first
   // interim both signal the same thing and can both arrive; whichever is
@@ -365,10 +397,12 @@ export async function createDeepgramSTT(
       segments = [];
       finalizedUntil = lastEnd;
       utteranceStart = 0;
+      speechFrom = -1;
       announced.clear();
       return;
     }
-    endInfo = { signal: reason, at: performance.now() };
+    endInfo = { signal: reason, at: performance.now(), confidence, ...(speechFrom >= 0 ? { speechMs: Math.max(0, (lastEnd - speechFrom) * 1000) } : {}) };
+    speechFrom = -1;
     const ms = utteranceStart ? Date.now() - utteranceStart : -1;
     console.log(`[dg stt] ⏱ transcript-finalized (${reason}): ${ms}ms — "${text}"`);
     lastText = '';
@@ -424,6 +458,7 @@ export async function createDeepgramSTT(
             segments = [];
             if (!utteranceStart) utteranceStart = Date.now();
           }
+          if (text && speechFrom < 0) speechFrom = msg.start;
           lastEnd = Math.max(lastEnd, msg.start + msg.duration);
         }
         if (text) onActivity?.();
@@ -454,7 +489,10 @@ export async function createDeepgramSTT(
             }
             // Barge-in once there are enough words to be a real interruption
             // — and not just the caller saying "mm-hmm" while listening.
-            const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, { interim: opts.interimBargeIn, confidence, minConfidence });
+            const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, {
+              interim: opts.interimBargeIn, confidence, minConfidence, level: opts.interruption?.(),
+              voicedMs: typeof msg.duration === 'number' ? msg.duration * 1000 : undefined,
+            });
             opts.onBargeDecision?.(verdict);
             if (verdict.interrupt) announceSpeech('interim');
           } else if (!finalized) {

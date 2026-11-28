@@ -28,3 +28,27 @@ describe('bargeInDecision (default: interim barge-in off)', () => {
     expect(bargeInDecision('I need', 2, 'en')).toMatchObject({ interrupt: true, reason: 'enough_words' });
   });
 });
+
+describe('bargeInDecision at LOW interruption sensitivity', () => {
+  const low = { level: 'low' as const, confidence: 0.95, voicedMs: 600 };
+  it('listener feedback, including "haan", "ji", "yes", never interrupts', () => {
+    for (const w of ['haan', 'ji', 'accha', 'ok', 'yes', 'hmm', 'haan ji', 'ok ji']) expect(bargeInDecision(w, 2, 'hi-en', undefined, low)).toMatchObject({ interrupt: false, reason: 'backchannel' });
+  });
+  it('two or more words interrupt; one ordinary word does not', () => {
+    expect(bargeInDecision('ruko, ek minute', 2, 'hi-en', undefined, low)).toMatchObject({ interrupt: true, reason: 'enough_words' });
+    expect(bargeInDecision('table', 2, 'en', undefined, low)).toMatchObject({ interrupt: false, reason: 'too_few_words' });
+  });
+  it('one stop word needs high confidence, and Sarvam (no confidence) never gets the one-word rule', () => {
+    expect(bargeInDecision('stop', 2, 'en', undefined, low)).toMatchObject({ interrupt: true, reason: 'stop_word' });
+    expect(bargeInDecision('stop', 2, 'en', undefined, { ...low, confidence: 0.7 })).toMatchObject({ interrupt: false });
+    expect(bargeInDecision('रुको', 2, 'hi', undefined, { level: 'low', voicedMs: 600 })).toMatchObject({ interrupt: false, reason: 'too_few_words' });
+  });
+  it('needs 350 ms of voiced audio and a confident transcript', () => {
+    expect(bargeInDecision('ruko ek minute', 2, 'hi-en', undefined, { ...low, voicedMs: 200 })).toMatchObject({ interrupt: false, reason: 'too_short' });
+    expect(bargeInDecision('ruko ek minute', 2, 'hi-en', undefined, { ...low, minConfidence: 0.5, confidence: 0.3 })).toMatchObject({ interrupt: false, reason: 'low_confidence' });
+  });
+  it('NORMAL is unchanged: "haan" alone is still not a backchannel for English, a stop word still needs interim mode', () => {
+    expect(bargeInDecision('stop', 2, 'en')).toMatchObject({ interrupt: false, reason: 'too_few_words' });
+    expect(bargeInDecision('yes', 2, 'en')).toMatchObject({ interrupt: false, reason: 'too_few_words' });
+  });
+});

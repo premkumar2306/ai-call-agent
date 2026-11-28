@@ -14,6 +14,11 @@ interface Voice {
   ttsProvider: 'cartesia' | 'sarvam';
   voiceId?: string;
   sarvamConfigured?: boolean;
+  // How calls feel (what the line uses now; automatic until saved).
+  speakingRate?: 'slow' | 'normal' | 'fast';
+  interruptionSensitivity?: 'low' | 'normal' | 'high';
+  endpointing?: 'patient' | 'normal';
+  noiseCancellation?: boolean;
 }
 
 const LANGUAGES = [
@@ -62,6 +67,10 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
           stt_provider: voice.sttProvider,
           tts_provider: voice.ttsProvider,
           voice_id: voice.voiceId?.trim() || null,
+          speaking_rate: voice.speakingRate,
+          interruption_sensitivity: voice.interruptionSensitivity,
+          endpointing: voice.endpointing,
+          noise_cancellation: voice.noiseCancellation,
         }),
       });
       const json = await res.json();
@@ -120,6 +129,39 @@ export default function VoiceSettings({ base, auth, sectors }: Props) {
         <label htmlFor="vs-voice">Voice ID (optional)</label>
         <input id="vs-voice" className="input input-narrow" value={voice?.voiceId ?? ''} disabled={!voice} onChange={e => set({ voiceId: e.target.value })} placeholder="default" />
         {voice && <span className="help">{voiceHint}</span>}
+      </div>
+      <div className="form-grid">
+        <div className="field">
+          <label htmlFor="vs-rate">Speaking speed</label>
+          <select id="vs-rate" className="input" value={voice?.speakingRate ?? 'normal'} disabled={!voice} onChange={e => set({ speakingRate: e.target.value as Voice['speakingRate'] })}>
+            <option value="slow">Slower (easier to follow on a phone)</option>
+            <option value="normal">Normal</option>
+            <option value="fast">Faster</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="vs-interrupt">How easily callers can interrupt</label>
+          <select id="vs-interrupt" className="input" value={voice?.interruptionSensitivity ?? 'normal'} disabled={!voice} onChange={e => set({ interruptionSensitivity: e.target.value as Voice['interruptionSensitivity'] })}>
+            <option value="low">Hard (ignores noise and "haan"; needs a few words)</option>
+            <option value="normal">Normal</option>
+            <option value="high">Easy (stops at the first sound)</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="vs-wait">Wait for the caller to finish</label>
+          <select id="vs-wait" className="input" value={voice?.endpointing ?? 'normal'} disabled={!voice} onChange={e => set({ endpointing: e.target.value as Voice['endpointing'] })}>
+            <option value="patient">Patient (waits through pauses)</option>
+            <option value="normal">Normal</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="vs-noise">Reduce background noise</label>
+          <select id="vs-noise" className="input" value={voice?.noiseCancellation ? 'on' : 'off'} disabled={!voice} onChange={e => set({ noiseCancellation: e.target.value === 'on' })}>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+          {voice && <span className="help">Works on Plivo phone lines.</span>}
+        </div>
       </div>
       {voice && !voice.sarvamConfigured && (voice.sttProvider === 'sarvam' || voice.ttsProvider === 'sarvam') && (
         <NotAvailable feature="Hindi and Hinglish calls" plural>We've saved your choice; your line stays in English until the Avery team switches it on.</NotAvailable>

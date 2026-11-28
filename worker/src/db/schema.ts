@@ -28,6 +28,11 @@ export const sectors = sqliteTable('sectors', {
   sttProvider:   text('stt_provider').notNull().default('deepgram'), // deepgram | sarvam
   ttsProvider:   text('tts_provider').notNull().default('cartesia'), // cartesia | sarvam
   voiceId:       text('voice_id'),                                   // Cartesia voice id / Sarvam speaker; null = default
+  // Call-feel tuning (0035); null = automatic (calmer set for India, today's behaviour elsewhere).
+  speakingRate:           text('speaking_rate'),             // slow | normal | fast
+  interruptionSensitivity: text('interruption_sensitivity'),  // low | normal | high
+  endpointing:            text('endpointing'),               // patient | normal
+  noiseCancellation:      integer('noise_cancellation', { mode: 'boolean' }),
   kind:         text('kind'),                 // clinic | salon | auto_shop… (onboarding wizard)
   dtmfInput:    integer('dtmf_input', { mode: 'boolean' }).notNull().default(false), // keypad digits as answers (0028)
   assistantName: text('assistant_name'),      // spoken name (0018); null = "Avery"

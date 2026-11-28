@@ -1,4 +1,4 @@
-import type { VoiceSettings } from './services/voice-language';
+import type { VoiceSettings, VoiceTuning } from './services/voice-language';
 
 // BusinessType is a string so new verticals can be added without code changes
 export type BusinessType = string;
@@ -44,6 +44,8 @@ export interface SectorMeta {
   // Phone-line language and STT/TTS providers (migration 0012). Absent on
   // sector lists cached before it shipped — resolveVoiceSettings() defaults.
   voice?: VoiceSettings;
+  /** Explicit call-feel choices (0035); absent = automatic (see resolveTuning). */
+  tuning?: VoiceTuning;
   // What kind of business (clinic, salon, auto_shop…), set by the onboarding wizard.
   kind?: string;
   // The assistant's spoken name (0018). Unset = "Avery" (assistantNameOf).

@@ -33,6 +33,12 @@ export interface CartesiaConfig {
    * also needs a Hindi-native voiceId.
    */
   language?: string;
+  /**
+   * Speaking-speed multiplier. Unset or 1 sends nothing (today's request). Sent as
+   * generation_config.speed, the sonic-3 control (documented range 0.6–1.5). Not
+   * verified against the live API from a session; check the first slow call by ear.
+   */
+  speed?: number;
 }
 
 /** Issues the synthesis request. Resolves when response headers are available. */
@@ -55,6 +61,7 @@ export async function cartesiaStart(
       transcript: text,
       voice: { mode: 'id', id: cfg.voiceId ?? DEFAULT_VOICE_ID },
       ...(cfg.language ? { language: cfg.language } : {}),
+      ...(cfg.speed && cfg.speed !== 1 ? { generation_config: { speed: cfg.speed } } : {}),
       output_format: { container: 'raw', encoding: 'pcm_mulaw', sample_rate: 8000 },
     }),
   });

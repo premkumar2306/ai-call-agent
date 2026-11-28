@@ -10,7 +10,7 @@ import {
   MAX_RESOURCES, parseResourceInput, resourceRowToInput, setNumberRequestStatus, updateResource, upsertWhatsAppNumber,
 } from '../services/self-serve';
 import { parseHoursRanges } from '../services/tool-router.service';
-import { parseVoiceInput, resolveVoiceSettings } from '../services/voice-language';
+import { parseTuningInput, parseVoiceInput, resolveTuning, resolveVoiceSettings } from '../services/voice-language';
 import { getDb } from '../db/client';
 import { costRates, fromDb, latencyReport, turnCost } from '../services/turn-timeline';
 import { getDefaultBusiness, setDefaultBusiness } from '../services/line-config';
@@ -177,10 +177,17 @@ adminRouter.post('/sectors', withAdminKey, async (c) => {
 adminRouter.get('/sectors/:key/voice', withBusinessAccess('staff', 'key'), async (c) => {
   const meta = await getSector(c.env, c.req.param('key') ?? '');
   if (!meta) return c.json({ success: false, error: 'Sector not found' }, 404);
-  return c.json({ success: true, data: { ...resolveVoiceSettings(meta), sarvamConfigured: !!c.env.SARVAM_API_KEY } });
+  const t = resolveTuning(meta);
+  return c.json({ success: true, data: {
+    ...resolveVoiceSettings(meta), sarvamConfigured: !!c.env.SARVAM_API_KEY,
+    // What the call will actually use (explicit choice, or the automatic default for this business).
+    speakingRate: t.speakingRate, interruptionSensitivity: t.interruption, endpointing: t.endpointing, noiseCancellation: t.noiseCancellation,
+    tuningAutomatic: !meta.tuning,
+  } });
 });
 
-// PUT /admin/sectors/:key/voice { voice_language?, stt_provider?, tts_provider?, voice_id?, dtmf_input? }
+// PUT /admin/sectors/:key/voice { voice_language?, stt_provider?, tts_provider?, voice_id?, dtmf_input?,
+//   speaking_rate?, interruption_sensitivity?, endpointing?, noise_cancellation? (null = automatic) }
 // Changes only the voice settings (POST /admin/sectors replaces the whole sector).
 adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async (c) => {
   const key = c.req.param('key') ?? '';
@@ -202,7 +209,10 @@ adminRouter.put('/sectors/:key/voice', withBusinessAccess('owner', 'key'), async
     if (v !== null && !(Number.isInteger(v) && (v as number) >= 1 && (v as number) <= max)) return c.json({ success: false, error: `${field} must be a whole number from 1 to ${max}, or null for the default` }, 400);
     guards[col] = v as number | null;
   }
+  const tuning = parseTuningInput(body as Record<string, unknown>);
+  if (!tuning.ok) return c.json({ success: false, error: tuning.error }, 400);
   await updateSectorVoice(c.env, key, voice.value);
+  if (Object.keys(tuning.value).length) await updateSector(c.env, key, tuning.value);
   if (typeof dtmf === 'boolean') await updateSector(c.env, key, { dtmfInput: dtmf });
   if (Object.keys(guards).length) await updateSector(c.env, key, guards);
   const updated = { ...current, ...voice.value };
@@ -573,6 +583,18 @@ adminRouter.get('/transcripts/:businessType', withBusinessAccess('staff'), async
     rows = rows.filter(r => r.callSid?.startsWith('wa:'));
   }
   return c.json({ success: true, data: rows });
+});
+
+// GET /admin/calls?business=&days=7 — recent calls for one business (operator key only): ids, carrier,
+// length, turn count and how each ended. No caller identity. Feeds scripts/voice-quality-report.mjs.
+adminRouter.get('/calls', withAdminKey, async (c) => {
+  const business = c.req.query('business') ?? '';
+  if (!business) return c.json({ success: false, error: 'business is required' }, 400);
+  const days = Math.min(90, Math.max(1, Number(c.req.query('days')) || 7));
+  const { results } = await c.env.DB.prepare(
+    'SELECT call_sid, carrier, started_at, duration_seconds, user_turns, end_reason, transferred, is_test FROM call_outcomes WHERE business_type = ? AND started_at >= ? ORDER BY started_at DESC LIMIT 500',
+  ).bind(business, Math.floor(Date.now() / 1000) - days * 86_400).all();
+  return c.json({ success: true, data: { business, days, calls: results } });
 });
 
 // GET /admin/calls/:callSid/turns — the per-turn latency timeline and counters for one call

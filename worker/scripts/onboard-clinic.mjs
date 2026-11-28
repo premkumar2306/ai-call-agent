@@ -62,6 +62,8 @@ const steps = [
     body: P.services.map(s => ({ id: serviceId(key, s.name), business_type: key, vendor_id: vendorId, vendor_name: lead.name, name: s.name,
       category: s.category, type: 'SERVICE_APPOINTMENT', fulfillment_type: 'SERVICE_BOOKING', description: '', price_cents: 0, duration_minutes: s.durationMinutes })) },
   { id: 'dtmf', label: 'DTMF digit input', method: 'PUT', path: `/admin/sectors/${key}/voice`, body: { dtmf_input: P.dtmfInput } },
+  { id: 'feel', label: 'Call feel: slow voice, low interruption sensitivity, patient turn-taking, noise reduction', method: 'PUT', path: `/admin/sectors/${key}/voice`, body: {
+    speaking_rate: P.voice.speaking_rate, interruption_sensitivity: P.voice.interruption_sensitivity, endpointing: P.voice.endpointing, noise_cancellation: P.voice.noise_cancellation } },
   { id: 'guardrails', label: 'Guardrails', method: 'PUT', path: `/admin/guardrails/${key}`, body: { enabled: P.guardrails } },
   { id: 'dpdp', label: 'DPDP disclosure', method: 'PUT', path: `/admin/privacy/${key}/settings`, body: { ...P.dpdp } },
   { id: 'clinic', label: 'Duration booking ON; recalls, no-show, review requests OFF', method: 'PUT', path: `/clinic/${key}`, body: {
