@@ -102,9 +102,9 @@ export function createTts(env: Env, voice: VoiceSettings, rate = 1): TtsProvider
       language: voice.language,
       speaker: voice.voiceId ?? env.SARVAM_TTS_SPEAKER,
       model: env.SARVAM_TTS_MODEL,
-      pace: sarvamPace(env.SARVAM_TTS_PACE),
+      // The business's speed setting multiplies the calibrated base pace: slow (0.9) is slower than normal.
+      pace: Math.round(sarvamPace(env.SARVAM_TTS_PACE) * rate * 100) / 100,
       codec: env.SARVAM_TTS_CODEC === 'linear16' ? 'linear16' as const : 'mulaw' as const,
-      ...(rate !== 1 ? { pace: rate } : {}),
     };
     return { name: 'sarvam', start: (text, signal) => sarvamTtsStart(cfg, text, signal) };
   }

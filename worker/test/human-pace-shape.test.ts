@@ -35,3 +35,18 @@ describe('India voice rules', () => {
     expect(buildAgentRules('x', 'Clinic', 'chat', undefined, 'en', 'Avery', '', true)).not.toContain('half past ten');
   });
 });
+
+describe('Sarvam pace with the business speed setting', () => {
+  it('multiplies the calibrated base pace, so slow is slower than normal', async () => {
+    const sent: number[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (_u: any, init: any) => { sent.push(JSON.parse(init.body).pace); return new Response('', { status: 500 }); }) as any;
+    try {
+      const v = { language: 'hi', sttProvider: 'sarvam', ttsProvider: 'sarvam' } as any;
+      await createTts({ SARVAM_API_KEY: 'k' } as any, v).start('x');
+      await createTts({ SARVAM_API_KEY: 'k' } as any, v, 0.9).start('x');
+      await createTts({ SARVAM_API_KEY: 'k' } as any, v, 1.1).start('x');
+    } finally { globalThis.fetch = orig; }
+    expect(sent).toEqual([0.8, 0.72, 0.88]);
+  });
+});
