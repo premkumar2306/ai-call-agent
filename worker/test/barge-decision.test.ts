@@ -28,3 +28,12 @@ describe('bargeInDecision (default: interim barge-in off)', () => {
     expect(bargeInDecision('I need', 2, 'en')).toMatchObject({ interrupt: true, reason: 'enough_words' });
   });
 });
+
+describe('bargeInDecision descriptor', () => {
+  it('reports which word list matched and the confidence, never needs the text', () => {
+    expect(bargeInDecision('uh huh', 2, 'en', undefined, live)).toMatchObject({ lexicon: 'backchannel', confidence: 0.9 });
+    expect(bargeInDecision('stop', 2, 'en', undefined, live)).toMatchObject({ lexicon: 'stop' });
+    expect(bargeInDecision('I need to change it', 2, 'en', undefined, live)).toMatchObject({ lexicon: 'none' });
+    expect(bargeInDecision('I need to change it', 2, 'en').confidence).toBeUndefined();
+  });
+});
