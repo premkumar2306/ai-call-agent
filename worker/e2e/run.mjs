@@ -128,7 +128,11 @@ const toWs = url => url.replace(/^wss:\/\/[^/]+/, `ws://127.0.0.1:${PORT}`);
 
 const ALL_DAY = Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => [d, '12am–11:59pm']));
 
-async function setupBusiness({ key, name, country, phone, number, provider, voice, vertical }) {
+// `tuning`: call-feel settings (migration 0035). Left out, an Indian business is pinned to the plain
+// "normal" feel so the older scenarios keep testing the behaviour they were written for; 'auto' leaves
+// it automatic (the calmer Indian defaults); an object sets exactly those fields.
+const PINNED_NORMAL = { speaking_rate: 'normal', interruption_sensitivity: 'normal', endpointing: 'normal', noise_cancellation: false };
+async function setupBusiness({ key, name, country, phone, number, provider, voice, vertical, tuning }) {
   const india = country === 'IN';
   await api('POST', '/admin/sectors', {
     key, name, hours: ALL_DAY, model: 'service', categories: ['GENERAL'],
@@ -142,6 +146,7 @@ async function setupBusiness({ key, name, country, phone, number, provider, voic
     description: 'A 30 minute consultation.', price_cents: india ? 50000 : 5000, duration_minutes: 30,
   });
   if (voice) await api('PUT', `/admin/sectors/${key}/voice`, voice);
+  if (india && tuning !== 'auto') await api('PUT', `/admin/sectors/${key}/voice`, tuning ?? PINNED_NORMAL);
   await api('PUT', '/admin/phone-numbers', { number, provider, businessType: key });
 }
 
@@ -781,6 +786,57 @@ async function backchannelScenario(mocks) {
   check(n, 'the descriptors contain no transcript text', !/mm-hmm/i.test(JSON.stringify(td)), 'checked the turns API output');
 }
 
+// Production runs with interim barge-in off (VOICE_BARGE_IN_ON_INTERIM unset), which the simulator turns on for
+// everyone. This scenario runs a Deepgram call with it off (?interimBarge=0) and asks how fast the assistant yields
+// to a real interruption: US (NORMAL sensitivity) only after the final transcript, India (LOW sensitivity) on the
+// interim words, before the final arrives (the mock's interim lands ~120 ms after speech starts, the final ~320 ms).
+async function yieldDefaultScenario(mocks) {
+  for (const b of [{ key: 'us_twilio', carrier: 'twilio', low: false }, { key: 'in_plivo_en', carrier: 'plivo', low: true }]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `yield (production default) ${b.carrier}`;
+    console.log(`\n▶ Yielding with interim barge-in off, ${b.carrier} (${b.low ? 'LOW' : 'NORMAL'} sensitivity)`);
+    const r = {};
+    if (b.low) await api('PUT', `/admin/sectors/${b.key}/voice`, { ...PINNED_NORMAL, interruption_sensitivity: 'low' });
+    await placeCall(mocks, {
+      carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'interimBarge=0',
+      drive: async ({ call, quiet, remainingMs }) => {
+        const replyAt = Date.now();
+        await mocks.say('Tell me about your services please.');
+        for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+        while (Date.now() - replyAt < 2600) await sleep(100);
+        for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+        const c1 = call.cleared, said = Date.now();
+        await mocks.say('Actually I want to book an appointment.');
+        for (let i = 0; i < 20 && call.cleared === c1; i++) await sleep(50);
+        r.clearMs = call.clearTimes.at(c1) ? call.clearTimes[c1] - said : null;
+        await quiet(said);
+      },
+    });
+    if (b.low) {
+      // The faster yield must not make noise or listener feedback interrupt: a cough, "haan" and "mm-hmm" while the assistant talks.
+      const q = {};
+      await placeCall(mocks, {
+        carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'interimBarge=0',
+        drive: async ({ call, quiet, remainingMs }) => {
+          await mocks.say('Tell me about your services please.');
+          for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+          const c0 = call.cleared, llm0 = mocks.log.anthropic.length;
+          await mocks.cough(); await sleep(300);
+          await mocks.say('haan'); await sleep(300);
+          await mocks.say('mm-hmm'); await sleep(400);
+          q.cleared = call.cleared - c0; q.turns = mocks.log.anthropic.length - llm0;
+          await quiet(Date.now());
+        },
+      });
+      check(n, 'LOW: a cough, "haan" and "mm-hmm" neither interrupt nor start a turn', q.cleared === 0 && q.turns === 0, `${q.cleared} clear frame(s), ${q.turns} model call(s)`);
+    }
+    if (b.low) await api('PUT', `/admin/sectors/${b.key}/voice`, PINNED_NORMAL);
+    check(n, 'the real interruption clears the carrier playback', r.clearMs != null, `${r.clearMs}ms`);
+    if (b.low) check(n, 'LOW sensitivity yields on the interim words, before the final transcript (< 250 ms)', r.clearMs != null && r.clearMs < 250, `${r.clearMs}ms`);
+    else check(n, 'NORMAL sensitivity keeps its historical behaviour: yields at the final transcript (> 250 ms)', r.clearMs != null && r.clearMs >= 250, `${r.clearMs}ms`);
+  }
+}
+
 // Runaway-call guards on every carrier: a caller who goes silent is asked "still there?" then
 // told goodbye and the carrier leg is ended (after-stream answers hangup, no dial); a call at
 // its maximum length is wrapped up; no audio from the carrier ends the call. Short timings come
@@ -905,6 +961,110 @@ async function stopWordScenario(mocks) {
     check(n, 'the turn records the interruption with its reason (stop_word) and the clear time', hit?.reason === 'stop_word' && typeof hit.clearMs === 'number', JSON.stringify(hit));
     check(n, 'the interrupted turn is marked interrupted', turns.some(t => t.barge_in && t.outcome === 'interrupted'), JSON.stringify(turns.map(t => [t.barge_in, t.outcome])));
   }
+}
+
+// Call feel (migration 0035): speaking speed reaches the voice, noise cancellation reaches the Plivo
+// <Stream>, patient endpointing reaches Deepgram, and LOW interruption sensitivity ignores noise and a
+// lone "haan" but not "ruko, ek minute" or a real sentence, and never withdraws a reply.
+async function voiceFeelScenario(mocks) {
+  const n = 'voice feel';
+  console.log('\n▶ Call feel: speaking speed, noise cancellation, patient turn-taking, LOW interruption sensitivity');
+  const answerFor = async (to) => (await (await plivoPost('/plivo/answer', { CallUUID: `pl-${randomUUID()}`, From: '919812300555', To: to.replace(/^\+/, ''), Direction: 'inbound', CallStatus: 'ringing', Event: 'StartApp' })).text());
+
+  // 1. Automatic defaults: Indian business → calm set; the US business → today's behaviour.
+  await setupBusiness({ key: 'in_feel_auto', name: 'Auto Feel Dental', country: 'IN', phone: '+919876500041', number: '+918047100041', provider: 'plivo', tuning: 'auto' });
+  const auto = await api('GET', '/admin/sectors/in_feel_auto/voice');
+  check(n, 'an Indian business with nothing chosen gets slow / low / patient / noise reduction on', auto.speakingRate === 'slow' && auto.interruptionSensitivity === 'low' && auto.endpointing === 'patient' && auto.noiseCancellation === true && auto.tuningAutomatic === true, JSON.stringify(auto));
+  const us = await api('GET', '/admin/sectors/us_twilio/voice');
+  check(n, 'the US business stays normal / normal / normal / off', us.speakingRate === 'normal' && us.interruptionSensitivity === 'normal' && us.endpointing === 'normal' && us.noiseCancellation === false, JSON.stringify(us));
+  const xmlAuto = await answerFor('+918047100041');
+  check(n, 'Plivo <Stream> asks for noise cancellation (level 85) when the flag is on', /<Stream [^>]*noiseCancellation="true"[^>]*noiseCancellationLevel="85"/.test(xmlAuto), xmlAuto.slice(38, 220));
+  const xmlOff = await answerFor('+918047100002');   // in_plivo_en: pinned off
+  check(n, 'and does not when it is off', /<Stream /.test(xmlOff) && !/noiseCancellation/.test(xmlOff), xmlOff.slice(38, 200));
+  const bad = await fetch(`${BASE}/admin/sectors/in_feel_auto/voice`, { method: 'PUT', headers: { 'X-Admin-Key': ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ speaking_rate: 'warp' }) });
+  check(n, 'an unknown speaking_rate is a 400', bad.status === 400, `${bad.status}`);
+
+  // 2. Deepgram + Cartesia, explicit LOW / patient / slow.
+  await setupBusiness({ key: 'in_feel', name: 'Feel Dental', country: 'IN', phone: '+919876500042', number: '+918047100042', provider: 'plivo',
+    tuning: { speaking_rate: 'slow', interruption_sensitivity: 'low', endpointing: 'patient', noise_cancellation: true } });
+  const r = {};
+  const sttBefore = mocks.log.stt.length, ttsBefore = mocks.log.tts.length;
+  const call = await placeCall(mocks, {
+    carrier: 'plivo', number: '+918047100042', from: '+919812300556',
+    drive: async ({ call, quiet, remainingMs }) => {
+      const waitPlaying = async () => { for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50); };
+      await mocks.say('Tell me about your services please.');
+      await waitPlaying();
+      await sleep(900);   // past the first 600 ms of the reply
+      const c0 = call.cleared, llm0 = mocks.log.anthropic.length;
+      await mocks.cough(); await sleep(150); await mocks.cough(); await sleep(150); await mocks.cough();
+      await sleep(300);
+      r.noiseCleared = call.cleared - c0;
+      await mocks.say('haan');
+      await sleep(800);
+      r.haanCleared = call.cleared - c0;
+      r.haanTurns = mocks.log.anthropic.length - llm0;
+      await mocks.say('ruko, ek minute');
+      for (let i = 0; i < 20 && call.cleared === c0; i++) await sleep(50);
+      r.rukoCleared = call.cleared - c0;
+      await quiet(Date.now() - 1);
+      // A reply cut in on 1.2 s after it began: at LOW this is an interruption, never "caller wasn't finished".
+      await mocks.say('Tell me about your services please.');
+      await waitPlaying();
+      await sleep(1200);
+      const c1 = call.cleared;
+      await mocks.say('Actually I want to book an appointment.');
+      for (let i = 0; i < 20 && call.cleared === c1; i++) await sleep(50);
+      r.sentenceCleared = call.cleared - c1;
+      await quiet(Date.now() - 1);
+    },
+  });
+  check(n, 'LOW: background-noise bursts do not interrupt', r.noiseCleared === 0, `${r.noiseCleared} clear frame(s)`);
+  check(n, 'LOW: a single "haan" does not interrupt or start a turn', r.haanCleared === 0 && r.haanTurns === 0, `${r.haanCleared} clear, ${r.haanTurns} model call(s)`);
+  check(n, 'LOW: "ruko, ek minute" does interrupt', r.rukoCleared >= 1, `${r.rukoCleared} clear frame(s)`);
+  check(n, 'LOW: a full sentence does interrupt', r.sentenceCleared >= 1, `${r.sentenceCleared} clear frame(s)`);
+  await sleep(500);
+  const turns = sql(`SELECT barge FROM call_turn_metrics WHERE call_sid = '${call.callSid}' ORDER BY turn_n`).map(t => { try { return JSON.parse(t.barge ?? 'null'); } catch { return null; } });
+  const withdrawn = turns.filter(b => b?.withdrawn);
+  const hit = turns.find(b => b?.interrupts > 0);
+  check(n, 'LOW: the 2-second "caller wasn\'t finished" withdrawal never fires', withdrawn.length === 0 && turns.filter(b => b?.interrupts > 0).length >= 2, `${withdrawn.length} withdrawn of ${turns.length} turn(s)`);
+  check(n, 'the turn record keeps the trigger word (max 12 chars), not the sentence', typeof hit?.word === 'string' && hit.word.length <= 12 && !/\s/.test(hit.word), JSON.stringify(hit));
+  check(n, 'patient: Deepgram is opened with the longer endpointing', mocks.log.stt.slice(sttBefore).some(s => s.kind === 'deepgram' && Number(s.query.endpointing) >= 600), JSON.stringify(mocks.log.stt.slice(sttBefore).map(s => s.query.endpointing)));
+  const speeds = mocks.log.tts.slice(ttsBefore).filter(t => t.provider === 'cartesia').map(t => t.speed);
+  // The opener is requested before the business is known (at the normal speed); it's then dropped and said again slowly.
+  check(n, 'slow: the speaking-rate reaches the Cartesia request (speed 0.9), the opener included', speeds.length > 1 && speeds.slice(1).every(v => v === 0.9), JSON.stringify(speeds.slice(0, 4)));
+
+  // 3. Sarvam: pace reaches the voice; one word is not enough without a confidence score; two words are.
+  await setupBusiness({ key: 'in_feel_hi', name: 'Feel Hindi Dental', country: 'IN', phone: '+919876500043', number: '+918047100043', provider: 'plivo',
+    voice: { voice_language: 'hi', stt_provider: 'sarvam', tts_provider: 'sarvam' }, tuning: 'auto' });
+  const h = {};
+  const ttsBeforeHi = mocks.log.tts.length;
+  await placeCall(mocks, {
+    carrier: 'plivo', number: '+918047100043', from: '+919812300557',
+    drive: async ({ call, quiet, remainingMs }) => {
+      const waitPlaying = async () => { for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50); };
+      await mocks.say('Tell me about your services please.', { voicedMs: 600 });
+      await waitPlaying();
+      await sleep(900);
+      const c0 = call.cleared;
+      await mocks.say('रुको', { voicedMs: 600 });   // one word, no confidence from Sarvam
+      await sleep(1200);
+      h.oneWord = call.cleared - c0;
+      await mocks.say('रुको, एक मिनट', { voicedMs: 700 });
+      for (let i = 0; i < 30 && call.cleared === c0; i++) await sleep(50);
+      h.twoWords = call.cleared - c0;
+      await quiet(Date.now() - 1);
+    },
+  });
+  const paces = mocks.log.tts.slice(ttsBeforeHi).filter(t => t.provider === 'sarvam').map(t => t.pace);
+  check(n, 'slow: the pace reaches the Sarvam request (0.72 = 0.9 x the calibrated base 0.8)', paces.length > 0 && paces.every(v => v === 0.72), JSON.stringify(paces.slice(0, 4)));
+  check(n, 'LOW on Sarvam: one word is ignored (no confidence score), two words interrupt', h.oneWord === 0 && h.twoWords >= 1, `one word ${h.oneWord}, two words ${h.twoWords}`);
+
+  // 4. The US business: nothing new in its voice request.
+  const ttsBeforeUs = mocks.log.tts.length;
+  await placeCall(mocks, { carrier: 'twilio', number: '+13125550199', from: '+13125550177', lines: ["Hi, I'd like to book an appointment."] });
+  const usTts = mocks.log.tts.slice(ttsBeforeUs);
+  check(n, 'US business: no speed in its Cartesia requests', usTts.length > 0 && usTts.every(t => t.speed === undefined), `${usTts.length} request(s)`);
 }
 
 // Keypad digits on every carrier: with input off, digits are ignored and 0 still
@@ -1800,10 +1960,12 @@ try {
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'latency'.includes(only)) await latencyApiScenario();
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
+  if (!only || 'barge'.includes(only) || 'yield'.includes(only)) await yieldDefaultScenario(mocks);
   if (!only || 'barge'.includes(only) || 'backchannel'.includes(only)) await backchannelScenario(mocks);
   if (!only || 'barge'.includes(only) || 'stop'.includes(only)) await stopWordScenario(mocks);
   if (!only || 'guards'.includes(only)) await guardsScenario(mocks);
   if (!only || 'hangup'.includes(only) || 'guards'.includes(only)) await hangupScenario(mocks);
+  if (!only || 'voice'.includes(only) || 'feel'.includes(only)) await voiceFeelScenario(mocks);
   if (!only || 'dtmf'.includes(only)) await dtmfScenario(mocks);
   if (!only || 'disconnect'.includes(only)) await disconnectScenario(mocks);
   if (!only || 'pilot'.includes(only)) await pilotScenario();

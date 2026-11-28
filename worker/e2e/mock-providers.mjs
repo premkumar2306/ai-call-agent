@@ -57,7 +57,7 @@ export async function startMocks({ port = 0 } = {}) {
       if (host === 'api.cartesia.ai' && path === '/tts/bytes') {
         const b = JSON.parse(body);
         if (faults.ttsFail > 0) { faults.ttsFail--; log.other.push({ host, path, failed: true }); return json(res, 503, { error: 'unavailable' }); }
-        log.tts.push({ provider: 'cartesia', text: b.transcript, format: b.output_format, at: Date.now() });
+        log.tts.push({ provider: 'cartesia', text: b.transcript, format: b.output_format, speed: b.generation_config?.speed, at: Date.now() });
         return audioResponse(res, b.transcript);
       }
       if (host === 'api.sarvam.ai' && path === '/text-to-speech/stream') {
@@ -143,7 +143,7 @@ export async function startMocks({ port = 0 } = {}) {
   const url = `http://127.0.0.1:${server.address().port}`;
 
   /** The caller says `text`: the open STT socket recognises it, as its provider would. */
-  async function say(text) {
+  async function say(text, { voicedMs = 200 } = {}) {
     if (!stt) throw new Error('no speech-recognition socket is open');
     const { kind, ws } = stt;
     if (kind === 'deepgram') {
@@ -160,7 +160,7 @@ export async function startMocks({ port = 0 } = {}) {
       ws.send(results(true, true));
     } else {
       ws.send(JSON.stringify({ type: 'events', data: { signal_type: 'START_SPEECH' } }));
-      await sleep(200);
+      await sleep(voicedMs);
       ws.send(JSON.stringify({ type: 'events', data: { signal_type: 'END_SPEECH' } }));
       ws.send(JSON.stringify({ type: 'data', data: { transcript: text } }));
     }

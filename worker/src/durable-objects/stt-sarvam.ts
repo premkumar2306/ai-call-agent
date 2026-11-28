@@ -27,7 +27,7 @@
 import type { BargeDecision, EndInfo, OnTranscript, SpeechStartReason, Stt } from './stt-deepgram';
 import { bargeInDecision, looksIncomplete } from './stt-deepgram';
 import { MulawUpsampler, bytesToBase64, pcm16ToBytes } from './audio';
-import type { VoiceLanguage } from '../services/voice-language';
+import type { InterruptionLevel, VoiceLanguage } from '../services/voice-language';
 
 export const SARVAM_STT_URL = 'https://api.sarvam.ai/speech-to-text/ws';
 export const DEFAULT_SARVAM_STT_MODEL = 'saaras:v3';
@@ -47,6 +47,9 @@ export interface SarvamSttOptions {
   bargeInMinWords?: number;
   onBargeDecision?: (d: BargeDecision) => void;
   interimBargeIn?: boolean;
+  interruption?: () => InterruptionLevel;
+  /** Extra ms a finished utterance waits before it's answered (patient turn-taking); speaking again extends it. Default 0. */
+  settleMs?: number;
   /** How long a transcript ending on a dangling word waits for the rest. Default 900; 0 disables. */
   incompleteHoldMs?: number;
   /** Ask Sarvam for its high-sensitivity VAD (quiet callers, noisy lines). */
@@ -80,7 +83,7 @@ export async function createSarvamSTT(
   onTranscript: OnTranscript,
   onSpeechStart?: (reason: SpeechStartReason) => void,
 ): Promise<Stt> {
-  const { apiKey, language: lang, debug = false, bargeInMinWords = 2, incompleteHoldMs = 900, isEcho, onActivity, onClose } = opts;
+  const { apiKey, language: lang, debug = false, bargeInMinWords = 2, incompleteHoldMs = 900, settleMs = 0, isEcho, onActivity, onClose } = opts;
   if (!apiKey) throw new Error('Missing SARVAM_API_KEY');
 
   const resp = await fetch(sarvamSttUrl(opts), {
@@ -115,7 +118,9 @@ export async function createSarvamSTT(
     const text = raw.trim();
     const ms = utteranceStart ? Date.now() - utteranceStart : -1;
     const afterEnd = speechEndAt ? Date.now() - speechEndAt : -1;
-    endInfo = { signal: speechEndPerf ? 'END_SPEECH' : 'transcript', at: speechEndPerf || performance.now() };
+    const speechMs = utteranceStart && speechEndAt ? speechEndAt - utteranceStart : undefined;
+    // Sarvam gives no confidence, so none is passed (LOW's one-word rule stays off).
+    endInfo = { signal: speechEndPerf ? 'END_SPEECH' : 'transcript', at: speechEndPerf || performance.now(), ...(speechMs !== undefined ? { speechMs } : {}) };
     utteranceStart = 0;
     speechEndAt = 0;
     speechEndPerf = 0;
@@ -126,12 +131,13 @@ export async function createSarvamSTT(
     holdTimer = undefined;
     const combined = [held, text].filter(Boolean).join(' ');
     // No interims: this is the first moment there are words to barge in on.
-    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, { interim: opts.interimBargeIn });   // transcript-time: the final-transcript backstop already interrupts
+    const verdict = bargeInDecision(text, bargeInMinWords, lang, isEcho, { interim: opts.interimBargeIn, level: opts.interruption?.(), voicedMs: speechMs });   // transcript-time: the final-transcript backstop already interrupts
     opts.onBargeDecision?.(verdict);
     if (verdict.interrupt) onSpeechStart?.('interim');
-    if (incompleteHoldMs > 0 && looksIncomplete(combined, lang)) {
+    const incomplete = incompleteHoldMs > 0 && looksIncomplete(combined, lang);
+    if (incomplete || settleMs > 0) {
       held = combined;
-      holdTimer = setTimeout(releaseHeld, incompleteHoldMs);
+      holdTimer = setTimeout(releaseHeld, incomplete ? incompleteHoldMs : settleMs);
       if (debug) console.log(`[sarvam stt] holding incomplete "${combined}"`);
       return;
     }

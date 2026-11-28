@@ -12,7 +12,7 @@ describe('India dental preset', () => {
   it('sets exactly the agreed defaults', () => {
     expect({ c: P.countryCode, cur: P.currency, tz: P.timezone, loc: P.locale, kind: P.kind, voice: P.voice }).toEqual({
       c: 'IN', cur: 'INR', tz: 'Asia/Kolkata', loc: 'en-IN', kind: 'dental',
-      voice: { voice_language: 'hi-en', stt_provider: 'sarvam', tts_provider: 'sarvam' },
+      voice: { voice_language: 'hi-en', stt_provider: 'sarvam', tts_provider: 'sarvam', speaking_rate: 'slow', interruption_sensitivity: 'low', endpointing: 'patient', noise_cancellation: true },
     });
     expect([P.durationBooking, P.guardrails, P.dtmfInput, P.confirmationMode]).toEqual([true, true, true, true]);
     expect([P.plan, P.offer, P.pilot]).toEqual(['in_clinic', 'FOUNDING25', { mode: 'overflow', days: 14 }]);

@@ -16,11 +16,11 @@ import { maxDurationLine, troubleLine } from '../services/voice-language';
 import { createCallCache, transferKey, type CallCache } from '../services/call-context';
 import { recordCallOutcome } from '../services/metrics';
 import { CallTerminator, VERIFY_MS } from '../telephony/terminator';
-import { fixPhoneNumbers, isBackchannel, isDiscourseOnly, isEchoOf, type BargeDecision, type EndInfo, type Stt } from './stt-deepgram';
+import { bargeInDecision, fixPhoneNumbers, isBackchannel, isBackchannelLow, isDiscourseOnly, isEchoOf, type BargeDecision, type EndInfo, type Stt } from './stt-deepgram';
 import { TurnTimeline, saveTurnRows, timelineLog, toRow, MAX_HEARD, type HeardInfo, type TurnRowContext } from '../services/turn-timeline';
 import { LineLevel } from '../services/line-level';
 import { createStt, createTts, missingVoiceSecret, type TtsProvider } from './voice-providers';
-import { DEFAULT_VOICE, isDefaultVoice, resolveVoiceSettings, sttDiffers, voiceLines, type VoiceSettings } from '../services/voice-language';
+import { DEFAULT_VOICE, isDefaultTuning, isDefaultVoice, resolveTuning, resolveVoiceSettings, sttDiffers, voiceLines, PATIENT_ENDPOINTING_MS, type ResolvedTuning, type VoiceSettings } from '../services/voice-language';
 import { verifyStreamToken, verifyCompactStreamToken } from '../utils/stream-token';
 import { callerIdentity, getOrCreateCustomer } from '../utils/identity';
 import { customerHashSalt, isProduction, voiceModel } from '../config';
@@ -71,6 +71,10 @@ import { logEvent } from '../utils/telemetry';
 // speak. Guards against the leading edge of our own audio echoing back on a
 // speakerphone and instantly cutting off the reply we just began.
 const BARGE_IN_MIN_SPEAK_MS = 300;
+// At LOW interruption sensitivity the first moments of a reply are protected longer.
+const BARGE_IN_MIN_SPEAK_LOW_MS = 600;
+// Patient turn-taking on Sarvam (which has no endpointing setting): wait this long after a finished utterance.
+const PATIENT_SETTLE_MS = 500;
 
 // A speech socket that drops mid-call is reopened: up to STT_RECONNECT_TRIES
 // attempts (backoff 200 / 500 / 1000 ms) inside STT_RECOVER_WINDOW_MS. If the
@@ -128,6 +132,11 @@ const CONTINUATION_MS = 2000;
 // A transcript arriving this soon after our audio stopped can still be
 // that audio's echo.
 const ECHO_TAIL_MS = 1500;
+
+/** The first word of what the caller said, lowercase, at most 12 characters: enough to see what sets barge-in off, no more. */
+function triggerWord(text: string): string {
+  return (text.trim().split(/\s+/)[0] ?? '').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]/gu, '').slice(0, 12);
+}
 
 interface SpokenChunk { text: string; played: boolean; filler: boolean; tl?: TurnTimeline }
 
@@ -223,6 +232,7 @@ export class CallRelay extends DurableObject<Env> {
   private finalized = false;
   private guardTimer?: ReturnType<typeof setInterval>;
   // Short guard timings for the e2e simulator (?guardPromptMs=…); ignored in production.
+  private testInterimOff = false;   // e2e only (?interimBarge=0): run with production's default, interim barge-in off
   private testGuards: { promptMs?: number; hangupMs?: number; maxMs?: number; deadMediaMs?: number; verifyMs?: number } = {};
   private lastMediaAt = 0;
   private agentBusySince = 0;
@@ -262,6 +272,8 @@ export class CallRelay extends DurableObject<Env> {
   // When the sector lookup (made on every call anyway) says the business
   // uses something else, applyVoice() switches over: see the 'start' event.
   private voice: VoiceSettings = DEFAULT_VOICE;
+  // Speaking rate, interruption sensitivity, endpointing (migration 0035). Today's behaviour until the sector lookup lands.
+  private tuning: ResolvedTuning = resolveTuning(null);
   private lines = voiceLines('en');
   private tts?: TtsProvider;
   private sttGen = 0;
@@ -269,7 +281,7 @@ export class CallRelay extends DurableObject<Env> {
   private voiceReady: Promise<void> = Promise.resolve();
 
   private get ttsProvider(): TtsProvider {
-    return this.tts ??= createTts(this.env, this.voice);
+    return this.tts ??= createTts(this.env, this.voice, this.tuning.rate);
   }
 
   // The assistant is thinking or audible — the window in which caller speech
@@ -289,6 +301,7 @@ export class CallRelay extends DurableObject<Env> {
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
     if (!isProduction(this.env)) {
       const q = (k: string) => numEnv(url.searchParams.get(k) ?? undefined);
+      this.testInterimOff = url.searchParams.get('interimBarge') === '0';
       this.testGuards = { promptMs: q('guardPromptMs'), hangupMs: q('guardHangupMs'), maxMs: q('guardMaxMs'), deadMediaMs: q('guardDeadMs'), verifyMs: q('guardVerifyMs') };
     }
     const cfg = streamConfig(request);
@@ -312,12 +325,14 @@ export class CallRelay extends DurableObject<Env> {
       this.env,
       this.voice,
       {
-        endpointingMs: numEnv(this.env.DG_ENDPOINTING_MS),
+        endpointingMs: this.tuning.endpointing === 'patient' ? Math.max(PATIENT_ENDPOINTING_MS, numEnv(this.env.DG_ENDPOINTING_MS) ?? 0) : numEnv(this.env.DG_ENDPOINTING_MS),
+        settleMs: this.tuning.endpointing === 'patient' ? PATIENT_SETTLE_MS : 0,
+        interruption: () => this.tuning.interruption,
         minConfidence: numEnv(this.env.DG_MIN_CONFIDENCE),
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
         isEcho: (text) => this.looksLikeEcho(text),
         onBargeDecision: (d) => this.noteBargeDecision(d),
-        interimBargeIn: /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_INTERIM ?? ''),
+        interimBargeIn: !this.testInterimOff && /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_INTERIM ?? ''),
         // Mid-sentence speech must hold off "Are you still there?".
         onActivity: () => this.callerActive(),
         onClose: () => { if (gen === this.sttGen) this.handleSttDrop(); },
@@ -413,6 +428,24 @@ export class CallRelay extends DurableObject<Env> {
     if (!this.quietSince) this.quietSince = Date.now();
   }
 
+  // Applies the business's call-feel settings (before its voice, so a restarted STT/TTS already uses
+  // them). The default socket opened with today's endpointing; it's reopened only if that differs.
+  private applyTuning(meta: SectorMeta | null, applyVoice: () => void) {
+    const next = resolveTuning(meta);
+    const sttChanged = next.endpointing !== this.tuning.endpointing;
+    const rateChanged = next.rate !== this.tuning.rate;
+    this.tuning = next;
+    if (rateChanged) this.tts = undefined;   // recreated lazily at the new speed
+    const gen = this.sttGen;
+    applyVoice();
+    if (sttChanged && gen === this.sttGen && this.twWs?.readyState === WebSocket.OPEN) {
+      this.stt.close();
+      this.stt = { sendAudio: () => {}, close: () => {} };
+      this.startStt();
+    }
+    if (!isDefaultTuning(next)) console.log(`[call] ${this.callSid.slice(-8)} tuning rate=${next.speakingRate} interrupt=${next.interruption} endpointing=${next.endpointing} noise=${next.noiseCancellation}`);
+  }
+
   // Switches the call to the business's voice settings once the sector
   // lookup lands. A no-op for default settings (the US business).
   private applyVoice(voice: VoiceSettings) {
@@ -427,7 +460,7 @@ export class CallRelay extends DurableObject<Env> {
     console.log(`[call] ${this.callSid.slice(-8)} voice ${voice.language} stt=${voice.sttProvider} tts=${voice.ttsProvider}`);
     this.voice = voice;
     this.lines = voiceLines(voice.language);
-    this.tts = createTts(this.env, voice);
+    this.tts = createTts(this.env, voice, this.tuning.rate);
     if (sttDiffers(voice)) {
       this.stt.close();
       this.stt = { sendAudio: () => {}, close: () => {} };
@@ -442,7 +475,7 @@ export class CallRelay extends DurableObject<Env> {
 
   // Stops the assistant: aborts generation and synthesis, and tells the
   // carrier to drop audio it has buffered but not yet played. `cause` is why.
-  private bargeIn(cause: string) {
+  private bargeIn(cause: string, heard?: string) {
     const now = Date.now();
     const turn = this.active;
     const first = !!turn && !turn.closed;
@@ -450,14 +483,18 @@ export class CallRelay extends DurableObject<Env> {
       turn.closed = true;
       if (turn.tl) turn.tl.bargeIn = true;
       // Cut in almost as soon as the reply began: they weren't finished.
-      if (!turn.greeting && (!turn.firstAudioAt || Date.now() - turn.firstAudioAt < CONTINUATION_MS)) {
+      // Not at LOW sensitivity: there, a cut-in is an interruption, never a sign the caller wasn't finished.
+      if (!turn.greeting && this.tuning.interruption !== 'low' && (!turn.firstAudioAt || Date.now() - turn.firstAudioAt < CONTINUATION_MS)) {
         turn.retracted = true;
         if (turn.committed) {
           const words = retractLastExchange(this.cache);
           if (words) this.carryOver = joinUtterances(words, this.carryOver);
           else turn.retracted = false;   // a tool ran — keep it on record
         }
-        if (turn.retracted) console.log(`[turn] caller wasn't finished — withdrawing the reply`);
+        if (turn.retracted) {
+          console.log(`[turn] caller wasn't finished — withdrawing the reply`);
+          if (turn.tl) turn.tl.barge.withdrawn = true;
+        }
       }
       turn.abort.abort();
       // The reply was already committed in full but the caller cut the
@@ -470,7 +507,7 @@ export class CallRelay extends DurableObject<Env> {
     if (first || marks.size) {
       const clearMs = this.utteranceSignalAt ? now - this.utteranceSignalAt : undefined;
       const b = turn?.tl?.barge;
-      if (b && first) { b.interrupts++; b.reason = cause; b.clearMs = clearMs; }
+      if (b && first) { b.interrupts++; b.reason = cause; b.clearMs = clearMs; if (heard) b.word = triggerWord(heard); }
       this.clearInfo = { at: now, marks, acked: false, tl: turn?.tl };
       logEvent('info', 'barge.clear', { callId: this.callSid.slice(-8), carrier: this.telephony.provider, cause, clearMs, sent, pendingMarks: marks.size, turn: turn?.id });
     }
@@ -504,7 +541,7 @@ export class CallRelay extends DurableObject<Env> {
     this.lastVerdict = d;
     if (!this.agentActive) return;
     const b = this.active?.tl?.barge;
-    if (b) { b.decisions++; if (!d.interrupt && b.skipped.length < 5) b.skipped.push({ reason: d.reason, words: d.words }); }
+    if (b) { b.decisions++; if (!d.interrupt && b.skipped.length < 5) b.skipped.push({ reason: d.reason, words: d.words, word: triggerWord(d.text) }); }
     this.noteHeard('interim', d.interrupt, d.reason, d);
     if (d.interrupt || this.lastSkipKey === d.reason) return;
     this.lastSkipKey = d.reason;
@@ -530,7 +567,8 @@ export class CallRelay extends DurableObject<Env> {
   }
 
   private get vadBargeIn(): boolean {
-    return /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '');
+    if (this.tuning.interruption === 'low') return false;   // noise sets VAD off
+    return this.tuning.interruption === 'high' || /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_VAD ?? '');
   }
 
   // Sends adapter-built frames; false once the socket has closed.
@@ -558,13 +596,13 @@ export class CallRelay extends DurableObject<Env> {
         interrupt, reason: why, sinceSpeakMs: now - this.speakStartedAt, ...extra,
       });
     if (reason === 'vad' && !this.vadBargeIn) { if (this.lastSkipKey !== 'vad_off') { this.lastSkipKey = 'vad_off'; log(false, 'vad_off'); this.noteHeard('vad', false, 'vad_off'); } return; }
-    if (now - this.speakStartedAt < BARGE_IN_MIN_SPEAK_MS) { log(false, 'too_early'); this.noteHeard(reason === 'vad' ? 'vad' : 'interim', false, 'too_early'); return; }
+    if (now - this.speakStartedAt < (this.tuning.interruption === 'low' ? BARGE_IN_MIN_SPEAK_LOW_MS : BARGE_IN_MIN_SPEAK_MS)) { log(false, 'too_early'); this.noteHeard(reason === 'vad' ? 'vad' : 'interim', false, 'too_early'); return; }
     const v = reason === 'interim' ? this.lastVerdict : undefined;
     const b = this.active?.tl?.barge;
     if (b) b.decisions++;
     if (reason === 'vad') this.noteHeard('vad', true, 'vad');
     log(true, v?.reason ?? 'vad', v ? { words: v.words, threshold: v.threshold, echo: false } : {});
-    this.bargeIn(v?.reason ?? 'vad');
+    this.bargeIn(v?.reason ?? 'vad', v?.text);
   }
 
   // Our own audio coming back from a speakerphone, heard while (or just
@@ -634,11 +672,31 @@ export class CallRelay extends DurableObject<Env> {
     // asked them something, in which case "yeah" is the answer. Only played
     // audio and the chunk playing now count: a question still queued behind
     // it hasn't been asked yet.
-    if (this.agentActive && isBackchannel(text, this.voice.language)) {
+    const low = this.tuning.interruption === 'low';
+    let answering = false;
+    if (this.agentActive && (low ? isBackchannelLow : isBackchannel)(text, this.voice.language)) {
       const playing = this.pendingMarks.values().next().value as SpokenChunk | undefined;
       const asked = this.active?.chunks.some(c => !c.filler && (c.played || c === playing) && c.text.includes('?'));
       if (!asked) {
         console.log(`[turn] ignoring backchannel while agent active: "${text}"`);
+        return;
+      }
+      answering = true;   // "yes" to a question we just asked is an answer, not feedback
+    }
+
+    // LOW sensitivity: a final transcript heard while the assistant talks must clear the same bar as an
+    // interim one (two words, or a surely-heard stop word; enough voiced audio). Anything less is
+    // noise, TV, someone else or a lone "haan", and the assistant carries on.
+    if (this.agentActive && low && !answering) {
+      const v = bargeInDecision(text, numEnv(this.env.DG_BARGE_IN_MIN_WORDS) ?? 2, this.voice.language, undefined, { level: 'low', confidence: end?.confidence, voicedMs: end?.speechMs });
+      if (!v.interrupt) {
+        logEvent('info', 'barge.decision', {
+          callId: this.callSid.slice(-8), carrier: this.telephony.provider, signal: 'final', words: v.words, vad: false, interrupt: false, reason: v.reason,
+        });
+        const b = this.active?.tl?.barge;
+        if (b) { b.decisions++; if (b.skipped.length < 5) b.skipped.push({ reason: v.reason, words: v.words, word: triggerWord(text) }); }
+        this.utteranceSignalAt = 0;
+        this.lastSkipKey = '';
         return;
       }
     }
@@ -652,7 +710,7 @@ export class CallRelay extends DurableObject<Env> {
       });
       if (this.active?.tl) this.active.tl.barge.decisions++;
       this.noteHeard('final', true, 'transcript', undefined, text.trim().split(/\s+/).filter(Boolean).length);
-      this.bargeIn('transcript');
+      this.bargeIn('transcript', text);
     }
     this.utteranceSignalAt = 0;
     this.lastSkipKey = '';
@@ -846,7 +904,7 @@ export class CallRelay extends DurableObject<Env> {
     return {
       callSid: this.callSid, businessType: this.session?.businessType ?? '', provider: this.telephony.provider, turnN,
       sttProvider, ttsProvider: this.ttsProvider.name, llmModel: voiceModel(this.env),
-      endpointingMs: sttProvider === 'sarvam' || flux ? null : numEnv(this.env.DG_ENDPOINTING_MS) ?? 250,
+      endpointingMs: sttProvider === 'sarvam' || flux ? null : this.tuning.endpointing === 'patient' ? Math.max(PATIENT_ENDPOINTING_MS, numEnv(this.env.DG_ENDPOINTING_MS) ?? 0) : numEnv(this.env.DG_ENDPOINTING_MS) ?? 250,
       syncDtmfAt: this.syncDtmfAt,
     };
   }
@@ -1132,10 +1190,11 @@ export class CallRelay extends DurableObject<Env> {
     // audio is ready the business turned out to use another voice
     // (applyVoice ran), it's dropped and said in that voice instead.
     const startVoice = this.voice;
+    const startRate = this.tuning.rate;
     let openerDropped = false;
     const opener = this.lines.opener;
     const openerAudio = this.ttsProvider.start(opener, signal).catch(() => null).then(async (res) => {
-      if (this.voice === startVoice) return res;
+      if (this.voice === startVoice && this.tuning.rate === startRate) return res;   // else: said again at the business's voice and speed
       openerDropped = true;
       await res?.body?.cancel().catch(() => {});
       return null;
@@ -1227,7 +1286,7 @@ export class CallRelay extends DurableObject<Env> {
         : Promise.resolve(null);
       sectorPromise.then(m => { if (m) this.cache.sectorMeta = m; });
       // Hindi / Sarvam businesses switch provider here (no-op for the default).
-      this.voiceReady = sectorPromise.then(m => this.applyVoice(resolveVoiceSettings(m)));
+      this.voiceReady = sectorPromise.then(m => this.applyTuning(m, () => this.applyVoice(resolveVoiceSettings(m))));
 
       this.greet(businessType, sectorPromise);
       this.quietSince = Date.now();

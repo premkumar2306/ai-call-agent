@@ -24,7 +24,10 @@ import { sarvamPace, sarvamTtsStart } from './tts-sarvam';
 export type { Stt, SpeechStartReason };
 
 /** Provider-independent knobs CallRelay passes to every STT (see SttOptions). */
-export type SttCommon = Omit<SttOptions, 'apiKey' | 'model' | 'language' | 'voiceLanguage'>;
+export type SttCommon = Omit<SttOptions, 'apiKey' | 'model' | 'language' | 'voiceLanguage'> & {
+  /** Sarvam only: extra settle time before an utterance is answered (Deepgram uses endpointingMs). */
+  settleMs?: number;
+};
 
 export interface TtsProvider {
   readonly name: string;
@@ -69,6 +72,8 @@ export function createStt(
       bargeInMinWords: common.bargeInMinWords,
       onBargeDecision: common.onBargeDecision,
       interimBargeIn: common.interimBargeIn,
+      interruption: common.interruption,
+      settleMs: common.settleMs,
       incompleteHoldMs: common.incompleteHoldMs,
       highVadSensitivity: /^(1|true)$/i.test(env.SARVAM_HIGH_VAD_SENSITIVITY ?? ''),
       debug: common.debug,
@@ -89,14 +94,16 @@ export function createStt(
   }, onTranscript, onSpeechStart);
 }
 
-export function createTts(env: Env, voice: VoiceSettings): TtsProvider {
+/** `rate`: speaking-speed multiplier (1 = the provider's normal pace; nothing is sent). */
+export function createTts(env: Env, voice: VoiceSettings, rate = 1): TtsProvider {
   if (voice.ttsProvider === 'sarvam') {
     const cfg = {
       apiKey: env.SARVAM_API_KEY ?? '',
       language: voice.language,
       speaker: voice.voiceId ?? env.SARVAM_TTS_SPEAKER,
       model: env.SARVAM_TTS_MODEL,
-      pace: sarvamPace(env.SARVAM_TTS_PACE),
+      // The business's speed setting multiplies the calibrated base pace: slow (0.9) is slower than normal.
+      pace: Math.round(sarvamPace(env.SARVAM_TTS_PACE) * rate * 100) / 100,
       codec: env.SARVAM_TTS_CODEC === 'linear16' ? 'linear16' as const : 'mulaw' as const,
     };
     return { name: 'sarvam', start: (text, signal) => sarvamTtsStart(cfg, text, signal) };
@@ -106,6 +113,7 @@ export function createTts(env: Env, voice: VoiceSettings): TtsProvider {
     voiceId: voice.voiceId ?? env.CARTESIA_VOICE_ID,
     modelId: env.CARTESIA_MODEL_ID,
     ...(voice.language !== 'en' ? { language: 'hi' } : {}),
+    ...(rate !== 1 ? { speed: rate } : {}),
   };
   return { name: 'cartesia', start: (text, signal) => cartesiaStart(cfg, text, signal) };
 }
