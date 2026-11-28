@@ -785,6 +785,57 @@ async function backchannelScenario(mocks) {
   check(n, 'the descriptors contain no transcript text', !/mm-hmm/i.test(JSON.stringify(td)), 'checked the turns API output');
 }
 
+// Production runs with interim barge-in off (VOICE_BARGE_IN_ON_INTERIM unset), which the simulator turns on for
+// everyone. This scenario runs a Deepgram call with it off (?interimBarge=0) and asks how fast the assistant yields
+// to a real interruption: US (NORMAL sensitivity) only after the final transcript, India (LOW sensitivity) on the
+// interim words, before the final arrives (the mock's interim lands ~120 ms after speech starts, the final ~320 ms).
+async function yieldDefaultScenario(mocks) {
+  for (const b of [{ key: 'us_twilio', carrier: 'twilio', low: false }, { key: 'in_plivo_en', carrier: 'plivo', low: true }]) {
+    const sc = SCENARIOS.find(x => x.key === b.key);
+    const n = `yield (production default) ${b.carrier}`;
+    console.log(`\n▶ Yielding with interim barge-in off, ${b.carrier} (${b.low ? 'LOW' : 'NORMAL'} sensitivity)`);
+    const r = {};
+    if (b.low) await api('PUT', `/admin/sectors/${b.key}/voice`, { ...PINNED_NORMAL, interruption_sensitivity: 'low' });
+    await placeCall(mocks, {
+      carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'interimBarge=0',
+      drive: async ({ call, quiet, remainingMs }) => {
+        const replyAt = Date.now();
+        await mocks.say('Tell me about your services please.');
+        for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+        while (Date.now() - replyAt < 2600) await sleep(100);
+        for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+        const c1 = call.cleared, said = Date.now();
+        await mocks.say('Actually I want to book an appointment.');
+        for (let i = 0; i < 20 && call.cleared === c1; i++) await sleep(50);
+        r.clearMs = call.clearTimes.at(c1) ? call.clearTimes[c1] - said : null;
+        await quiet(said);
+      },
+    });
+    if (b.low) {
+      // The faster yield must not make noise or listener feedback interrupt: a cough, "haan" and "mm-hmm" while the assistant talks.
+      const q = {};
+      await placeCall(mocks, {
+        carrier: b.carrier, number: sc.number, from: sc.from, wsQuery: 'interimBarge=0',
+        drive: async ({ call, quiet, remainingMs }) => {
+          await mocks.say('Tell me about your services please.');
+          for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+          const c0 = call.cleared, llm0 = mocks.log.anthropic.length;
+          await mocks.cough(); await sleep(300);
+          await mocks.say('haan'); await sleep(300);
+          await mocks.say('mm-hmm'); await sleep(400);
+          q.cleared = call.cleared - c0; q.turns = mocks.log.anthropic.length - llm0;
+          await quiet(Date.now());
+        },
+      });
+      check(n, 'LOW: a cough, "haan" and "mm-hmm" neither interrupt nor start a turn', q.cleared === 0 && q.turns === 0, `${q.cleared} clear frame(s), ${q.turns} model call(s)`);
+    }
+    if (b.low) await api('PUT', `/admin/sectors/${b.key}/voice`, PINNED_NORMAL);
+    check(n, 'the real interruption clears the carrier playback', r.clearMs != null, `${r.clearMs}ms`);
+    if (b.low) check(n, 'LOW sensitivity yields on the interim words, before the final transcript (< 250 ms)', r.clearMs != null && r.clearMs < 250, `${r.clearMs}ms`);
+    else check(n, 'NORMAL sensitivity keeps its historical behaviour: yields at the final transcript (> 250 ms)', r.clearMs != null && r.clearMs >= 250, `${r.clearMs}ms`);
+  }
+}
+
 // Runaway-call guards on every carrier: a caller who goes silent is asked "still there?" then
 // told goodbye and the carrier leg is ended (after-stream answers hangup, no dial); a call at
 // its maximum length is wrapped up; no audio from the carrier ends the call. Short timings come
@@ -1908,6 +1959,7 @@ try {
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'latency'.includes(only)) await latencyApiScenario();
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
+  if (!only || 'barge'.includes(only) || 'yield'.includes(only)) await yieldDefaultScenario(mocks);
   if (!only || 'barge'.includes(only) || 'backchannel'.includes(only)) await backchannelScenario(mocks);
   if (!only || 'barge'.includes(only) || 'stop'.includes(only)) await stopWordScenario(mocks);
   if (!only || 'guards'.includes(only)) await guardsScenario(mocks);

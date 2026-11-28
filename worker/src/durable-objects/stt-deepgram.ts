@@ -362,8 +362,12 @@ export async function createDeepgramSTT(
   const announced = new Set<SpeechStartReason>();
 
   const announceSpeech = (reason: SpeechStartReason) => {
-    // Interim barge-in off: one announcement per utterance whichever signal comes first (the historical behaviour).
-    if (opts.interimBargeIn ? announced.has(reason) : announced.size) return;
+    // Interim barge-in off: one announcement per utterance whichever signal comes first (the historical behaviour:
+    // the VAD signal arrives first and uses it up, so only the final transcript could interrupt, seconds late).
+    // At LOW interruption sensitivity each signal has its own: the VAD one is ignored by the relay, and the
+    // interim words, which must clear the LOW word / confidence / backchannel gates, stop the assistant as soon as they arrive.
+    const perSignal = opts.interimBargeIn || opts.interruption?.() === 'low';
+    if (perSignal ? announced.has(reason) : announced.size) return;
     announced.add(reason);
     if (debug) console.log(`[dg stt] speech-start (${reason})`);
     onSpeechStart?.(reason);

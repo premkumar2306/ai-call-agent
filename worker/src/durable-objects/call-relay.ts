@@ -232,6 +232,7 @@ export class CallRelay extends DurableObject<Env> {
   private finalized = false;
   private guardTimer?: ReturnType<typeof setInterval>;
   // Short guard timings for the e2e simulator (?guardPromptMs=…); ignored in production.
+  private testInterimOff = false;   // e2e only (?interimBarge=0): run with production's default, interim barge-in off
   private testGuards: { promptMs?: number; hangupMs?: number; maxMs?: number; deadMediaMs?: number; verifyMs?: number } = {};
   private lastMediaAt = 0;
   private agentBusySince = 0;
@@ -300,6 +301,7 @@ export class CallRelay extends DurableObject<Env> {
     this.urlBusinessType = url.searchParams.get('businessType') ?? undefined;
     if (!isProduction(this.env)) {
       const q = (k: string) => numEnv(url.searchParams.get(k) ?? undefined);
+      this.testInterimOff = url.searchParams.get('interimBarge') === '0';
       this.testGuards = { promptMs: q('guardPromptMs'), hangupMs: q('guardHangupMs'), maxMs: q('guardMaxMs'), deadMediaMs: q('guardDeadMs'), verifyMs: q('guardVerifyMs') };
     }
     const cfg = streamConfig(request);
@@ -330,7 +332,7 @@ export class CallRelay extends DurableObject<Env> {
         bargeInMinWords: numEnv(this.env.DG_BARGE_IN_MIN_WORDS),
         isEcho: (text) => this.looksLikeEcho(text),
         onBargeDecision: (d) => this.noteBargeDecision(d),
-        interimBargeIn: /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_INTERIM ?? ''),
+        interimBargeIn: !this.testInterimOff && /^(1|true)$/i.test(this.env.VOICE_BARGE_IN_ON_INTERIM ?? ''),
         // Mid-sentence speech must hold off "Are you still there?".
         onActivity: () => this.callerActive(),
         onClose: () => { if (gen === this.sttGen) this.handleSttDrop(); },
