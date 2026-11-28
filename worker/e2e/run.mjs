@@ -742,8 +742,42 @@ async function bargeInScenario(mocks) {
     const mine = turns.filter(t => t.role === 'assistant' && /consultations/.test(t.content));
     check(n, 'the cut-off reply is in the transcript once, not twice', mine.length === 1, `${mine.length} of ${turns.length} turns: ${mine.map(t => t.content.slice(0, 60)).join(' | ')}`);
     check(n, 'the cut-off reply is recorded only as far as the caller heard it', mine.length === 1 && !/ask me to find a time/.test(mine[0].content), mine[0]?.content?.slice(-80) ?? 'none');
+    // What was heard at each decision is stored as numbers only (no words), so noise and backchannels can be told from interruptions later.
+    const td = await api('GET', `/admin/calls/${call.callSid}/turns`).catch(() => ({ turns: [] }));
+    const heard = (td.turns ?? []).flatMap(t => t.barge?.heard ?? []);
+    const shape = heard.every(h => ['interim', 'vad', 'final'].includes(h.signal) && typeof h.interrupt === 'boolean' && typeof h.reason === 'string' && Number.isFinite(h.voicedMs) && Number.isFinite(h.floorDb) && Number.isFinite(h.sinceSpeakMs));
+    check(n, 'each barge decision stores a safe descriptor (numbers, reason, lexicon)', heard.length >= 1 && shape, `${heard.length} descriptor(s): ${heard.map(h => `${h.signal}/${h.reason}${h.lexicon ? '/' + h.lexicon : ''}`).join(' ')}`);
+    check(n, 'the descriptors contain no transcript text', !/appointment|consultations/i.test(JSON.stringify(heard)), 'checked for the spoken words');
     check(n, 'the assistant then answers the interruption', turns.some(t => t.role === 'user' && /book an appointment/.test(t.content)), `${turns.length} turns`);
   }
+}
+
+// Listener feedback while the assistant talks ("mm-hmm", "okay"): the assistant keeps talking and does not start a
+// turn, and the decision is stored as numbers only (lexicon = backchannel), never the words.
+async function backchannelScenario(mocks) {
+  const sc = SCENARIOS.find(x => x.key === 'us_twilio');
+  const n = 'backchannel twilio';
+  console.log('\n▶ Backchannel while the assistant talks (twilio)');
+  const r = {};
+  const call = await placeCall(mocks, {
+    carrier: 'twilio', number: sc.number, from: sc.from,
+    drive: async ({ call, quiet, remainingMs }) => {
+      await mocks.say('Tell me about your services please.');
+      for (let i = 0; i < 60 && remainingMs() < 1500; i++) await sleep(50);
+      const c0 = call.cleared, llm0 = mocks.log.anthropic.length;
+      await mocks.say('mm-hmm');
+      await sleep(400);
+      r.cleared = call.cleared - c0;
+      r.turns = mocks.log.anthropic.length - llm0;
+      await quiet(Date.now());
+    },
+  });
+  check(n, 'a backchannel ("mm-hmm") neither interrupts nor starts a turn', r.cleared === 0 && r.turns === 0, `${r.cleared} clear frame(s), ${r.turns} model call(s)`);
+  await sleep(500);
+  const td = await api('GET', `/admin/calls/${call.callSid}/turns`).catch(() => ({ turns: [] }));
+  const heard = (td.turns ?? []).flatMap(t => t.barge?.heard ?? []);
+  check(n, 'the backchannel is recorded as a non-interrupting decision with its lexicon', heard.some(h => h.lexicon === 'backchannel' && h.interrupt === false), `${heard.map(h => `${h.signal}/${h.reason}/${h.lexicon ?? '-'}`).join(' ')}`);
+  check(n, 'the descriptors contain no transcript text', !/mm-hmm/i.test(JSON.stringify(td)), 'checked the turns API output');
 }
 
 // Runaway-call guards on every carrier: a caller who goes silent is asked "still there?" then
@@ -1765,6 +1799,7 @@ try {
   if (!only || 'plivo'.includes(only)) await plivoScenario(mocks);
   if (!only || 'latency'.includes(only)) await latencyApiScenario();
   if (!only || 'barge'.includes(only)) await bargeInScenario(mocks);
+  if (!only || 'barge'.includes(only) || 'backchannel'.includes(only)) await backchannelScenario(mocks);
   if (!only || 'barge'.includes(only) || 'stop'.includes(only)) await stopWordScenario(mocks);
   if (!only || 'guards'.includes(only)) await guardsScenario(mocks);
   if (!only || 'hangup'.includes(only) || 'guards'.includes(only)) await hangupScenario(mocks);

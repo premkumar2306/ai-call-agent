@@ -37,7 +37,32 @@ export interface BargeInfo {
   playedAfterClear: number;
   /** Last few non-interrupting decisions (reason + words), for the timeline. */
   skipped: { reason: string; words: number }[];
+  /** Descriptors of what was heard at the first few decisions (see HeardInfo). */
+  heard?: HeardInfo[];
 }
+
+/**
+ * What was heard at one barge-in decision, as numbers only: never the words. Lets us tell noise and
+ * backchannels from real interruptions after the fact (voiced length, confidence, word lists, line noise).
+ */
+export interface HeardInfo {
+  signal: 'interim' | 'vad' | 'final';
+  interrupt: boolean;
+  reason: string;
+  words?: number;
+  /** Speech-recogniser confidence 0-1, when the provider gives one. */
+  conf?: number;
+  /** How long the caller had been talking without a >600 ms pause, ms. */
+  voicedMs: number;
+  /** Matched the backchannel or stop-word list, or neither. */
+  lexicon?: 'backchannel' | 'stop' | 'none';
+  /** Quietest recent line level, dBFS. */
+  floorDb: number;
+  /** ms since the assistant began speaking. */
+  sinceSpeakMs: number;
+}
+
+export const MAX_HEARD = 8;
 
 export class TurnTimeline {
   /** performance.now() at t=0 (the STT end-of-speech signal). */
