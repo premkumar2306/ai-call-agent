@@ -1057,7 +1057,7 @@ async function voiceFeelScenario(mocks) {
     },
   });
   const paces = mocks.log.tts.slice(ttsBeforeHi).filter(t => t.provider === 'sarvam').map(t => t.pace);
-  check(n, 'slow: the pace reaches the Sarvam request (0.9)', paces.length > 0 && paces.every(v => v === 0.9), JSON.stringify(paces.slice(0, 4)));
+  check(n, 'slow: the pace reaches the Sarvam request (0.72 = 0.9 x the calibrated base 0.8)', paces.length > 0 && paces.every(v => v === 0.72), JSON.stringify(paces.slice(0, 4)));
   check(n, 'LOW on Sarvam: one word is ignored (no confidence score), two words interrupt', h.oneWord === 0 && h.twoWords >= 1, `one word ${h.oneWord}, two words ${h.twoWords}`);
 
   // 4. The US business: nothing new in its voice request.
