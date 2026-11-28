@@ -37,6 +37,19 @@ export function sarvamTtsLanguage(lang: VoiceLanguage): string {
   return lang === 'en' ? 'en-IN' : 'hi-IN';
 }
 
+/**
+ * Bulbul's default pace is fast for a phone line: measured in production 20.4 characters per second of playback,
+ * against 15.8 for the Cartesia voice and a human receptionist's 14-16. Pace is linear in speed, so 0.8 lands
+ * near 16. Override per deployment with SARVAM_TTS_PACE.
+ */
+export const SARVAM_DEFAULT_PACE = 0.8;
+
+/** The configured pace (SARVAM_TTS_PACE), kept to a sane 0.5-1.5; anything else is the default. */
+export function sarvamPace(raw?: string): number {
+  const n = raw === undefined || raw === '' ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0.5 && n <= 1.5 ? n : SARVAM_DEFAULT_PACE;
+}
+
 export function sarvamTtsBody(cfg: SarvamTtsConfig, text: string): Record<string, unknown> {
   return {
     text,
