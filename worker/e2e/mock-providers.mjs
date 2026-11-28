@@ -62,7 +62,7 @@ export async function startMocks({ port = 0 } = {}) {
       }
       if (host === 'api.sarvam.ai' && path === '/text-to-speech/stream') {
         const b = JSON.parse(body);
-        log.tts.push({ provider: 'sarvam', text: b.text, format: { codec: b.output_audio_codec, sample_rate: b.speech_sample_rate, language: b.language_code }, at: Date.now() });
+        log.tts.push({ provider: 'sarvam', text: b.text, format: { codec: b.output_audio_codec, sample_rate: b.speech_sample_rate, language: b.language_code }, pace: b.pace, at: Date.now() });
         return audioResponse(res, b.text);
       }
       if (host === 'graph.facebook.com') return graph(req, path, body, res, log, url);

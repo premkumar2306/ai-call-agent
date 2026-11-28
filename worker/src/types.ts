@@ -155,6 +155,7 @@ export interface Env {
   SARVAM_STT_MODEL?: string;         // default saaras:v3
   SARVAM_TTS_MODEL?: string;         // default bulbul:v3
   SARVAM_TTS_SPEAKER?: string;       // default speaker when a business sets no voice_id
+  SARVAM_TTS_PACE?: string;          // Bulbul speaking pace, default 0.8 (see SARVAM_DEFAULT_PACE)
   SARVAM_TTS_CODEC?: string;         // 'mulaw' (default) | 'linear16'
   SARVAM_HIGH_VAD_SENSITIVITY?: string; // '1' for Sarvam's high-sensitivity VAD
   RELAY_DO: DurableObjectNamespace;

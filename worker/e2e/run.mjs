@@ -375,6 +375,7 @@ async function callScenario(mocks, s) {
   const tts = voiced[0];
   if (first > 0) check(n, 'default-voice opener requests before the switch (cost only, not heard)', true, `${first} request(s): ${heard.slice(0, first).map(t => t.provider).join(', ')}`);
   if (s.tts === 'cartesia') check(n, 'Cartesia asked for raw µ-law 8 kHz', voiced.length > 0 && voiced.every(t => t.provider === 'cartesia' && t.format?.encoding === 'pcm_mulaw' && t.format?.sample_rate === 8000), JSON.stringify(tts?.format));
+  if (s.tts === 'sarvam') check(n, 'Sarvam TTS is asked for a calm pace (0.8, not the provider default)', voiced.length > 0 && voiced.every(t => t.pace === 0.8), voiced.map(t => t.pace).join(','));
   if (s.tts === 'sarvam') check(n, `Sarvam TTS asked for µ-law 8 kHz in ${sl}`, voiced.length > 0 && voiced.every(t => t.provider === 'sarvam' && t.format?.codec === 'mulaw' && t.format?.sample_rate === 8000 && t.format?.language === sl), JSON.stringify(tts?.format));
   if (s.script) check(n, 'greeting and replies are spoken in the business language (native script)', voiced.some(t => s.script.test(t.text) && /Avery|ಅಸಿಸ್ಟೆಂಟ್|అసిస్టెంట్|அசிஸ்டன்ட்/.test(t.text)), voiced.find(t => s.script.test(t.text))?.text?.slice(0, 80));
 
