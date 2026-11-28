@@ -19,7 +19,7 @@ import type { VoiceSettings } from '../services/voice-language';
 import { createDeepgramSTT, createDeepgramFluxSTT, type OnTranscript, type SpeechStartReason, type Stt, type SttOptions } from './stt-deepgram';
 import { createSarvamSTT } from './stt-sarvam';
 import { cartesiaStart } from './tts-cartesia';
-import { sarvamTtsStart } from './tts-sarvam';
+import { sarvamPace, sarvamTtsStart } from './tts-sarvam';
 
 export type { Stt, SpeechStartReason };
 
@@ -102,6 +102,7 @@ export function createTts(env: Env, voice: VoiceSettings, rate = 1): TtsProvider
       language: voice.language,
       speaker: voice.voiceId ?? env.SARVAM_TTS_SPEAKER,
       model: env.SARVAM_TTS_MODEL,
+      pace: sarvamPace(env.SARVAM_TTS_PACE),
       codec: env.SARVAM_TTS_CODEC === 'linear16' ? 'linear16' as const : 'mulaw' as const,
       ...(rate !== 1 ? { pace: rate } : {}),
     };

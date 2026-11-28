@@ -262,16 +262,23 @@ export const INTERRUPTED_MARK = '[caller interrupted]';
 
 export type Channel = 'voice' | 'chat';
 
+// Extra speaking rules for phone calls to Indian businesses (country IN). A caller on a phone line cannot scroll
+// back, so options are offered rather than recited, and numbers are said the way people say them there.
+export const INDIA_VOICE_RULES = `
+- Never read out more than three options. Name two or three and ask which suits: "I have a morning slot and an afternoon slot, which would you prefer?" Offer the rest only if they ask.
+- Say numbers as people say them aloud. Times: "half past ten", "quarter to five", "five thirty", never "10:30 AM". Amounts: "seven thousand five hundred rupees", never "Rs. 7,500" or the rupee sign; "one lakh twenty thousand" for 120000. Phone numbers: digit by digit in groups of three or four, with a pause between the groups. Dates: "the twenty-eighth of November", "this Friday".
+- Leave a beat between sentences: finish each sentence fully; don't join them with "and" into one long breath.`;
+
 // `name` is the assistant's spoken name (assistantNameOf(meta)); callers
 // always pass it. The default is what the US business has always been called,
 // so its prompt (pinned by test/us-unchanged.test.ts) is unchanged.
-export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en', name = 'Mogi', guardrails = ''): string {
+export function buildAgentRules(businessType: string, bizName: string, channel: Channel = 'voice', vertical: Vertical = VERTICALS.general, language: VoiceLanguage = 'en', name = 'Mogi', guardrails = '', indiaVoice = false): string {
   const v = vertical.prompt;
   const style = channel === 'voice'
     ? `SPEAKING (everything you write is read aloud by a voice on a phone line):
 - Open with a very short first sentence (one to five words, e.g. "Yes, we do." / "Sure." / "We're at 320 Lexington Drive."), so the caller hears you right away; then at most one more short sentence. Under 35 words in all, then stop. Answer exactly what was asked — the caller can ask for more. Never recite the whole menu or all the hours unprompted; name two or three highlights and offer more.
 - ${language === 'en' ? 'Plain spoken English' : 'Plain speech'}: no lists, markdown, emoji or symbols. Say "a to c", not "A/C".
-- At most one question per reply. Don't read out booking reference numbers unless asked.`
+- At most one question per reply. Don't read out booking reference numbers unless asked.${indiaVoice ? INDIA_VOICE_RULES : ''}`
     : `WRITING (WhatsApp / web chat):
 - Two to four short sentences. You may use *bold* for service names and prices. No headers or long bullet lists.
 - At most one question per reply.`;
@@ -356,7 +363,7 @@ export function buildSystemPrompt(opts: {
 }): Anthropic.TextBlockParam[] {
   const bizName = opts.sectorMeta?.name ?? opts.businessType;
   const stable = opts.stable
-    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language, assistantNameOf(opts.sectorMeta), guardrailsEnabled(opts.sectorMeta) ? guardrailPrompt(opts.sectorMeta) : '')}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
+    ?? `${buildAgentRules(opts.businessType, bizName, opts.channel, getVertical(opts.sectorMeta), resolveVoiceSettings(opts.sectorMeta).language, assistantNameOf(opts.sectorMeta), guardrailsEnabled(opts.sectorMeta) ? guardrailPrompt(opts.sectorMeta) : '', opts.sectorMeta?.countryCode === 'IN')}\n\n${buildBusinessProfile(opts.businessType, opts.sectorMeta, opts.products)}`;
   return [
     { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: describeCaller(opts.session, opts.orders, opts.sectorMeta) },
